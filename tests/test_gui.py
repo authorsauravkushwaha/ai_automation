@@ -30,8 +30,18 @@ class DesktopTests(unittest.TestCase):
         self.assistant = make_assistant(self.temporary.name)
         self.window = MainWindow(self.assistant)
 
+    @classmethod
+    def tearDownClass(cls) -> None:
+        QApplication.closeAllWindows()
+        cls.application.processEvents()
+        cls.application.quit()
+        # Release the wrapper before Python unloads Qt modules at interpreter exit.
+        cls.application = None
+
     def tearDown(self) -> None:
         self.window.close()
+        self.window.deleteLater()
+        QApplication.processEvents()
         self.assistant.close()
         self.temporary.cleanup()
 
