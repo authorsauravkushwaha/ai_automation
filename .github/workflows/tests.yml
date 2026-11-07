@@ -2,6 +2,7 @@ name: tests
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -30,7 +31,7 @@ jobs:
           status=$?
           cat test-output.txt
           if [ "$status" -ne 0 ]; then
-            python -c "from pathlib import Path; text=Path('test-output.txt').read_text(encoding='utf-8', errors='replace'); text=text[-12000:].replace('%','%25').replace('\r','%0D').replace('\n','%0A'); print('::error::'+text)"
+            python scripts/github_test_report.py test-output.txt
             exit "$status"
           fi
       - name: CLI smoke test
@@ -82,6 +83,6 @@ jobs:
           status=$?
           cat test-output.txt
           if [ "$status" -ne 0 ]; then
-            python -c "from pathlib import Path; text=Path('test-output.txt').read_text(encoding='utf-8', errors='replace'); text=text[-12000:].replace('%','%25').replace('\r','%0D').replace('\n','%0A'); print('::error::'+text)"
+            python scripts/github_test_report.py test-output.txt
             exit "$status"
           fi
