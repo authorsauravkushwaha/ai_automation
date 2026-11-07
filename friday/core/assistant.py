@@ -32,6 +32,7 @@ from friday.speech.wake_word import WakeWordDetector
 class FridayAssistant:
     def __init__(self, config: FridayConfig | None = None, *, llm_enabled: bool | None = None) -> None:
         self.config = config or load_config()
+        self._log_handler: RotatingFileHandler | None = None
         self.config.ensure_private_directories()
         self._configure_logging()
         self.database = Database(self.config.database_path)
@@ -62,8 +63,12 @@ class FridayAssistant:
 
     def _configure_logging(self) -> None:
         root = logging.getLogger("friday")
-        if any(isinstance(handler, RotatingFileHandler) for handler in root.handlers):
-            return
+        # FRIDAY has one composition root per process. Close a prior instance's
+        # handler so Windows can move/delete its private data directory cleanly.
+        for existing in list(root.handlers):
+            if isinstance(existing, RotatingFileHandler):
+                root.removeHandler(existing)
+                existing.close()
         root.setLevel(logging.INFO)
         handler = RotatingFileHandler(
             self.config.log_path, maxBytes=1_000_000, backupCount=2, encoding="utf-8"
@@ -71,6 +76,7 @@ class FridayAssistant:
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         root.addHandler(handler)
         root.propagate = False
+        self._log_handler = handler
 
     def process_text(self, text: str) -> AssistantResponse:
         return self.orchestrator.process(text, source="text")
@@ -134,6 +140,12 @@ class FridayAssistant:
         self.stt.unload()
         self.speaker.unload()
         self.wake_word.close()
+        if self._log_handler is not None:
+            root = logging.getLogger("friday")
+            if self._log_handler in root.handlers:
+                root.removeHandler(self._log_handler)
+            self._log_handler.close()
+            self._log_handler = None
 
     @property
     def log_path(self) -> Path:

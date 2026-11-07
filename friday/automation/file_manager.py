@@ -19,6 +19,9 @@ BLOCKED_OPEN_SUFFIXES = {
 class FileManager:
     def __init__(self, config: SecurityConfig) -> None:
         self.config = config
+        # Canonicalize here as well as in Config: direct embedding/tests must get the
+        # same short-path, symlink, and traversal protection as the normal loader.
+        self.roots = [path.expanduser().resolve() for path in config.allowed_roots]
 
     def _inside_root(self, path: Path, root: Path) -> bool:
         try:
@@ -31,9 +34,9 @@ class FileManager:
         if not value.strip():
             raise AutomationError("A file or folder path is required")
         supplied = Path(value.strip().strip('"')).expanduser()
-        candidates = [supplied] if supplied.is_absolute() else [root / supplied for root in self.config.allowed_roots]
+        candidates = [supplied] if supplied.is_absolute() else [root / supplied for root in self.roots]
         if not supplied.is_absolute():
-            for root in self.config.allowed_roots:
+            for root in self.roots:
                 parts = supplied.parts
                 if parts and parts[0].casefold() == root.name.casefold():
                     # Accept both "note.txt" and "Documents/note.txt" for the Documents root.
@@ -44,12 +47,12 @@ class FileManager:
                 resolved = candidate.resolve(strict=False)
             except OSError as exc:
                 raise AutomationError(f"Cannot resolve path: {exc}") from exc
-            if not any(self._inside_root(resolved, root) for root in self.config.allowed_roots):
+            if not any(self._inside_root(resolved, root) for root in self.roots):
                 continue
             if not must_exist or resolved.exists():
                 return resolved
         resolved_fallback = fallback.resolve(strict=False)
-        if not any(self._inside_root(resolved_fallback, root) for root in self.config.allowed_roots):
+        if not any(self._inside_root(resolved_fallback, root) for root in self.roots):
             raise AutomationError("Access denied: the path is outside all permitted folders")
         if must_exist:
             raise AutomationError(f"Path does not exist inside permitted folders: {value}")
@@ -107,7 +110,7 @@ class FileManager:
         return {"path": str(path), "content": decoded[:max_chars], "truncated": truncated}
 
     def search(self, query: str, root: str = "", max_results: int = 20) -> dict[str, Any]:
-        roots = [self.resolve(root)] if root.strip() else list(self.config.allowed_roots)
+        roots = [self.resolve(root)] if root.strip() else list(self.roots)
         deadline = time.monotonic() + self.config.search_timeout_seconds
         needle = query.casefold()
         matches: list[str] = []
@@ -127,7 +130,7 @@ class FileManager:
                 for filename in sorted(filenames):
                     if needle in filename.casefold():
                         candidate = (Path(directory) / filename).resolve(strict=False)
-                        if any(self._inside_root(candidate, allowed) for allowed in self.config.allowed_roots):
+                        if any(self._inside_root(candidate, allowed) for allowed in self.roots):
                             matches.append(str(candidate))
                             if len(matches) >= max_results:
                                 return {"matches": matches, "truncated": True, "directories_searched": visited}
