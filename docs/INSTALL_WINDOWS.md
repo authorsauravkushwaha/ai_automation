@@ -133,6 +133,8 @@ Do not test on an elevated application from a non-elevated HINATA process; Windo
 
 Expected: input devices are listed, the first model preparation succeeds, and a spoken request such as “system info” produces a transcript and actual system data. To select a device, set `speech.microphone` in `config.toml` to an index from `devices`.
 
+Normal transcription does not download missing Whisper weights; run `setup-speech` explicitly first. The speech model is unloaded after each voice request, and Ollama is asked to unload its model after each response. This reduces potential RAM overlap at the cost of reload latency; measure actual usage on the target laptop.
+
 For a lighter alternative, install `.[light-speech]`, download/extract a Vosk model, and set `stt_backend = "vosk"` plus `vosk_model_path`. Test again. Diagnose microphone permissions under **Settings → Privacy & security → Microphone** before changing models.
 
 ## STAGE 6 — Speaker enrollment and recognition

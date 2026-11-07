@@ -15,9 +15,19 @@ class OllamaError(RuntimeError):
     pass
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not let a loopback service redirect private prompts elsewhere."""
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
 class LLMManager:
     def __init__(self, config: OllamaConfig) -> None:
+        config.validate()
         self.config = config
+        # Ignore environment proxies and refuse every redirect, including loopback redirects.
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         self.base_url = config.host.rstrip("/")
         self._response_lock = threading.Lock()
         self._active_response: Any = None
@@ -41,7 +51,7 @@ class LLMManager:
             method="GET" if data is None else "POST",
         )
         try:
-            response = urllib.request.urlopen(request, timeout=timeout)
+            response = self._opener.open(request, timeout=timeout)
             with self._response_lock:
                 self._active_response = response
             try:
@@ -92,7 +102,7 @@ class LLMManager:
         payload = {
             "model": self.config.model,
             "stream": False,
-            "keep_alive": "5m",
+            "keep_alive": 0,  # Release model RAM when the response is complete.
             "messages": [{"role": "system", "content": system}, *messages],
             "options": {
                 "temperature": self.config.temperature,

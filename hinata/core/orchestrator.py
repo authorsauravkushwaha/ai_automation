@@ -17,7 +17,7 @@ from hinata.core.llm_manager import LLMManager, OllamaError
 from hinata.core.memory import Memory
 from hinata.core.permissions import PermissionManager
 from hinata.core.personality import PersonalityManager
-from hinata.core.planner import ExecutionPlan, Planner, PlanningError
+from hinata.core.planner import Planner, PlanningError
 from hinata.core.types import ActionRequest, ActionResult, AssistantResponse
 from hinata.security.action_validator import ActionValidator, ValidationError
 
@@ -98,6 +98,10 @@ class Orchestrator:
                     self.validator.tool_descriptions(),
                     self.personality.mode.instruction,
                 )
+                if self._cancelled():
+                    response = self._cancel_response()
+                    self.memory.add_message("assistant", response.text, source)
+                    return response
                 kind, payload = self.parser.parse_llm_plan(raw_plan, cleaned)
                 if kind == "tool":
                     action = payload
@@ -165,7 +169,6 @@ class Orchestrator:
         confirmed: bool = True,
         pin: str | None = None,
     ) -> AssistantResponse:
-        self._stop_requested.clear()
         response = self._execute(
             action,
             source=source,
@@ -186,7 +189,6 @@ class Orchestrator:
         speaker_required: bool = False,
     ) -> AssistantResponse:
         """Revalidate and execute only the owner-approved, low-impact plan subset."""
-        self._stop_requested.clear()
         candidate = {
             "type": "plan",
             "objective": "Owner-approved task",

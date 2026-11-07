@@ -49,6 +49,11 @@ dark_theme = true
 start_minimized = false
 speak_responses = false
 
+[memory]
+# Conversation messages kept locally; older messages are pruned when a new one is saved.
+# Does not change retention of command history, task results, preferences, exports or logs.
+conversation_limit = 1000
+
 [personality]
 # friend, advisor, technical, strategist, or professional. Change at runtime by text or voice.
 mode = "friend"

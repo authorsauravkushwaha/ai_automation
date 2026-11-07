@@ -44,9 +44,9 @@ Allow-list only applications and roots you intend HINATA to control. Adding a wh
 
 ## Network behavior
 
-The only assistant runtime endpoint is the configured Ollama URL, restricted to `127.0.0.1`, `localhost`, or `::1` over plain HTTP. HINATA has no analytics, crash reporter, cloud speech, cloud TTS, or remote-AI fallback.
+The only assistant runtime endpoint is the configured Ollama URL, restricted to `127.0.0.1`, `localhost`, or `::1` over plain HTTP. The Ollama client ignores environment proxies and refuses HTTP redirects. HINATA has no analytics, crash reporter, cloud speech, cloud TTS, or remote-AI fallback.
 
-Internet is used by explicit setup/download operations (`pip`, `winget`, `ollama pull`, initial faster-whisper model preparation) and by any separate manual model download. Once models are cached, normal assistant operations are offline. Disabling Ollama does not disable local deterministic tools.
+Internet is used by explicit setup/download operations (`pip`, `winget`, `ollama pull`, initial faster-whisper model preparation) and by any separate manual model download. Normal faster-whisper transcription requires cached model files and does not initiate a download; use `hinata setup-speech` explicitly to prepare the model. Once models are cached, normal assistant operations are offline. Disabling Ollama does not disable local deterministic tools.
 
 ## Operational recommendations
 
@@ -65,4 +65,4 @@ Internet is used by explicit setup/download operations (`pip`, `winget`, `ollama
 
 This is a local productivity assistant, not a hardened security boundary against malware already running as your user, an administrator, an attacker with unlocked physical access, malicious audio played through your microphone, or a compromised model/runtime. LLM output can be wrong even when JSON is valid. File search/read and active-window typing can have unintended consequences if the wrong path/window is selected.
 
-To stop activity: click **Stop audio**, use `/stop`, or close HINATA after the active tool finishes. To revoke voice use, run `hinata delete-voice-profile`. To erase local memory, use the PIN-protected memory controls and then remove any external exports/backups. To change the PIN, run `hinata setup-pin` and verify the current PIN.
+To stop activity in the desktop, click **Emergency stop**; it discards late desktop results and blocks pending actions until a fresh request starts; an already-running Windows action may finish. In the interactive terminal, `/stop` stops audio; Ctrl+C interrupts the current foreground command. To revoke voice use, run `hinata delete-voice-profile`. To erase local memory, use the PIN-protected memory controls and then remove any external exports/backups. To change the PIN, run `hinata setup-pin` and verify the current PIN.

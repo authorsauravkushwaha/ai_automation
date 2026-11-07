@@ -23,6 +23,17 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("No steps have run", plan.preview())
         self.assertIn("Documents/Project", plan.preview())
 
+    def test_preview_shows_every_argument_including_volume_and_search_root(self) -> None:
+        plan = self.planner.validate({
+            "type": "plan", "objective": "Find and set volume", "steps": [
+                {"tool": "search_files", "arguments": {"query": "notes", "root": "Documents", "max_results": 3}},
+                {"tool": "volume", "arguments": {"action": "set", "value": 77}},
+            ],
+        })
+        preview = plan.preview()
+        for expected in ('"query": "notes"', '"root": "Documents"', '"max_results": 3', '"value": 77'):
+            self.assertIn(expected, preview)
+
     def test_rejects_confirmation_gated_tools_in_batch_plans(self) -> None:
         with self.assertRaises(PlanningError):
             self.planner.validate(

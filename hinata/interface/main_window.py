@@ -44,6 +44,7 @@ class MainWindow(QMainWindow):
         self.assistant = assistant
         self.workers: set[Worker] = set()
         self.pending_tasks = 0
+        self._stop_generation = 0
         self.last_response_text = ""
         self.speech_signals = SpeechSignals()
         self.speech_signals.state.connect(self.update_speech_state)
@@ -189,12 +190,25 @@ class MainWindow(QMainWindow):
         on_error: Callable[[str], None] | None = None,
         label: str = "Processing",
     ) -> None:
-        worker = Worker(function)
+        generation = self._stop_generation
+
+        def run_if_current() -> Any:
+            if generation != self._stop_generation:
+                return None
+            return function()
+
+        def deliver_if_current(result: Any) -> None:
+            # In particular, never turn a late voice transcript into a new command
+            # after the owner has pressed the emergency stop button.
+            if generation == self._stop_generation:
+                on_result(result)
+
+        worker = Worker(run_if_current)
         self.workers.add(worker)
         self.pending_tasks += 1
         self.activity_label.setText(label)
         self._update_busy_state()
-        worker.signals.result.connect(on_result)
+        worker.signals.result.connect(deliver_if_current)
         if on_error is not None:
             worker.signals.error.connect(on_error)
         else:
@@ -383,6 +397,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Speech output error: {error}", 8000)
 
     def emergency_stop(self) -> None:
+        self._stop_generation += 1
         self.assistant.emergency_stop()
         if not self.assistant.microphone.recording:
             self.reset_microphone_button()

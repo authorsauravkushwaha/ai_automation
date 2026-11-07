@@ -3,7 +3,6 @@ import unittest
 from pathlib import Path
 
 from hinata.config import ConfigError, load_config
-from hinata.core.assistant import HinataAssistant
 from hinata.core.personality import MODES, PersonalityManager
 from hinata.database.database import Database
 from tests.helpers import make_assistant

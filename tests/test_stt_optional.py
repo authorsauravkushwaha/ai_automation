@@ -42,5 +42,48 @@ class VoskStateTests(unittest.TestCase):
         self.assertEqual(len(recognizers), 2)
 
 
+class WhisperOfflineTests(unittest.TestCase):
+    def test_only_explicit_setup_allows_downloading(self) -> None:
+        calls = []
+
+        def fake_model(*args, **kwargs):
+            calls.append(kwargs)
+            return object()
+
+        with patch.dict(sys.modules, {"faster_whisper": types.SimpleNamespace(WhisperModel=fake_model)}):
+            stt = SpeechToText(SpeechConfig())
+            stt._load_whisper()
+            stt.unload()
+            stt.prepare()
+        self.assertTrue(calls[0]["local_files_only"])
+        self.assertFalse(calls[1]["local_files_only"])
+
+    def test_voice_pipeline_unloads_stt_after_success_and_failure(self) -> None:
+        from hinata.speech.speaker_recognition import SpeakerVerification
+        from hinata.speech.voice_pipeline import VoicePipeline
+
+        class FakeSTT:
+            def __init__(self):
+                self.unloaded = 0
+                self.fail = False
+
+            def transcribe(self, audio, rate):
+                if self.fail:
+                    raise RuntimeError("failure")
+                return "hello"
+
+            def unload(self):
+                self.unloaded += 1
+
+        stt = FakeSTT()
+        speaker = types.SimpleNamespace(verify=lambda audio: SpeakerVerification("not_enrolled", None, None, False))
+        pipeline = VoicePipeline(types.SimpleNamespace(sample_rate=16000), stt, speaker)
+        self.assertEqual(pipeline.process_audio(None).text, "hello")
+        stt.fail = True
+        with self.assertRaises(RuntimeError):
+            pipeline.process_audio(None)
+        self.assertEqual(stt.unloaded, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
