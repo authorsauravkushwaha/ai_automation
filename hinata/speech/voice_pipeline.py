@@ -42,7 +42,11 @@ class VoicePipeline:
                 + (f" (score {verification.score:.3f})" if verification.score is not None else "")
                 + ". The command was not transcribed or executed."
             )
-        text = self.stt.transcribe(audio, self.microphone.sample_rate)
+        try:
+            text = self.stt.transcribe(audio, self.microphone.sample_rate)
+        finally:
+            # Avoid keeping the STT model resident while Ollama handles the request.
+            self.stt.unload()
         return VoiceResult(
             text=text,
             speaker_match=verification.match,

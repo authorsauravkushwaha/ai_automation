@@ -11,7 +11,9 @@ from hinata.database.database import Database
 class Memory:
     def __init__(self, database: Database, conversation_limit: int = 1000) -> None:
         self.database = database
-        self.conversation_limit = max(100, conversation_limit)
+        if isinstance(conversation_limit, bool) or not isinstance(conversation_limit, int) or not 1 <= conversation_limit <= 100000:
+            raise ValueError("Conversation limit must be an integer between 1 and 100000")
+        self.conversation_limit = conversation_limit
 
     def add_message(self, role: str, content: str, source: str = "text") -> None:
         if role not in {"user", "assistant", "system"}:

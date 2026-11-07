@@ -38,7 +38,7 @@ class HinataAssistant:
         self.config.ensure_private_directories()
         self._configure_logging()
         self.database = Database(self.config.database_path)
-        self.memory = Memory(self.database)
+        self.memory = Memory(self.database, self.config.memory.conversation_limit)
         self.personality = PersonalityManager(self.database, self.config.personality.mode)
         self.authentication = Authentication(self.database)
         self.validator = ActionValidator()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,18 +49,8 @@ class ExecutionPlan:
 
     @staticmethod
     def _safe_summary(step: ActionRequest) -> str:
-        arguments = step.arguments
-        if "path" in arguments:
-            return str(arguments["path"])
-        if "query" in arguments:
-            return str(arguments["query"])
-        if "name" in arguments:
-            return str(arguments["name"])
-        if "mode" in arguments:
-            return str(arguments["mode"])
-        if "action" in arguments:
-            return str(arguments["action"])
-        return "no arguments"
+        # Show every exact argument; otherwise approval can hide a root or volume value.
+        return json.dumps(step.arguments, ensure_ascii=True, sort_keys=True)
 
 
 class Planner:

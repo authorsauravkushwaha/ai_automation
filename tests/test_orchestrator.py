@@ -127,6 +127,40 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(responses[0].status, "cancelled")
         self.assertFalse((self.root / "Documents" / "stopped").exists())
 
+    def test_emergency_stop_blocks_pending_confirmation_and_plan(self) -> None:
+        action = self.assistant.process_text("remember that my editor is vim")
+        self.assistant.emergency_stop()
+        self.assertEqual(self.assistant.resume(action.action).status, "cancelled")
+        self.assertEqual(self.assistant.memory.preferences(), [])
+        plan = [self.assistant.validator.validate("create_folder", {"path": "Documents/stopped-plan"})]
+        self.assertEqual(self.assistant.execute_plan(plan).status, "cancelled")
+        self.assertFalse((self.root / "Documents" / "stopped-plan").exists())
+        # A fresh request explicitly starts a new operation.
+        self.assertTrue(self.assistant.process_text("system info").success)
+
+    def test_emergency_stop_discards_late_model_chat_and_plan(self) -> None:
+        for content in (
+            '{"type":"chat","content":"late response"}',
+            '{"type":"plan","objective":"later","steps":[{"tool":"system_info","arguments":{}}]}',
+        ):
+            self.assistant.orchestrator.llm_enabled = True
+            entered = threading.Event()
+            release = threading.Event()
+            def slow_model(*args, entered=entered, release=release, content=content):
+                entered.set()
+                release.wait(timeout=2)
+                return content
+            self.assistant.llm.complete = slow_model
+            responses = []
+            worker = threading.Thread(target=lambda responses=responses: responses.append(self.assistant.process_text("tell me something")))
+            worker.start()
+            self.assertTrue(entered.wait(1))
+            self.assistant.emergency_stop()
+            release.set()
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(responses[0].status, "cancelled")
+
 
 if __name__ == "__main__":
     unittest.main()

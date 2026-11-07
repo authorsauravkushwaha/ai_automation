@@ -25,6 +25,16 @@ class MemoryAndSecurityTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_configured_conversation_retention_prunes_only_messages(self) -> None:
+        self.memory.set_preference("editor", "vim")
+        memory = Memory(self.database, conversation_limit=2)
+        for text in ("first", "second", "third"):
+            memory.add_message("user", text)
+        self.assertEqual([row["content"] for row in memory.recent_messages()], ["second", "third"])
+        self.assertEqual(self.memory.preferences()[0]["value"], "vim")
+        with self.assertRaises(ValueError):
+            Memory(self.database, conversation_limit=0)
+
     def test_pin_is_salted_and_verified(self) -> None:
         self.auth.set_pin("2468")
         self.assertTrue(self.auth.verify_pin("2468"))

@@ -64,13 +64,13 @@ Useful setup switches: `-SkipOllama`, `-SkipModelDownload`, `-SkipSpeechDownload
 
 ## What is implemented
 
-- **Local AI brain:** loopback-only Ollama client; `qwen2.5:0.5b-instruct-q4_K_M`; 2 CPU threads, 2048-token context, 256-token responses; model configurable in `config.toml`.
-- **Offline voice input:** configurable microphone, explicit start/stop controls, faster-whisper `tiny` with INT8 CPU inference, or Vosk.
+- **Local AI brain:** loopback-only Ollama client; `qwen2.5:0.5b-instruct-q4_K_M`; 2 CPU threads, 2048-token context, 256-token responses; model configurable in `config.toml`. Ollama is asked to unload it after each response to reduce overlapping RAM use; later responses may start more slowly.
+- **Offline voice input:** configurable microphone, explicit start/stop controls, faster-whisper `tiny` with INT8 CPU inference, or Vosk. Normal transcription uses cached Whisper files only; `setup-speech` explicitly permits the initial download. The STT model is released after each voice request to reduce RAM overlap.
 - **Owner speaker profile:** 3–8 in-memory enrollment samples, local embeddings, conservative accept/reject/uncertain states, DPAPI-protected profile on Windows, no raw recordings saved.
 - **Typed input:** same parser/planner/tool pipeline as voice, persistent command/conversation history.
 - **Offline speech output:** interruptible Windows SAPI through `pyttsx3`; optional Piper executable support with configured local voice.
 - **Controlled PC automation:** allow-listed apps, root-confined files/folders/search/read, active-window Unicode typing, hardware volume keys, optional exact volume through `pycaw`, basic system information.
-- **Owner stop control:** the desktop emergency-stop button stops speech, recording, and wake listening, closes a pending local Ollama response, and prevents a not-yet-started action. A Windows action already executing may finish; HINATA reports that limitation rather than promising forcible rollback.
+- **Owner stop control:** the desktop emergency-stop button stops speech, recording, and wake listening, closes a pending local Ollama response, discards late desktop results and prevents pending approvals or a not-yet-started action while stop is active. A fresh request starts a new operation. A Windows action already executing may finish; HINATA reports that limitation rather than promising forcible rollback.
 - **SQLite memory:** conversations, approved preferences, commands, task results, UI settings, and selected personality mode; inspect/search/export/delete controls.
 - **Desktop UI:** microphone and text input, conversation view, listening/processing/speaking indicators, settings, enrollment, status, memory controls, personality-mode selector, and dark theme.
 - **Five personality modes:** Friend, Advisor, Technical, Strategist, and Professional. Choose a mode in the desktop UI or say/type `switch to technical mode`. Modes adjust response style only and never modify permissions.
@@ -157,6 +157,11 @@ Existing FRIDAY installs are reused in place when their old data directory/datab
 
 ## Memory controls
 
+Set `[memory] conversation_limit` in `config.toml` (1–100000; default 1000) to
+limit saved conversation messages. The oldest messages are pruned on the next
+message, not immediately on changing the setting. This does not limit commands,
+task results, preferences, log files, or exported backups; manage those separately.
+
 ```bat
 .\hinata.cmd memory --recent 20
 .\hinata.cmd memory --search "editor"
@@ -213,7 +218,7 @@ Tests cover schema and model-plan rejection, bounded plan approval/execution and
 
 Microphone quality, real speaker scores, SAPI/Piper audio, Windows focus/typing behavior, and Ollama model downloads still need validation on your physical Windows laptop. The portable test suite does not pretend to verify physical devices.
 
-See [the staged installation and validation guide](docs/INSTALL_WINDOWS.md) for stage-by-stage commands, success criteria, and troubleshooting.
+See [the staged installation and validation guide](docs/INSTALL_WINDOWS.md) for stage-by-stage commands, success criteria, and troubleshooting, and [roadmap status](docs/STAGE_STATUS.md) for gaps and a Windows resource measurement checklist.
 
 ## Repository layout
 

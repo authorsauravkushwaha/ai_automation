@@ -1,5 +1,7 @@
+import os
 import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 from hinata.config import OllamaConfig
@@ -42,7 +44,7 @@ class LLMTests(unittest.TestCase):
             except Exception as exc:
                 errors.append(exc)
 
-        with patch("urllib.request.urlopen", return_value=response):
+        with patch.object(manager._opener, "open", return_value=response):
             worker = threading.Thread(target=request)
             worker.start()
             self.assertTrue(response.read_started.wait(timeout=1))
@@ -53,6 +55,40 @@ class LLMTests(unittest.TestCase):
         self.assertTrue(response.closed)
         self.assertTrue(errors)
         self.assertIsInstance(errors[0], OllamaError)
+
+    def test_loopback_redirects_never_forward_prompts_and_proxies_are_ignored(self) -> None:
+        requests = []
+
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/leak")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            config = OllamaConfig(host=f"http://127.0.0.1:{server.server_port}")
+            with patch.dict(os.environ, {"http_proxy": "http://127.0.0.1:1", "no_proxy": ""}):
+                manager = LLMManager(config)
+                with self.assertRaises(OllamaError):
+                    manager._request("/api/tags")
+            self.assertEqual(requests, ["/api/tags"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_chat_releases_model_after_inference(self) -> None:
+        manager = LLMManager(OllamaConfig())
+        with patch.object(manager, "_request", return_value={"message": {"content": "ok"}}) as request:
+            self.assertEqual(manager.chat([], "system"), "ok")
+        self.assertEqual(request.call_args.args[1]["keep_alive"], 0)
 
     def test_default_model_is_small_local_qwen_profile(self) -> None:
         config = OllamaConfig()

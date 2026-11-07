@@ -33,6 +33,12 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.ollama.enabled)
         self.assertEqual(config.applications["notepad"].command, ["notepad.exe"])
 
+    def test_memory_retention_config_is_validated(self) -> None:
+        self.assertEqual(load_config(self.write_config("[memory]\nconversation_limit = 2\n")).memory.conversation_limit, 2)
+        for value in ("0", "100001", "true", '"2"'):
+            with self.subTest(value=value), self.assertRaises(ConfigError):
+                load_config(self.write_config(f"[memory]\nconversation_limit = {value}\n"))
+
     def test_existing_friday_user_data_location_is_reused_without_moving_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             legacy = Path(directory) / "friday"

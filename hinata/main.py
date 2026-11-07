@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import importlib
 import importlib.util
 import json
 import os
@@ -87,21 +88,17 @@ def main(argv: list[str] | None = None) -> int:
         assistant = HinataAssistant(config, llm_enabled=False if args.no_llm else None)
         if args.command == "ask":
             return emit_with_approvals(
-                assistant, assistant.process_text(" ".join(args.request)), speak=args.speak
+                assistant, assistant.process_text(" ".join(args.request)), speak=args.speak, wait_for_speech=True
             )
         if args.command == "listen":
             voice, response = assistant.process_voice(args.duration)
             print(f"You (voice/{voice.speaker_status}): {voice.text}")
-            return emit_with_approvals(assistant, response, voice=voice, speak=args.speak)
+            return emit_with_approvals(assistant, response, voice=voice, speak=args.speak, wait_for_speech=True)
         if args.command == "gui":
             try:
                 from hinata.interface.main_window import run_gui
-            except ImportError as exc:
-                print(
-                    "Desktop dependencies are missing. Run: python -m pip install -e \".[gui]\"\n"
-                    f"Details: {exc}",
-                    file=sys.stderr,
-                )
+            except (ImportError, OSError) as exc:
+                print(desktop_import_error(exc), file=sys.stderr)
                 return 2
             return run_gui(assistant)
         if args.command == "wake":
@@ -142,12 +139,45 @@ def main(argv: list[str] | None = None) -> int:
             assistant.close()
 
 
+def desktop_import_error(exc: ImportError | OSError) -> str:
+    """Distinguish a missing Python package from a missing native Qt dependency."""
+    if isinstance(exc, ModuleNotFoundError) and exc.name and (
+        exc.name == "PySide6" or exc.name.startswith("PySide6.")
+    ):
+        guidance = 'Install the GUI package: python -m pip install -e ".[gui]"'
+    elif sys.platform.startswith("linux") and "libGL.so.1" in str(exc):
+        guidance = (
+            "Qt is installed but its system OpenGL library is missing. On Debian or Ubuntu, "
+            "install it with: sudo apt-get install libgl1. Other Linux distributions may use "
+            "a different package name."
+        )
+    else:
+        guidance = (
+            "The GUI package or one of its native dependencies could not be loaded. "
+            "Check the details below and your operating system's Qt/runtime libraries. "
+            'If PySide6 is not installed, run: python -m pip install -e ".[gui]"'
+        )
+    return f"Desktop unavailable. {guidance}\nDetails: {exc}"
+
+
+def desktop_status() -> str:
+    """Report import readiness, not just whether package metadata exists."""
+    if importlib.util.find_spec("PySide6") is None:
+        return "not installed"
+    try:
+        importlib.import_module("PySide6.QtWidgets")
+    except (ImportError, OSError) as exc:
+        return f"installed, but QtWidgets could not load: {exc}"
+    return "installed (QtWidgets import succeeded; display not tested)"
+
+
 def emit_with_approvals(
     assistant: HinataAssistant,
     response: AssistantResponse,
     *,
     voice: Any = None,
     speak: bool = False,
+    wait_for_speech: bool = False,
 ) -> int:
     source = "voice" if voice is not None else "text"
     while True:
@@ -169,6 +199,8 @@ def emit_with_approvals(
             )
             continue
         if response.needs_confirmation and response.action is not None:
+            print(f"Tool: {response.action.tool}\nArguments: "
+                  f"{json.dumps(response.action.arguments, ensure_ascii=True, sort_keys=True)}")
             try:
                 answer = input("Proceed? Type yes to confirm [y/N]: ").strip().lower()
             except EOFError:
@@ -201,6 +233,11 @@ def emit_with_approvals(
             continue
         if speak:
             assistant.tts.speak(response.text)
+            if wait_for_speech:
+                assistant.tts.wait()
+                if assistant.tts.last_error:
+                    print(f"HINATA: Speech output failed: {assistant.tts.last_error}", file=sys.stderr)
+                    return 1
         return 0 if response.success else 1
 
 
@@ -387,7 +424,8 @@ def doctor(assistant: HinataAssistant) -> int:
     model = assistant.llm.status()
     print("Ollama:", "available" if model["available"] else f"unavailable ({model.get('error', '')})")
     print("Configured model:", assistant.config.ollama.model, "installed:", model["installed"])
-    for package in ("PySide6", "faster_whisper", "sounddevice", "pyttsx3", "resemblyzer", "openwakeword"):
+    print("Optional PySide6:", desktop_status())
+    for package in ("faster_whisper", "sounddevice", "pyttsx3", "resemblyzer", "openwakeword"):
         print(f"Optional {package}:", "installed" if importlib.util.find_spec(package) else "not installed")
     print("Speaker enrolled:", assistant.speaker.is_enrolled)
     print("PIN configured:", assistant.authentication.is_configured)

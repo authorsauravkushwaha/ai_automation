@@ -125,6 +125,18 @@ class InterfaceConfig:
 
 
 @dataclass(slots=True)
+class MemoryConfig:
+    # Applies to conversation messages, not commands, results or preferences.
+    conversation_limit: int = 1000
+
+    def validate(self) -> None:
+        if isinstance(self.conversation_limit, bool) or not isinstance(self.conversation_limit, int):
+            raise ConfigError("memory.conversation_limit must be an integer")
+        if not 1 <= self.conversation_limit <= 100000:
+            raise ConfigError("memory.conversation_limit must be between 1 and 100000")
+
+
+@dataclass(slots=True)
 class PersonalityConfig:
     mode: str = "friend"
 
@@ -150,6 +162,7 @@ class HinataConfig:
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
     interface: InterfaceConfig = field(default_factory=InterfaceConfig)
     personality: PersonalityConfig = field(default_factory=PersonalityConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     applications: dict[str, Application] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -158,6 +171,7 @@ class HinataConfig:
         self.speech.validate()
         self.security.validate()
         self.personality.validate()
+        self.memory.validate()
         if not self.applications:
             self.applications = default_applications()
         normalized: dict[str, Application] = {}
@@ -268,7 +282,7 @@ def load_config(path: str | Path | None = None) -> HinataConfig:
 
     known = {
         "data_dir", "ollama", "speech", "security", "wake_word", "interface",
-        "personality", "applications",
+        "personality", "memory", "applications",
     }
     unknown = set(raw) - known
     if unknown:
@@ -294,6 +308,7 @@ def load_config(path: str | Path | None = None) -> HinataConfig:
         wake_word=_section(WakeWordConfig, raw.get("wake_word", {}), "wake_word"),
         interface=_section(InterfaceConfig, raw.get("interface", {}), "interface"),
         personality=_section(PersonalityConfig, raw.get("personality", {}), "personality"),
+        memory=_section(MemoryConfig, raw.get("memory", {}), "memory"),
         applications=apps,
     )
     try:

@@ -22,7 +22,7 @@ class SpeechToText:
     def prepare(self) -> str:
         """Load/download the configured local model explicitly during setup."""
         if self.config.stt_backend == "faster-whisper":
-            self._load_whisper()
+            self._load_whisper(allow_download=True)
             return f"Ready: faster-whisper {self.config.whisper_model} (CPU/{self.config.whisper_compute_type})"
         self._load_vosk(self.config.sample_rate)
         return f"Ready: Vosk model at {self.config.vosk_model_path}"
@@ -36,7 +36,7 @@ class SpeechToText:
             return self._transcribe_whisper(audio)
         return self._transcribe_vosk(audio, sample_rate)
 
-    def _load_whisper(self) -> Any:
+    def _load_whisper(self, *, allow_download: bool = False) -> Any:
         if self._model is None:
             try:
                 from faster_whisper import WhisperModel
@@ -51,11 +51,12 @@ class SpeechToText:
                     compute_type=self.config.whisper_compute_type,
                     cpu_threads=2,
                     num_workers=1,
+                    local_files_only=not allow_download,
                 )
             except Exception as exc:
                 raise SpeechRecognitionError(
                     f"Could not load local Whisper model '{self.config.whisper_model}': {exc}. "
-                    "The first model load needs internet; later loads use the local cache."
+                    "Run 'hinata setup-speech' to prepare or download it explicitly."
                 ) from exc
         return self._model
 

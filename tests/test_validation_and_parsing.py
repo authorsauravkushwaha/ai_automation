@@ -32,6 +32,16 @@ class ValidationAndParsingTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.parser.parse("set volume to 900")
 
+    def test_required_strings_cannot_be_whitespace_after_normalization(self) -> None:
+        for tool, args in (
+            ("search_files", {"query": "   "}),
+            ("remember_preference", {"key": "theme", "value": "  "}),
+            ("open_application", {"name": "  "}),
+        ):
+            with self.subTest(tool=tool), self.assertRaises(ValidationError):
+                self.validator.validate(tool, args)
+        self.assertEqual(self.validator.validate("type_text", {"text": "  "}).arguments["text"], "  ")
+
     def test_unknown_tool_and_arguments_are_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             self.validator.validate("shell", {"command": "whoami"})

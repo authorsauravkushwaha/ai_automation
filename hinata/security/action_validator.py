@@ -86,7 +86,10 @@ class ActionValidator:
                     raise ValidationError(f"{key} must be a string of length {rule[1]}..{rule[2]}")
                 if "\x00" in value:
                     raise ValidationError(f"{key} contains a null byte")
-                clean[key] = value.strip() if key != "text" else value
+                cleaned = value.strip() if key != "text" else value
+                if len(cleaned) < rule[1]:
+                    raise ValidationError(f"{key} must not be empty or whitespace")
+                clean[key] = cleaned
             elif rule[0] == "integer":
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise ValidationError(f"{key} must be an integer")
