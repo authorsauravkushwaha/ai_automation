@@ -12,10 +12,10 @@ fi
 .venv/bin/python -m pip install -e .
 [[ -f config.toml ]] || cp config.example.toml config.toml
 .venv/bin/python scripts/run_tests.py
-.venv/bin/python -m friday --no-llm ask system info
+.venv/bin/python -m hinata --no-llm ask system info
 cat <<'EOF'
 
-FRIDAY core setup passed.
-Run: .venv/bin/python -m friday --no-llm
+HINATA core setup passed.
+Run: .venv/bin/python -m hinata --no-llm
 Ollama and voice/desktop extras are separate on non-Windows development systems.
 EOF

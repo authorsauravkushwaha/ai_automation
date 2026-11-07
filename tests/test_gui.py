@@ -12,7 +12,7 @@ try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
 
-    from friday.interface.main_window import MainWindow
+    from hinata.interface.main_window import MainWindow
 except ImportError as exc:
     QApplication = None
     MainWindow = None
@@ -52,9 +52,11 @@ class DesktopTests(unittest.TestCase):
         self.assertIsNotNone(self.window.listening_pill)
         self.assertIsNotNone(self.window.processing_pill)
         self.assertIsNotNone(self.window.speaking_pill)
+        self.assertEqual(self.window.mode_combo.count(), 5)
+        self.assertEqual(self.window.stop_button.text(), "Emergency stop")
 
     def test_conversation_escapes_model_html(self) -> None:
-        self.window.conversation.add_message("FRIDAY", "<img src=x onerror=alert(1)>")
+        self.window.conversation.add_message("HINATA", "<img src=x onerror=alert(1)>")
         self.assertIn("<img src=x onerror=alert(1)>", self.window.conversation.toPlainText())
         self.assertNotIn("<img src=x onerror=alert(1)>", self.window.conversation.toHtml())
 

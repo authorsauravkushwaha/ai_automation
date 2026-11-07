@@ -1,4 +1,4 @@
-# FRIDAY's text core intentionally uses only the Python standard library.
+# HINATA's text core intentionally uses only the Python standard library.
 # Install the project with: python -m pip install -e .
 # Optional features: python -m pip install -e ".[gui,speech,tts]"
 # Heavy speaker/wake-word extras are not recommended on 4 GB systems.

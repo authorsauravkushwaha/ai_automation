@@ -1,12 +1,12 @@
 from pathlib import Path
 
-from friday.config import FridayConfig, SecurityConfig
-from friday.core.assistant import FridayAssistant
+from hinata.config import HinataConfig, SecurityConfig
+from hinata.core.assistant import HinataAssistant
 
 
-def make_assistant(directory: str, *, llm_enabled: bool = False) -> FridayAssistant:
+def make_assistant(directory: str, *, llm_enabled: bool = False) -> HinataAssistant:
     root = Path(directory)
-    config = FridayConfig(
+    config = HinataConfig(
         data_dir=root / "data",
         security=SecurityConfig(allowed_roots=[root / "Documents", root / "Downloads"]),
     )
@@ -14,4 +14,4 @@ def make_assistant(directory: str, *, llm_enabled: bool = False) -> FridayAssist
     config.validate()
     (root / "Documents").mkdir(parents=True, exist_ok=True)
     (root / "Downloads").mkdir(parents=True, exist_ok=True)
-    return FridayAssistant(config, llm_enabled=llm_enabled)
+    return HinataAssistant(config, llm_enabled=llm_enabled)

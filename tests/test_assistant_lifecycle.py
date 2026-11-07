@@ -11,11 +11,11 @@ class AssistantLifecycleTests(unittest.TestCase):
             assistant = make_assistant(directory)
             handler = assistant._log_handler
             self.assertIsNotNone(handler)
-            self.assertIn(handler, logging.getLogger("friday").handlers)
+            self.assertIn(handler, logging.getLogger("hinata").handlers)
             assistant.close()
-            self.assertNotIn(handler, logging.getLogger("friday").handlers)
+            self.assertNotIn(handler, logging.getLogger("hinata").handlers)
             assistant.close()  # Idempotent shutdown is used by both front ends.
-        # On Windows this context exit fails if friday.log remains open.
+        # On Windows this context exit fails if hinata.log remains open.
 
 
 if __name__ == "__main__":

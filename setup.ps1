@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Reproducible FRIDAY setup for Windows 11. Internet is needed only for setup downloads.
+  Reproducible HINATA setup for Windows 11. Internet is needed only for setup downloads.
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Run
 .EXAMPLE
@@ -45,7 +45,7 @@ function Test-Ollama {
     }
 }
 
-Write-Host "`nFRIDAY setup — local, offline-first assistant" -ForegroundColor Cyan
+Write-Host "`nHINATA setup — local, offline-first assistant" -ForegroundColor Cyan
 Write-Host "Repository: $Root"
 Write-Host "Target: Windows 11, CPU inference, low-memory defaults`n"
 
@@ -83,7 +83,7 @@ else {
     Write-Host "[1/7] Using existing .venv"
 }
 
-Write-Host "[2/7] Installing FRIDAY and selected optional components…"
+Write-Host "[2/7] Installing HINATA and selected optional components…"
 Invoke-Native $VenvPython @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
 $Extras = @("gui", "speech", "tts", "windows-audio")
 if ($Lite) {
@@ -112,7 +112,7 @@ if (-not (Test-Path (Join-Path $Root "config.toml"))) {
 Write-Host "[3/7] Running portable tests before model downloads…"
 Invoke-Native $VenvPython @("scripts\run_tests.py")
 
-$Model = (& $VenvPython -c "from friday.config import load_config; print(load_config().ollama.model)").Trim()
+$Model = (& $VenvPython -c "from hinata.config import load_config; print(load_config().ollama.model)").Trim()
 if (-not $SkipOllama) {
     Write-Host "[4/7] Checking local Ollama runtime…"
     if (-not (Get-Command ollama.exe -ErrorAction SilentlyContinue)) {
@@ -163,27 +163,27 @@ else {
 if (-not $Lite -and -not $SkipSpeechDownload) {
     Write-Host "[6/7] Preparing the tiny INT8 offline Whisper model…"
     Write-Host "The first preparation downloads model weights; subsequent transcription is offline."
-    Invoke-Native $VenvPython @("-m", "friday", "setup-speech")
+    Invoke-Native $VenvPython @("-m", "hinata", "setup-speech")
 }
 else {
     Write-Host "[6/7] Speech model preparation skipped"
 }
 
 Write-Host "[7/7] Running a real text-pipeline smoke test…"
-Invoke-Native $VenvPython @("-m", "friday", "--no-llm", "ask", "system", "info")
+Invoke-Native $VenvPython @("-m", "hinata", "--no-llm", "ask", "system", "info")
 
-Write-Host "`nFRIDAY setup completed successfully." -ForegroundColor Green
-Write-Host "Next recommended step: .\.venv\Scripts\python.exe -m friday setup-pin"
-Write-Host "Desktop:  .\friday.cmd gui"
-Write-Host "Terminal: .\friday.cmd"
-Write-Host "Diagnose: .\friday.cmd doctor"
+Write-Host "`nHINATA setup completed successfully." -ForegroundColor Green
+Write-Host "Next recommended step: .\.venv\Scripts\python.exe -m hinata setup-pin"
+Write-Host "Desktop:  .\hinata.cmd gui"
+Write-Host "Terminal: .\hinata.cmd"
+Write-Host "Diagnose: .\hinata.cmd doctor"
 Write-Host "Normal use does not require internet.`n"
 
 if ($Run) {
     if (-not $Lite) {
-        Invoke-Native $VenvPython @("-m", "friday", "gui")
+        Invoke-Native $VenvPython @("-m", "hinata", "gui")
     }
     else {
-        Invoke-Native $VenvPython @("-m", "friday")
+        Invoke-Native $VenvPython @("-m", "hinata")
     }
 }

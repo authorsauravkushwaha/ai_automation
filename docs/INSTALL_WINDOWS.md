@@ -1,4 +1,4 @@
-# FRIDAY staged installation and validation guide (Windows 11)
+# HINATA staged installation and validation guide (Windows 11)
 
 Use this guide when you want to verify each layer instead of running the complete `setup.cmd -Run` bootstrap. Complete source files are already saved in this repository; do not create a parallel copy of the package. Run commands from the repository root in PowerShell unless a command is specifically for Command Prompt.
 
@@ -28,7 +28,7 @@ Open a new terminal after installation.
 
 ## STAGE 1 — Ollama installation and verification
 
-**Objective:** install only the local inference runtime. No FRIDAY code depends on a remote AI endpoint.
+**Objective:** install only the local inference runtime. No HINATA code depends on a remote AI endpoint.
 
 **Dependency:** Ollama for Windows. The bootstrap uses this command:
 
@@ -45,7 +45,7 @@ Invoke-RestMethod http://127.0.0.1:11434/api/tags | ConvertTo-Json -Depth 5
 
 Expected: a version and a JSON response (possibly with an empty model list). If the API is unavailable but `ollama.exe` exists, run `ollama serve` in a separate terminal and repeat the API check. Diagnose port/service errors before pulling a model.
 
-Relevant FRIDAY file: `friday/core/llm_manager.py`. Its configuration rejects non-loopback hosts.
+Relevant HINATA file: `hinata/core/llm_manager.py`. Its configuration rejects non-loopback hosts.
 
 ## STAGE 2 — Local model installation and inference test
 
@@ -65,7 +65,7 @@ If download fails, rerun `ollama pull`; if inference fails, confirm the Ollama s
 
 **Objective:** install the zero-third-party-dependency core and verify real SQLite/tool results.
 
-**Files:** `friday/main.py`, `friday/config.py`, `friday/core/*`, `friday/database/database.py`, `friday/security/*`, and `config.example.toml`.
+**Files:** `hinata/main.py`, `hinata/config.py`, `hinata/core/*`, `hinata/database/database.py`, `hinata/security/*`, and `config.example.toml`.
 
 ```powershell
 py -3.11 -m venv .venv
@@ -73,8 +73,8 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 Copy-Item config.example.toml config.toml   # Skip if config.toml already exists.
 .\.venv\Scripts\python.exe scripts\run_tests.py
-.\.venv\Scripts\python.exe -m friday --no-llm ask "system info"
-.\.venv\Scripts\python.exe -m friday model status
+.\.venv\Scripts\python.exe -m hinata --no-llm ask "system info"
+.\.venv\Scripts\python.exe -m hinata model status
 ```
 
 Expected: all tests pass, actual OS/CPU/RAM/disk data is printed, and Ollama reports the downloaded model as installed. `--no-llm` proves the deterministic pipeline independently.
@@ -82,39 +82,39 @@ Expected: all tests pass, actual OS/CPU/RAM/disk data is printed, and Ollama rep
 For natural-language chat:
 
 ```powershell
-.\.venv\Scripts\python.exe -m friday ask "Introduce yourself in one sentence"
-.\.venv\Scripts\python.exe -m friday
+.\.venv\Scripts\python.exe -m hinata ask "Introduce yourself in one sentence"
+.\.venv\Scripts\python.exe -m hinata
 ```
 
-If the model is unavailable, structured commands still work and FRIDAY must report the local-model error rather than fabricate a response.
+If the model is unavailable, structured commands still work and HINATA must report the local-model error rather than fabricate a response.
 
 ## STAGE 4 — Basic Windows automation
 
 **Objective:** test allow-listed operations one at a time.
 
-**Files:** `friday/automation/*`, `friday/core/permissions.py`, `friday/security/action_validator.py`.
+**Files:** `hinata/automation/*`, `hinata/core/permissions.py`, `hinata/security/action_validator.py`.
 
 ```powershell
-.\friday.cmd ask "open notepad"
-.\friday.cmd ask "create folder Documents\FRIDAY-Test"
-.\friday.cmd ask "find files for FRIDAY in Documents"
-.\friday.cmd ask "close notepad"
+.\hinata.cmd ask "open notepad"
+.\hinata.cmd ask "create folder Documents\HINATA-Test"
+.\hinata.cmd ask "find files for HINATA in Documents"
+.\hinata.cmd ask "close notepad"
 ```
 
 Expected: Notepad launches, the folder actually appears under Documents, search returns real paths, and close asks for confirmation first. Open a permitted text file only after creating a harmless test file:
 
 ```powershell
-Set-Content "$env:USERPROFILE\Documents\FRIDAY-Test\note.txt" "offline test"
-.\friday.cmd ask "read text file Documents\FRIDAY-Test\note.txt"
+Set-Content "$env:USERPROFILE\Documents\HINATA-Test\note.txt" "offline test"
+.\hinata.cmd ask "read text file Documents\HINATA-Test\note.txt"
 ```
 
 Test typing only with a blank Notepad window focused, and confirm the prompt:
 
 ```powershell
-.\friday.cmd ask 'type "FRIDAY controlled typing test"'
+.\hinata.cmd ask 'type "HINATA controlled typing test"'
 ```
 
-Do not test on an elevated application from a non-elevated FRIDAY process; Windows blocks that input correctly. Executable/script opening and paths outside configured roots must fail.
+Do not test on an elevated application from a non-elevated HINATA process; Windows blocks that input correctly. Executable/script opening and paths outside configured roots must fail.
 
 ## STAGE 5 — Offline speech recognition
 
@@ -122,13 +122,13 @@ Do not test on an elevated application from a non-elevated FRIDAY process; Windo
 
 **Dependencies:** `sounddevice`, NumPy, faster-whisper/CTranslate2, and the tiny model cache. No separately installed FFmpeg is required for the in-memory microphone path.
 
-**Files:** `friday/speech/microphone.py`, `speech_to_text.py`, and `voice_pipeline.py`.
+**Files:** `hinata/speech/microphone.py`, `speech_to_text.py`, and `voice_pipeline.py`.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[speech]"
-.\.venv\Scripts\python.exe -m friday devices
-.\.venv\Scripts\python.exe -m friday setup-speech   # First model download uses internet.
-.\.venv\Scripts\python.exe -m friday listen --duration 5
+.\.venv\Scripts\python.exe -m hinata devices
+.\.venv\Scripts\python.exe -m hinata setup-speech   # First model download uses internet.
+.\.venv\Scripts\python.exe -m hinata listen --duration 5
 ```
 
 Expected: input devices are listed, the first model preparation succeeds, and a spoken request such as “system info” produces a transcript and actual system data. To select a device, set `speech.microphone` in `config.toml` to an index from `devices`.
@@ -143,14 +143,14 @@ For a lighter alternative, install `.[light-speech]`, download/extract a Vosk mo
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[speaker]"
-.\friday.cmd setup-pin
-.\friday.cmd enroll --samples 3 --duration 4
-.\friday.cmd listen --duration 5
+.\hinata.cmd setup-pin
+.\hinata.cmd enroll --samples 3 --duration 4
+.\hinata.cmd listen --duration 5
 ```
 
 Expected: PIN verification precedes enrollment; three samples are captured in memory; `owner.voice` and metadata appear under the private data directory; no WAV files are produced. The enrolled owner's score should be accepted, while non-owner/uncertain scores must be rejected before transcription/execution. Sensitive operations still request the PIN.
 
-Adjust `speaker_threshold` only after recording genuine owner/non-owner test scores. Do not lower it merely to force acceptance. Test playback/replay resistance separately; this feature is not authentication. Remove the profile with `friday delete-voice-profile`.
+Adjust `speaker_threshold` only after recording genuine owner/non-owner test scores. Do not lower it merely to force acceptance. Test playback/replay resistance separately; this feature is not authentication. Remove the profile with `hinata delete-voice-profile`.
 
 ## STAGE 7 — Offline speech output
 
@@ -160,8 +160,8 @@ Adjust `speaker_threshold` only after recording genuine owner/non-owner test sco
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[tts]"
-.\friday.cmd --no-llm --speak ask "system info"
-.\friday.cmd --no-llm
+.\hinata.cmd --no-llm --speak ask "system info"
+.\hinata.cmd --no-llm
 # In the shell: /speak, then /stop to interrupt.
 ```
 
@@ -173,18 +173,18 @@ Expected: an installed Windows voice reads the result; `/stop` interrupts it. Se
 
 **Objective:** make the optional openWakeWord adapter available without forcing an always-on process.
 
-**Files:** `friday/speech/wake_word.py` and `[wake_word]` in `config.toml`.
+**Files:** `hinata/speech/wake_word.py` and `[wake_word]` in `config.toml`.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[wake]"
 ```
 
-Supply a legally obtained/custom-trained **Hey FRIDAY** ONNX model, then configure:
+Supply a legally obtained/custom-trained **Hey HINATA** ONNX model, then configure:
 
 ```toml
 [wake_word]
 enabled = true
-model_path = 'C:\friday-models\hey_friday.onnx'
+model_path = 'C:\hinata-models\hey_hinata.onnx'
 threshold = 0.5
 cooldown_seconds = 2.0
 ```
@@ -192,24 +192,24 @@ cooldown_seconds = 2.0
 Start the explicit listener and speak the configured phrase, then give a short command:
 
 ```powershell
-.\friday.cmd wake --duration 5
+.\hinata.cmd wake --duration 5
 # Press Ctrl+C to stop the always-on listener.
 ```
 
-The service loads on demand, streams bounded 80 ms / 16 kHz chunks, applies a confidence threshold and cooldown, and pauses wake listening while each command is recorded/transcribed/executed. FRIDAY never starts this service automatically and does not substitute an unrelated pretrained wake phrase. Benchmark CPU/RAM and false accepts before routine use. Official pretrained openWakeWord models have separate noncommercial/share-alike terms; review them.
+The service loads on demand, streams bounded 80 ms / 16 kHz chunks, applies a confidence threshold and cooldown, and pauses wake listening while each command is recorded/transcribed/executed. HINATA never starts this service automatically and does not substitute an unrelated pretrained wake phrase. Benchmark CPU/RAM and false accepts before routine use. Official pretrained openWakeWord models have separate noncommercial/share-alike terms; review them.
 
 ## STAGE 9 — Desktop interface
 
 **Objective:** verify a responsive UI using the same tested pipeline.
 
-**Files:** `friday/interface/main_window.py`, `dialogs.py`, `components.py`, and `styles.py`.
+**Files:** `hinata/interface/main_window.py`, `dialogs.py`, `components.py`, and `styles.py`.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[gui]"
 $env:QT_QPA_PLATFORM = "offscreen"
 .\.venv\Scripts\python.exe scripts\run_tests.py
 Remove-Item Env:QT_QPA_PLATFORM
-.\friday.cmd gui
+.\hinata.cmd gui
 ```
 
 Expected: dark main window, text/microphone controls, conversation, three activity indicators, settings, enrollment, memory, and system/model status. Send `system info`, then a confirmation-gated command. Confirm that long LLM/STT operations run in the background and the window cannot close midway through a tool task.
@@ -219,24 +219,24 @@ Expected: dark main window, text/microphone controls, conversation, three activi
 **Objective:** verify persistence, deletion, recovery, and normal offline operation.
 
 ```powershell
-.\friday.cmd setup-pin
-.\friday.cmd ask "remember that my editor is VS Code"
-.\friday.cmd memory --search editor
-.\friday.cmd memory --export .\friday-memory.json
-.\friday.cmd memory --clear preferences
-.\friday.cmd doctor
+.\hinata.cmd setup-pin
+.\hinata.cmd ask "remember that my editor is VS Code"
+.\hinata.cmd memory --search editor
+.\hinata.cmd memory --export .\hinata-memory.json
+.\hinata.cmd memory --clear preferences
+.\hinata.cmd doctor
 .\.venv\Scripts\python.exe scripts\run_tests.py
 ```
 
-Restart FRIDAY and search again before deletion to confirm persistence. Inspect the export: settings and PIN material must be absent. Deletion must require confirmation and the correct PIN.
+Restart HINATA and search again before deletion to confirm persistence. Inspect the export: settings and PIN material must be absent. Deletion must require confirmation and the correct PIN.
 
 Finally, after all model downloads are complete, temporarily disconnect from the internet and repeat:
 
 ```powershell
-.\friday.cmd ask "system info"
-.\friday.cmd ask "Introduce yourself in one sentence"
-.\friday.cmd listen --duration 5
-.\friday.cmd --no-llm --speak ask "system info"
+.\hinata.cmd ask "system info"
+.\hinata.cmd ask "Introduce yourself in one sentence"
+.\hinata.cmd listen --duration 5
+.\hinata.cmd --no-llm --speak ask "system info"
 ```
 
 Expected: local Ollama chat, downloaded STT, SAPI, memory, and tools continue to work. Features that were not downloaded/configured must produce a clear local error, not attempt a cloud fallback.
@@ -245,7 +245,7 @@ Expected: local Ollama chat, downloaded STT, SAPI, memory, and tools continue to
 
 ```powershell
 Get-Process python, ollama -ErrorAction SilentlyContinue | Select-Object Name, CPU, WorkingSet64
-.\friday.cmd status
+.\hinata.cmd status
 ```
 
-On 4 GB RAM, keep `threads = 2`, `context_tokens = 2048`, `whisper_model = "tiny"`, and avoid the speaker/wake extras during normal use. Stop speaking/listening from the UI or `/stop`. Private data remains under `%LOCALAPPDATA%\FRIDAY`; uninstalling Python packages does not delete it. Delete that folder explicitly only after exporting anything you need.
+On 4 GB RAM, keep `threads = 2`, `context_tokens = 2048`, `whisper_model = "tiny"`, and avoid the speaker/wake extras during normal use. Stop speaking/listening from the UI or `/stop`. Private data remains under `%LOCALAPPDATA%\HINATA`; uninstalling Python packages does not delete it. Delete that folder explicitly only after exporting anything you need.

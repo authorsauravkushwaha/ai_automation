@@ -12,7 +12,7 @@ dist/
 
 # Local configuration and private data
 config.toml
-.friday/
+.hinata/
 data/
 *.db
 *.db-shm
