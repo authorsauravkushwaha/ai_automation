@@ -32,6 +32,15 @@ winget install -e --id Python.Python.3.11
 
 Close and reopen the terminal after installing Python. Ollama is installed through `winget` by the setup script when needed.
 
+If `setup.cmd` stops with parser errors such as `Unexpected token '\Scripts\python.exe"' in expression or statement` or `The string is missing the terminator`, the checkout predates the script encoding fix. Update it and run setup again:
+
+```bat
+git pull
+.\setup.cmd -Run
+```
+
+The bootstrap scripts are intentionally ASCII-only so that Windows PowerShell 5.1 (`powershell.exe`, which `setup.cmd` starts) decodes them the same way PowerShell 7 does.
+
 ### After setup
 
 ```bat

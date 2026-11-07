@@ -45,7 +45,7 @@ function Test-Ollama {
     }
 }
 
-Write-Host "`nHINATA setup — local, offline-first assistant" -ForegroundColor Cyan
+Write-Host "`nHINATA setup - local, offline-first assistant" -ForegroundColor Cyan
 Write-Host "Repository: $Root"
 Write-Host "Target: Windows 11, CPU inference, low-memory defaults`n"
 
@@ -76,14 +76,14 @@ Download alternative: https://www.python.org/downloads/windows/
 
 $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $VenvPython)) {
-    Write-Host "[1/7] Creating isolated Python environment…"
+    Write-Host "[1/7] Creating isolated Python environment..."
     Invoke-Native $PythonExe ($PythonPrefix + @("-m", "venv", ".venv"))
 }
 else {
     Write-Host "[1/7] Using existing .venv"
 }
 
-Write-Host "[2/7] Installing HINATA and selected optional components…"
+Write-Host "[2/7] Installing HINATA and selected optional components..."
 Invoke-Native $VenvPython @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
 $Extras = @("gui", "speech", "tts", "windows-audio")
 if ($Lite) {
@@ -109,15 +109,15 @@ if (-not (Test-Path (Join-Path $Root "config.toml"))) {
     Write-Host "Created config.toml from the reviewed example."
 }
 
-Write-Host "[3/7] Running portable tests before model downloads…"
+Write-Host "[3/7] Running portable tests before model downloads..."
 Invoke-Native $VenvPython @("scripts\run_tests.py")
 
 $Model = (& $VenvPython -c "from hinata.config import load_config; print(load_config().ollama.model)").Trim()
 if (-not $SkipOllama) {
-    Write-Host "[4/7] Checking local Ollama runtime…"
+    Write-Host "[4/7] Checking local Ollama runtime..."
     if (-not (Get-Command ollama.exe -ErrorAction SilentlyContinue)) {
         if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
-            Write-Host "Installing Ollama through Windows Package Manager…"
+            Write-Host "Installing Ollama through Windows Package Manager..."
             & winget.exe install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements
             if ($LASTEXITCODE -ne 0) {
                 throw "Ollama installation failed. Install from https://ollama.com/download/windows and rerun setup."
@@ -133,7 +133,7 @@ if (-not $SkipOllama) {
         throw "Ollama was installed but ollama.exe is not on PATH. Open a new terminal and rerun setup."
     }
     if (-not (Test-Ollama)) {
-        Write-Host "Starting the local Ollama service…"
+        Write-Host "Starting the local Ollama service..."
         Start-Process -FilePath $Ollama.Source -ArgumentList @("serve") -WindowStyle Hidden
         $Ready = $false
         for ($Attempt = 0; $Attempt -lt 30; $Attempt++) {
@@ -148,7 +148,7 @@ if (-not $SkipOllama) {
         }
     }
     if (-not $SkipModelDownload) {
-        Write-Host "[5/7] Pulling $Model (internet setup download)…"
+        Write-Host "[5/7] Pulling $Model (internet setup download)..."
         Invoke-Native $Ollama.Source @("pull", $Model)
     }
     else {
@@ -161,7 +161,7 @@ else {
 }
 
 if (-not $Lite -and -not $SkipSpeechDownload) {
-    Write-Host "[6/7] Preparing the tiny INT8 offline Whisper model…"
+    Write-Host "[6/7] Preparing the tiny INT8 offline Whisper model..."
     Write-Host "The first preparation downloads model weights; subsequent transcription is offline."
     Invoke-Native $VenvPython @("-m", "hinata", "setup-speech")
 }
@@ -169,7 +169,7 @@ else {
     Write-Host "[6/7] Speech model preparation skipped"
 }
 
-Write-Host "[7/7] Running a real text-pipeline smoke test…"
+Write-Host "[7/7] Running a real text-pipeline smoke test..."
 Invoke-Native $VenvPython @("-m", "hinata", "--no-llm", "ask", "system", "info")
 
 Write-Host "`nHINATA setup completed successfully." -ForegroundColor Green

@@ -47,6 +47,19 @@ jobs:
             $errors | ForEach-Object { Write-Error $_ }
             exit 1
           }
+      # pwsh defaults to UTF-8, so the check above cannot see the ANSI decoding
+      # that setup.cmd actually gets from Windows PowerShell 5.1.
+      - name: Validate Windows bootstrap syntax with Windows PowerShell 5.1
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'setup.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
 
   quality:
     runs-on: ubuntu-latest
