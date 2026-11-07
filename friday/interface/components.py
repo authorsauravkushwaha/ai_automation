@@ -1,0 +1,98 @@
+"""Reusable Qt widgets and bounded background-task signals."""
+
+from __future__ import annotations
+
+import html
+import logging
+from collections.abc import Callable
+from datetime import datetime
+from typing import Any
+
+from PySide6.QtCore import QObject, QRunnable, Qt, Signal, Slot
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QTextBrowser, QVBoxLayout
+
+LOGGER = logging.getLogger(__name__)
+
+
+class StatusPill(QFrame):
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self.setObjectName("panel")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(9, 5, 9, 5)
+        layout.setSpacing(6)
+        self.dot = QLabel("●")
+        self.dot.setStyleSheet("color: #53677b;")
+        self.label = QLabel(title)
+        self.label.setObjectName("muted")
+        layout.addWidget(self.dot)
+        layout.addWidget(self.label)
+
+    def set_active(self, active: bool, color: str = "#62d6b1") -> None:
+        self.dot.setStyleSheet(f"color: {color if active else '#53677b'};")
+
+
+class ConversationView(QTextBrowser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("conversation")
+        self.setReadOnly(True)
+        self.setOpenExternalLinks(False)
+        self.setOpenLinks(False)
+        self.setAcceptRichText(True)
+        self.setPlaceholderText("Your local conversation will appear here…")
+        self.document().setMaximumBlockCount(300)
+
+    @Slot(str, str)
+    def add_message(self, role: str, text: str) -> None:
+        is_user = role == "You"
+        color = "#78d8f7" if is_user else "#77dfc0"
+        safe_role = html.escape(role)
+        safe_text = html.escape(text).replace("\n", "<br>")
+        timestamp = datetime.now().strftime("%H:%M")
+        self.append(
+            f'<div style="margin:8px 0 2px 0;color:{color};font-weight:600">'
+            f'{safe_role} <span style="color:#64798d;font-weight:400">{timestamp}</span></div>'
+            f'<div style="margin:0 0 12px 0;color:#dce7f2;line-height:145%">{safe_text}</div>'
+        )
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+
+class WorkerSignals(QObject):
+    result = Signal(object)
+    error = Signal(str)
+    finished = Signal()
+
+
+class Worker(QRunnable):
+    """Run inference/file work outside the UI thread; never touches Qt widgets."""
+
+    def __init__(self, function: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+        super().__init__()
+        self.function = function
+        self.args = args
+        self.kwargs = kwargs
+        self.signals = WorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            value = self.function(*self.args, **self.kwargs)
+        except Exception as exc:
+            LOGGER.exception("Background desktop task failed")
+            self.signals.error.emit(str(exc))
+        else:
+            self.signals.result.emit(value)
+        finally:
+            self.signals.finished.emit()
+
+
+class LabeledSection(QFrame):
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self.setObjectName("panel")
+        self.section_layout = QVBoxLayout(self)
+        label = QLabel(title)
+        label.setObjectName("section")
+        self.section_layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignLeft)

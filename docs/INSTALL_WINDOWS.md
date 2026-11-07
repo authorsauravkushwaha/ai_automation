@@ -1,0 +1,251 @@
+# FRIDAY staged installation and validation guide (Windows 11)
+
+Use this guide when you want to verify each layer instead of running the complete `setup.cmd -Run` bootstrap. Complete source files are already saved in this repository; do not create a parallel copy of the package. Run commands from the repository root in PowerShell unless a command is specifically for Command Prompt.
+
+## 0. Inspect the machine and checkout
+
+**Objective:** confirm the actual resources before loading models.
+
+```powershell
+git clone https://github.com/authorsauravkushwaha/ai_automation.git
+cd ai_automation
+git status
+Get-ComputerInfo | Select-Object WindowsProductName, OsArchitecture, CsTotalPhysicalMemory
+Get-CimInstance Win32_Processor | Select-Object Name, NumberOfLogicalProcessors
+Get-PSDrive C
+py -3.11 --version
+```
+
+Expected: Windows 11, 64-bit Python 3.11 or newer, enough free disk space. On a 4 GB machine, close unnecessary applications and retain the default tiny/small models. GPU acceleration is neither required nor assumed.
+
+If `py` is unavailable:
+
+```powershell
+winget install -e --id Python.Python.3.11
+```
+
+Open a new terminal after installation.
+
+## STAGE 1 — Ollama installation and verification
+
+**Objective:** install only the local inference runtime. No FRIDAY code depends on a remote AI endpoint.
+
+**Dependency:** Ollama for Windows. The bootstrap uses this command:
+
+```powershell
+winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements
+```
+
+Alternative: install from <https://ollama.com/download/windows>. Open a new terminal, then:
+
+```powershell
+ollama --version
+Invoke-RestMethod http://127.0.0.1:11434/api/tags | ConvertTo-Json -Depth 5
+```
+
+Expected: a version and a JSON response (possibly with an empty model list). If the API is unavailable but `ollama.exe` exists, run `ollama serve` in a separate terminal and repeat the API check. Diagnose port/service errors before pulling a model.
+
+Relevant FRIDAY file: `friday/core/llm_manager.py`. Its configuration rejects non-loopback hosts.
+
+## STAGE 2 — Local model installation and inference test
+
+**Objective:** download and run the explicit small quantized model.
+
+```powershell
+ollama pull qwen2.5:0.5b-instruct-q4_K_M
+ollama run qwen2.5:0.5b-instruct-q4_K_M "Return only this JSON: {\"type\":\"chat\",\"content\":\"local test passed\"}"
+ollama show qwen2.5:0.5b-instruct-q4_K_M
+```
+
+Expected: a local response and model metadata showing the selected quantization. This setup step needs internet; subsequent inference does not. Do not upgrade to a larger model on 4 GB RAM without measuring memory first.
+
+If download fails, rerun `ollama pull`; if inference fails, confirm the Ollama service remains running and inspect its logs. Do not continue by substituting a paid API.
+
+## STAGE 3 — Text-based assistant
+
+**Objective:** install the zero-third-party-dependency core and verify real SQLite/tool results.
+
+**Files:** `friday/main.py`, `friday/config.py`, `friday/core/*`, `friday/database/database.py`, `friday/security/*`, and `config.example.toml`.
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -e .
+Copy-Item config.example.toml config.toml   # Skip if config.toml already exists.
+.\.venv\Scripts\python.exe scripts\run_tests.py
+.\.venv\Scripts\python.exe -m friday --no-llm ask "system info"
+.\.venv\Scripts\python.exe -m friday model status
+```
+
+Expected: all tests pass, actual OS/CPU/RAM/disk data is printed, and Ollama reports the downloaded model as installed. `--no-llm` proves the deterministic pipeline independently.
+
+For natural-language chat:
+
+```powershell
+.\.venv\Scripts\python.exe -m friday ask "Introduce yourself in one sentence"
+.\.venv\Scripts\python.exe -m friday
+```
+
+If the model is unavailable, structured commands still work and FRIDAY must report the local-model error rather than fabricate a response.
+
+## STAGE 4 — Basic Windows automation
+
+**Objective:** test allow-listed operations one at a time.
+
+**Files:** `friday/automation/*`, `friday/core/permissions.py`, `friday/security/action_validator.py`.
+
+```powershell
+.\friday.cmd ask "open notepad"
+.\friday.cmd ask "create folder Documents\FRIDAY-Test"
+.\friday.cmd ask "find files for FRIDAY in Documents"
+.\friday.cmd ask "close notepad"
+```
+
+Expected: Notepad launches, the folder actually appears under Documents, search returns real paths, and close asks for confirmation first. Open a permitted text file only after creating a harmless test file:
+
+```powershell
+Set-Content "$env:USERPROFILE\Documents\FRIDAY-Test\note.txt" "offline test"
+.\friday.cmd ask "read text file Documents\FRIDAY-Test\note.txt"
+```
+
+Test typing only with a blank Notepad window focused, and confirm the prompt:
+
+```powershell
+.\friday.cmd ask 'type "FRIDAY controlled typing test"'
+```
+
+Do not test on an elevated application from a non-elevated FRIDAY process; Windows blocks that input correctly. Executable/script opening and paths outside configured roots must fail.
+
+## STAGE 5 — Offline speech recognition
+
+**Objective:** capture microphone audio and transcribe it locally with a small CPU model.
+
+**Dependencies:** `sounddevice`, NumPy, faster-whisper/CTranslate2, and the tiny model cache. No separately installed FFmpeg is required for the in-memory microphone path.
+
+**Files:** `friday/speech/microphone.py`, `speech_to_text.py`, and `voice_pipeline.py`.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[speech]"
+.\.venv\Scripts\python.exe -m friday devices
+.\.venv\Scripts\python.exe -m friday setup-speech   # First model download uses internet.
+.\.venv\Scripts\python.exe -m friday listen --duration 5
+```
+
+Expected: input devices are listed, the first model preparation succeeds, and a spoken request such as “system info” produces a transcript and actual system data. To select a device, set `speech.microphone` in `config.toml` to an index from `devices`.
+
+For a lighter alternative, install `.[light-speech]`, download/extract a Vosk model, and set `stt_backend = "vosk"` plus `vosk_model_path`. Test again. Diagnose microphone permissions under **Settings → Privacy & security → Microphone** before changing models.
+
+## STAGE 6 — Speaker enrollment and recognition
+
+**Objective:** create a protected owner profile without retaining raw recordings.
+
+**Warning:** this optional Resemblyzer/PyTorch path is substantially heavier than the default profile. Measure free RAM and close the GUI/other models first if necessary.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[speaker]"
+.\friday.cmd setup-pin
+.\friday.cmd enroll --samples 3 --duration 4
+.\friday.cmd listen --duration 5
+```
+
+Expected: PIN verification precedes enrollment; three samples are captured in memory; `owner.voice` and metadata appear under the private data directory; no WAV files are produced. The enrolled owner's score should be accepted, while non-owner/uncertain scores must be rejected before transcription/execution. Sensitive operations still request the PIN.
+
+Adjust `speaker_threshold` only after recording genuine owner/non-owner test scores. Do not lower it merely to force acceptance. Test playback/replay resistance separately; this feature is not authentication. Remove the profile with `friday delete-voice-profile`.
+
+## STAGE 7 — Offline speech output
+
+**Objective:** speak and interrupt responses without a voice API.
+
+**Default Windows SAPI path:**
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[tts]"
+.\friday.cmd --no-llm --speak ask "system info"
+.\friday.cmd --no-llm
+# In the shell: /speak, then /stop to interrupt.
+```
+
+Expected: an installed Windows voice reads the result; `/stop` interrupts it. Set `speech.tts_voice` to an installed voice name/ID substring if desired.
+
+**Optional Piper path:** install a compatible executable and voice separately, review `docs/THIRD_PARTY_NOTICES.md`, and set `tts_backend = "piper"`, `piper_executable`, `piper_model`, and `piper_config`. Test with the same `--speak` command. Piper is not silently downloaded because engine and voice licenses differ.
+
+## STAGE 8 — Wake-word functionality
+
+**Objective:** make the optional openWakeWord adapter available without forcing an always-on process.
+
+**Files:** `friday/speech/wake_word.py` and `[wake_word]` in `config.toml`.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[wake]"
+```
+
+Supply a legally obtained/custom-trained **Hey FRIDAY** ONNX model, then configure:
+
+```toml
+[wake_word]
+enabled = true
+model_path = 'C:\friday-models\hey_friday.onnx'
+threshold = 0.5
+cooldown_seconds = 2.0
+```
+
+Start the explicit listener and speak the configured phrase, then give a short command:
+
+```powershell
+.\friday.cmd wake --duration 5
+# Press Ctrl+C to stop the always-on listener.
+```
+
+The service loads on demand, streams bounded 80 ms / 16 kHz chunks, applies a confidence threshold and cooldown, and pauses wake listening while each command is recorded/transcribed/executed. FRIDAY never starts this service automatically and does not substitute an unrelated pretrained wake phrase. Benchmark CPU/RAM and false accepts before routine use. Official pretrained openWakeWord models have separate noncommercial/share-alike terms; review them.
+
+## STAGE 9 — Desktop interface
+
+**Objective:** verify a responsive UI using the same tested pipeline.
+
+**Files:** `friday/interface/main_window.py`, `dialogs.py`, `components.py`, and `styles.py`.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[gui]"
+$env:QT_QPA_PLATFORM = "offscreen"
+.\.venv\Scripts\python.exe scripts\run_tests.py
+Remove-Item Env:QT_QPA_PLATFORM
+.\friday.cmd gui
+```
+
+Expected: dark main window, text/microphone controls, conversation, three activity indicators, settings, enrollment, memory, and system/model status. Send `system info`, then a confirmation-gated command. Confirm that long LLM/STT operations run in the background and the window cannot close midway through a tool task.
+
+## STAGE 10 — Memory, reliability, offline integration
+
+**Objective:** verify persistence, deletion, recovery, and normal offline operation.
+
+```powershell
+.\friday.cmd setup-pin
+.\friday.cmd ask "remember that my editor is VS Code"
+.\friday.cmd memory --search editor
+.\friday.cmd memory --export .\friday-memory.json
+.\friday.cmd memory --clear preferences
+.\friday.cmd doctor
+.\.venv\Scripts\python.exe scripts\run_tests.py
+```
+
+Restart FRIDAY and search again before deletion to confirm persistence. Inspect the export: settings and PIN material must be absent. Deletion must require confirmation and the correct PIN.
+
+Finally, after all model downloads are complete, temporarily disconnect from the internet and repeat:
+
+```powershell
+.\friday.cmd ask "system info"
+.\friday.cmd ask "Introduce yourself in one sentence"
+.\friday.cmd listen --duration 5
+.\friday.cmd --no-llm --speak ask "system info"
+```
+
+Expected: local Ollama chat, downloaded STT, SAPI, memory, and tools continue to work. Features that were not downloaded/configured must produce a clear local error, not attempt a cloud fallback.
+
+## Resource check and cleanup
+
+```powershell
+Get-Process python, ollama -ErrorAction SilentlyContinue | Select-Object Name, CPU, WorkingSet64
+.\friday.cmd status
+```
+
+On 4 GB RAM, keep `threads = 2`, `context_tokens = 2048`, `whisper_model = "tiny"`, and avoid the speaker/wake extras during normal use. Stop speaking/listening from the UI or `/stop`. Private data remains under `%LOCALAPPDATA%\FRIDAY`; uninstalling Python packages does not delete it. Delete that folder explicitly only after exporting anything you need.

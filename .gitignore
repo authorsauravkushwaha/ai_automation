@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+build/
+dist/
+
+# Local configuration and private data
+config.toml
+.friday/
+data/
+*.db
+*.db-shm
+*.db-wal
+*.npy
+*.npz
+*.voice
+*.wav
+
+# Logs
+logs/
+*.log
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Downloaded local models (Ollama normally stores these elsewhere)
+models/
