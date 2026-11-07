@@ -28,7 +28,7 @@ class FileManagerTests(unittest.TestCase):
         result = self.manager.read_text("Projects/report notes.txt")
         self.assertEqual(result["content"], "offline result")
         found = self.manager.search("report", max_results=5)
-        self.assertEqual(found["matches"], [str(note)])
+        self.assertEqual(found["matches"], [str(note.resolve())])
 
     def test_path_traversal_is_denied(self) -> None:
         secret = self.outside / "secret.txt"
