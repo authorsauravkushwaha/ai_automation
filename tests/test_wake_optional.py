@@ -5,7 +5,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from friday.speech.wake_word import WakeWordService
+from hinata.speech.wake_word import WakeWordService
 
 
 @unittest.skipUnless(importlib.util.find_spec("numpy"), "NumPy optional dependency is not installed")

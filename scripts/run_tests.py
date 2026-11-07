@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-if not compileall.compile_dir(ROOT / "friday", quiet=1):
+if not compileall.compile_dir(ROOT / "hinata", quiet=1):
     raise SystemExit("Python compilation failed")
 suite = unittest.defaultTestLoader.discover(str(ROOT / "tests"), top_level_dir=str(ROOT))
 result = unittest.TextTestRunner(verbosity=2).run(suite)

@@ -1,6 +1,6 @@
-# FRIDAY — Personal Offline AI Assistant for Windows 11
+# HINATA — Personal Offline AI Assistant for Windows 11
 
-FRIDAY is a local-first, permission-controlled desktop assistant designed for a **Windows 11 laptop with 4 GB RAM**. It combines a quantized Ollama model, deterministic natural-language commands, offline speech, optional owner voice verification, SQLite memory, a dark PySide6 interface, and bounded Windows automation.
+HINATA is a local-first, permission-controlled desktop assistant designed for a **Windows 11 laptop with 4 GB RAM**. It combines a quantized Ollama model, deterministic natural-language commands, offline speech, optional owner voice verification, SQLite memory, a dark PySide6 interface, and bounded Windows automation.
 
 **No paid APIs. No OpenAI dependency. No cloud conversation service. No arbitrary model-generated shell execution.**
 
@@ -22,7 +22,7 @@ cd ai_automation
 .\setup.cmd -Run
 ```
 
-That command creates `.venv`, installs FRIDAY in editable mode, copies `config.example.toml` to `config.toml`, installs/checks Ollama, pulls the explicitly quantized **Qwen2.5 0.5B Instruct Q4_K_M** model, prepares tiny INT8 faster-whisper, runs the test suite and a real text smoke test, then opens the desktop UI.
+That command creates `.venv`, installs HINATA in editable mode, copies `config.example.toml` to `config.toml`, installs/checks Ollama, pulls the explicitly quantized **Qwen2.5 0.5B Instruct Q4_K_M** model, prepares tiny INT8 faster-whisper, runs the test suite and a real text smoke test, then opens the desktop UI.
 
 If Python is missing, install it first:
 
@@ -35,18 +35,18 @@ Close and reopen the terminal after installing Python. Ollama is installed throu
 ### After setup
 
 ```bat
-.\friday.cmd gui                 :: desktop interface
-.\friday.cmd                     :: interactive terminal
-.\friday.cmd ask "system info"   :: one typed request
-.\friday.cmd listen              :: one 5-second voice request
-.\friday.cmd doctor              :: local diagnostics
-.\friday.cmd status              :: JSON feature/model status
+.\hinata.cmd gui                 :: desktop interface
+.\hinata.cmd                     :: interactive terminal
+.\hinata.cmd ask "system info"   :: one typed request
+.\hinata.cmd listen              :: one 5-second voice request
+.\hinata.cmd doctor              :: local diagnostics
+.\hinata.cmd status              :: JSON feature/model status
 ```
 
 Set a PIN before sensitive operations or voice enrollment:
 
 ```bat
-.\friday.cmd setup-pin
+.\hinata.cmd setup-pin
 ```
 
 > Setup downloads packages and models. Once those downloads finish, normal chat, speech recognition, speech output, memory, and automation do not require internet. Structured commands also work when Ollama is stopped.
@@ -70,9 +70,12 @@ Useful setup switches: `-SkipOllama`, `-SkipModelDownload`, `-SkipSpeechDownload
 - **Typed input:** same parser/planner/tool pipeline as voice, persistent command/conversation history.
 - **Offline speech output:** interruptible Windows SAPI through `pyttsx3`; optional Piper executable support with configured local voice.
 - **Controlled PC automation:** allow-listed apps, root-confined files/folders/search/read, active-window Unicode typing, hardware volume keys, optional exact volume through `pycaw`, basic system information.
-- **SQLite memory:** conversations, approved preferences, commands, task results, and UI settings; inspect/search/export/delete controls.
-- **Desktop UI:** microphone and text input, conversation view, listening/processing/speaking indicators, settings, enrollment, status, memory controls, and dark theme.
-- **Wake word:** explicit `friday wake` mode with bounded 80 ms streaming and cooldown for a user-supplied custom **Hey FRIDAY** ONNX model; disabled by default and never started automatically.
+- **Owner stop control:** the desktop emergency-stop button stops speech, recording, and wake listening, closes a pending local Ollama response, and prevents a not-yet-started action. A Windows action already executing may finish; HINATA reports that limitation rather than promising forcible rollback.
+- **SQLite memory:** conversations, approved preferences, commands, task results, UI settings, and selected personality mode; inspect/search/export/delete controls.
+- **Desktop UI:** microphone and text input, conversation view, listening/processing/speaking indicators, settings, enrollment, status, memory controls, personality-mode selector, and dark theme.
+- **Five personality modes:** Friend, Advisor, Technical, Strategist, and Professional. Choose a mode in the desktop UI or say/type `switch to technical mode`. Modes adjust response style only and never modify permissions.
+- **Controlled multi-step planning:** a local model may propose up to five schema-validated low-impact tool steps. HINATA shows the complete plan and waits for one explicit owner approval before execution. Higher-impact actions (such as typing into an app, clearing memory, or closing apps) are excluded from batch plans and remain separately gated.
+- **Wake word:** explicit `hinata wake` mode with bounded 80 ms streaming and cooldown for a user-supplied custom **Hey HINATA** ONNX model; disabled by default and never started automatically.
 
 ## Example commands
 
@@ -86,13 +89,14 @@ open file Documents\notes.txt
 create folder Documents\Projects
 read text file Documents\notes.txt
 find files for quarterly report in Downloads
-type "Hello from FRIDAY"
+type "Hello from HINATA"
 volume up
 volume down
 mute
 set volume to 35
 system info
 remember that my editor is VS Code
+switch to technical mode
 list preferences
 search memory for editor
 clear conversations
@@ -131,31 +135,34 @@ whisper_model = "tiny"
 whisper_compute_type = "int8"
 # microphone = 0
 
+[personality]
+mode = "friend"  # friend, advisor, technical, strategist, professional
+
 [security]
 # allowed_roots = ['C:\Users\YOUR_NAME\Documents', 'C:\Users\YOUR_NAME\Downloads']
 ```
 
 Default file roots are the current user's Desktop, Documents, and Downloads. A relative path such as `Projects\notes.txt` is resolved under those roots. A root-prefixed path such as `Documents\Projects\notes.txt` is also accepted. Add an application only as a fixed command array in `[applications.NAME]`; model text is never substituted into that command.
 
-Private data defaults to `%LOCALAPPDATA%\FRIDAY` on Windows:
+Private data defaults to `%LOCALAPPDATA%\HINATA` on Windows:
 
 ```text
-friday.db
+hinata.db
 speaker_profiles\owner.voice
 speaker_profiles\owner.json
-logs\friday.log
+logs\hinata.log
 ```
 
-`FRIDAY_CONFIG` and `FRIDAY_DATA_DIR` can override those locations for testing. Do not put secrets in requests or preferences; conversation history intentionally stores what you ask.
+Existing FRIDAY installs are reused in place when their old data directory/database is present; HINATA does not move or delete that data automatically. `HINATA_CONFIG` and `HINATA_DATA_DIR` override the new locations; the previous `FRIDAY_CONFIG` and `FRIDAY_DATA_DIR` variables remain recognized for migration. Do not put secrets in requests or preferences; conversation history intentionally stores what you ask.
 
 ## Memory controls
 
 ```bat
-.\friday.cmd memory --recent 20
-.\friday.cmd memory --search "editor"
-.\friday.cmd memory --export friday-memory.json
-.\friday.cmd memory --clear conversations
-.\friday.cmd memory --clear all
+.\hinata.cmd memory --recent 20
+.\hinata.cmd memory --search "editor"
+.\hinata.cmd memory --export hinata-memory.json
+.\hinata.cmd memory --clear conversations
+.\hinata.cmd memory --clear all
 ```
 
 Exports omit settings and PIN hashes. Deletion requires the standard confirmation/PIN flow. The desktop **Memory** button provides the same inspection/export controls and routes deletion through the orchestrator.
@@ -173,36 +180,36 @@ Download and extract a model from the [Vosk model page](https://alphacephei.com/
 ```toml
 [speech]
 stt_backend = "vosk"
-vosk_model_path = 'C:\friday-models\vosk-model-small-en-us-0.15'
+vosk_model_path = 'C:\hinata-models\vosk-model-small-en-us-0.15'
 ```
 
 ### Speaker enrollment
 
 ```bat
 .\.venv\Scripts\python.exe -m pip install -e ".[speaker]"
-.\friday.cmd setup-pin
-.\friday.cmd enroll --samples 3 --duration 4
+.\hinata.cmd setup-pin
+.\hinata.cmd enroll --samples 3 --duration 4
 ```
 
-This optional dependency brings in PyTorch and has a much larger disk/RAM footprint than the default profile. The encoder is unloaded after verification/enrollment. Delete embeddings with `.\friday.cmd delete-voice-profile`.
+This optional dependency brings in PyTorch and has a much larger disk/RAM footprint than the default profile. The encoder is unloaded after verification/enrollment. Delete embeddings with `.\hinata.cmd delete-voice-profile`.
 
 ### Piper output
 
 Piper is **not downloaded automatically**. Install a compatible local executable and voice, review the engine and voice-model licenses, then set `tts_backend = "piper"` and the three Piper paths in `config.toml`. The maintained `piper1-gpl` engine is GPL-3.0; the archived original was MIT. Voice licenses vary. Windows SAPI remains the zero-extra-download default.
 
-### Hey FRIDAY wake word
+### Hey HINATA wake word
 
-Wake-word support is experimental and disabled to avoid continuous resource use. Install `.[speech,wake]`, train or otherwise legally obtain a custom `Hey FRIDAY` ONNX model, and configure `wake_word.enabled` and `wake_word.model_path`. Then run `.\friday.cmd wake`; press **Ctrl+C** to stop. The listener pauses while each command is transcribed/executed. FRIDAY does not mislabel an unrelated pretrained phrase as “Hey FRIDAY.” Review openWakeWord model licenses separately from its Apache-2.0 code.
+Wake-word support is experimental and disabled to avoid continuous resource use. Install `.[speech,wake]`, train or otherwise legally obtain a custom `Hey HINATA` ONNX model, and configure `wake_word.enabled` and `wake_word.model_path`. Then run `.\hinata.cmd wake`; press **Ctrl+C** to stop. The listener pauses while each command is transcribed/executed. HINATA does not mislabel an unrelated pretrained phrase as “Hey HINATA.” Review openWakeWord model licenses separately from its Apache-2.0 code.
 
 ## Tests and verification
 
 ```bat
 .\.venv\Scripts\python.exe scripts\run_tests.py
-.\friday.cmd --no-llm ask "system info"
-.\friday.cmd doctor
+.\hinata.cmd --no-llm ask "system info"
+.\hinata.cmd doctor
 ```
 
-Tests cover schema and model-plan rejection, path traversal, bounded file operations, PIN hashing, memory search/export/deletion, approval flows, uncertain voice rejection, CLI recovery, optional speaker-profile logic, and desktop construction when PySide6 is installed. CI runs the portable suite on Ubuntu and Windows and builds the desktop offscreen on Windows.
+Tests cover schema and model-plan rejection, bounded plan approval/execution and stop handling, path traversal, bounded file operations, PIN hashing, memory search/export/deletion, approval flows, uncertain voice rejection, CLI recovery, optional speaker-profile logic, and desktop construction when PySide6 is installed. CI runs the portable suite on Ubuntu and Windows and builds the desktop offscreen on Windows.
 
 Microphone quality, real speaker scores, SAPI/Piper audio, Windows focus/typing behavior, and Ollama model downloads still need validation on your physical Windows laptop. The portable test suite does not pretend to verify physical devices.
 
@@ -211,10 +218,10 @@ See [the staged installation and validation guide](docs/INSTALL_WINDOWS.md) for 
 ## Repository layout
 
 ```text
-friday/
+hinata/
   main.py                  terminal entry point
   config.py                validated TOML configuration
-  core/                    assistant, orchestrator, LLM, parser, memory, permissions
+  core/                    assistant, orchestrator, LLM, bounded planner, memory, personality, permissions
   speech/                  microphone, STT, TTS, speaker, wake-word, voice pipeline
   automation/              apps, files, Windows input/audio, system information
   interface/               PySide6 windows, dialogs, widgets, dark styles
@@ -223,7 +230,7 @@ friday/
 scripts/run_tests.py        portable verification
 config.example.toml         documented defaults
 setup.ps1 / setup.cmd       one-command Windows bootstrap
-.friday data is never committed
+.hinata data is never committed
 ```
 
-The core uses only the Python standard library. Optional AI/GUI packages are lazy-loaded so `friday --no-llm` stays lightweight. FRIDAY is released under [MIT](LICENSE); third-party code/model notices are in [THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).
+The core uses only the Python standard library. Optional AI/GUI packages are lazy-loaded so `hinata --no-llm` stays lightweight. HINATA is released under [MIT](LICENSE); third-party code/model notices are in [THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).

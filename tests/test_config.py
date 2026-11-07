@@ -1,8 +1,10 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from friday.config import ConfigError, load_config
+from hinata.config import ConfigError, HinataConfig, default_data_dir, load_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -30,6 +32,24 @@ class ConfigTests(unittest.TestCase):
         config = load_config(path)
         self.assertFalse(config.ollama.enabled)
         self.assertEqual(config.applications["notepad"].command, ["notepad.exe"])
+
+    def test_existing_friday_user_data_location_is_reused_without_moving_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = Path(directory) / "friday"
+            legacy.mkdir()
+            with patch.dict(os.environ, {"XDG_DATA_HOME": directory}, clear=True):
+                self.assertEqual(default_data_dir(), legacy)
+            self.assertTrue(legacy.is_dir())
+
+    def test_existing_legacy_database_and_log_are_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            (data / "friday.db").touch()
+            (data / "logs").mkdir()
+            (data / "logs" / "friday.log").touch()
+            config = HinataConfig(data_dir=data)
+            self.assertEqual(config.database_path.name, "friday.db")
+            self.assertEqual(config.log_path.name, "friday.log")
 
 
 if __name__ == "__main__":

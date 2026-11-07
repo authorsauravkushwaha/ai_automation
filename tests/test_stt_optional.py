@@ -4,8 +4,8 @@ import types
 import unittest
 from unittest.mock import patch
 
-from friday.config import SpeechConfig
-from friday.speech.speech_to_text import SpeechToText
+from hinata.config import SpeechConfig
+from hinata.speech.speech_to_text import SpeechToText
 
 
 @unittest.skipUnless(importlib.util.find_spec("numpy"), "NumPy optional dependency is not installed")

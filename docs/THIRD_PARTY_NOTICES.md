@@ -1,6 +1,6 @@
 # Third-party dependency and model notices
 
-Reviewed for the FRIDAY 0.1.0 integration on **2026-11-07**. FRIDAY does not bundle Ollama, Qt, PyTorch, Piper, model weights, or voice models in this Git repository. Package/model downloads retain their own licenses and notices. This document is integration guidance, not legal advice; recheck upstream terms when upgrading or redistributing.
+Reviewed for the HINATA 0.1.0 integration on **2026-11-07**. HINATA does not bundle Ollama, Qt, PyTorch, Piper, model weights, or voice models in this Git repository. Package/model downloads retain their own licenses and notices. This document is integration guidance, not legal advice; recheck upstream terms when upgrading or redistributing.
 
 | Component | Integration | Upstream license/notice |
 |---|---|---|
@@ -16,7 +16,7 @@ Reviewed for the FRIDAY 0.1.0 integration on **2026-11-07**. FRIDAY does not bun
 | [NumPy](https://github.com/numpy/numpy) | Audio/vector processing | BSD-3-Clause. |
 | [pycaw](https://github.com/AndreMiras/pycaw) | Optional exact Windows endpoint volume | MIT project; `comtypes` and Windows audio APIs have their own notices/terms. |
 | [openWakeWord](https://github.com/dscripka/openWakeWord) | Experimental optional wake-word inference | Apache-2.0 **code**. Official included/pretrained models are documented as **CC BY-NC-SA 4.0**, not Apache; custom model/data rights must be reviewed separately. |
-| [Piper, maintained fork](https://github.com/OHF-Voice/piper1-gpl) | Optional external offline TTS executable | GPL-3.0 at review time. FRIDAY does not bundle or link this executable; invoking a user-installed executable does not remove its distribution obligations. |
+| [Piper, maintained fork](https://github.com/OHF-Voice/piper1-gpl) | Optional external offline TTS executable | GPL-3.0 at review time. HINATA does not bundle or link this executable; invoking a user-installed executable does not remove its distribution obligations. |
 | [Original Rhasspy Piper](https://github.com/rhasspy/piper) | Older external executable option | MIT, archived/unmaintained at review time. Do not confuse its license with the maintained GPL fork. |
 | [Piper voices](https://huggingface.co/rhasspy/piper-voices) | Optional voice models | Licenses vary by voice and dataset. Read the selected `MODEL_CARD` before use or redistribution; no voice is downloaded automatically. |
 

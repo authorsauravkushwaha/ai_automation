@@ -1,6 +1,6 @@
-# FRIDAY local configuration. setup.ps1 copies this file to config.toml.
-# Optional: override the private data directory. Defaults to %LOCALAPPDATA%\FRIDAY.
-# data_dir = 'C:\Users\YOUR_NAME\AppData\Local\FRIDAY'
+# HINATA local configuration. setup.ps1 copies this file to config.toml.
+# Optional: override the private data directory. Defaults to %LOCALAPPDATA%\HINATA.
+# data_dir = 'C:\Users\YOUR_NAME\AppData\Local\HINATA'
 
 [ollama]
 enabled = true
@@ -13,12 +13,12 @@ threads = 2
 temperature = 0.2
 
 [speech]
-# microphone = 0  # Optional sounddevice index; find it with 'friday devices'.
+# microphone = 0  # Optional sounddevice index; find it with 'hinata devices'.
 sample_rate = 16000
 stt_backend = "faster-whisper"  # Or "vosk" after configuring a Vosk model directory.
 whisper_model = "tiny"
 whisper_compute_type = "int8"
-# vosk_model_path = 'C:\friday-models\vosk-model-small-en-us-0.15'
+# vosk_model_path = 'C:\hinata-models\vosk-model-small-en-us-0.15'
 tts_backend = "pyttsx3"  # Offline Windows SAPI. Or "piper" with paths below.
 tts_voice = ""  # Optional installed voice name/ID substring.
 tts_rate = 175
@@ -38,7 +38,7 @@ search_timeout_seconds = 5.0
 search_max_directories = 10000
 
 [wake_word]
-# Disabled to avoid continuous CPU/RAM use. Requires your own trained Hey FRIDAY ONNX model.
+# Disabled to avoid continuous CPU/RAM use. Requires your own trained Hey HINATA ONNX model.
 enabled = false
 model_path = ""
 threshold = 0.5
@@ -48,6 +48,10 @@ cooldown_seconds = 2.0
 dark_theme = true
 start_minimized = false
 speak_responses = false
+
+[personality]
+# friend, advisor, technical, strategist, or professional. Change at runtime by text or voice.
+mode = "friend"
 
 # Only these applications can be launched. Commands are fixed arrays, never model-generated.
 [applications.notepad]

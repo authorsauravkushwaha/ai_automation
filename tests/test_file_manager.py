@@ -2,9 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from friday.automation.app_control import AutomationError
-from friday.automation.file_manager import FileManager
-from friday.config import SecurityConfig
+from hinata.automation.app_control import AutomationError
+from hinata.automation.file_manager import FileManager
+from hinata.config import SecurityConfig
 
 
 class FileManagerTests(unittest.TestCase):

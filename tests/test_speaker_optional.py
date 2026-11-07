@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from friday.config import SpeechConfig
-from friday.speech.speaker_recognition import SpeakerRecognition
+from hinata.config import SpeechConfig
+from hinata.speech.speaker_recognition import SpeakerRecognition
 
 
 @unittest.skipUnless(importlib.util.find_spec("numpy"), "NumPy optional dependency is not installed")

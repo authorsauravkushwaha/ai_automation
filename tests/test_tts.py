@@ -4,8 +4,8 @@ import types
 import unittest
 from unittest.mock import patch
 
-from friday.config import SpeechConfig
-from friday.speech.text_to_speech import TextToSpeech
+from hinata.config import SpeechConfig
+from hinata.speech.text_to_speech import TextToSpeech
 
 
 class FakeEngine:

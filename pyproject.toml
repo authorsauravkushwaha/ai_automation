@@ -3,14 +3,14 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "friday-local-assistant"
+name = "hinata-local-assistant"
 version = "0.1.0"
-description = "FRIDAY: a private, offline-first desktop assistant for Windows 11"
+description = "HINATA: a private, offline-first desktop assistant for Windows 11"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{name = "FRIDAY contributors"}]
+authors = [{name = "HINATA contributors"}]
 dependencies = []
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -40,13 +40,13 @@ wake = ["openwakeword>=0.6,<0.7", "onnxruntime>=1.17,<2"]
 dev = ["ruff>=0.6,<1", "mypy>=1.11,<2"]
 
 [project.scripts]
-friday = "friday.main:main"
+hinata = "hinata.main:main"
 
 [project.urls]
 Repository = "https://github.com/authorsauravkushwaha/ai_automation"
 
 [tool.setuptools.packages.find]
-include = ["friday*"]
+include = ["hinata*"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -51,9 +52,9 @@ class OrchestratorTests(unittest.TestCase):
         self.assertFalse(response.success)
 
     def test_real_folder_creation_is_verified(self) -> None:
-        response = self.assistant.process_text("create folder Documents/FRIDAY-Test")
+        response = self.assistant.process_text("create folder Documents/HINATA-Test")
         self.assertTrue(response.success, response.text)
-        self.assertTrue((self.root / "Documents" / "FRIDAY-Test").is_dir())
+        self.assertTrue((self.root / "Documents" / "HINATA-Test").is_dir())
 
     def test_read_content_is_not_duplicated_into_task_results(self) -> None:
         note = self.root / "Documents" / "note.txt"
@@ -88,6 +89,43 @@ class OrchestratorTests(unittest.TestCase):
         response = self.assistant.process_text("Please save my theme")
         self.assertTrue(response.needs_confirmation)
         self.assertEqual(self.assistant.memory.preferences(), [])
+
+    def test_model_plan_waits_for_owner_approval_then_executes_verified_safe_steps(self) -> None:
+        self.assistant.orchestrator.llm_enabled = True
+        self.assistant.llm.complete = lambda *args: (
+            '{"type":"plan","objective":"Create a work folder",'
+            '"steps":[{"tool":"create_folder","arguments":{"path":"Documents/Approved-Plan"}}]}'
+        )
+        pending = self.assistant.process_text("please set up a work folder")
+        self.assertTrue(pending.needs_plan_confirmation)
+        self.assertFalse((self.root / "Documents" / "Approved-Plan").exists())
+        result = self.assistant.execute_plan(pending.plan_actions)
+        self.assertTrue(result.success, result.text)
+        self.assertTrue((self.root / "Documents" / "Approved-Plan").is_dir())
+
+    def test_emergency_stop_prevents_an_unfinished_model_plan_from_running(self) -> None:
+        self.assistant.orchestrator.llm_enabled = True
+        entered_model = threading.Event()
+        release_model = threading.Event()
+
+        def slow_model(*args: object) -> str:
+            entered_model.set()
+            release_model.wait(timeout=2)
+            return '{"type":"tool","tool":"create_folder","arguments":{"path":"stopped"}}'
+
+        self.assistant.llm.complete = slow_model
+        responses = []
+        worker = threading.Thread(
+            target=lambda: responses.append(self.assistant.process_text("please organize my workspace"))
+        )
+        worker.start()
+        self.assertTrue(entered_model.wait(timeout=1))
+        self.assistant.emergency_stop()
+        release_model.set()
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(responses[0].status, "cancelled")
+        self.assertFalse((self.root / "Documents" / "stopped").exists())
 
 
 if __name__ == "__main__":

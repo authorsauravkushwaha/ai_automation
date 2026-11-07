@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from friday.core.memory import Memory
-from friday.database.database import Database
-from friday.security.authentication import Authentication
-from friday.security.local_protection import (
+from hinata.core.memory import Memory
+from hinata.database.database import Database
+from hinata.security.authentication import Authentication
+from hinata.security.local_protection import (
     protect_bytes,
     read_private,
     unprotect_bytes,
@@ -18,7 +18,7 @@ class MemoryAndSecurityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.database = Database(self.root / "friday.db")
+        self.database = Database(self.root / "hinata.db")
         self.memory = Memory(self.database)
         self.auth = Authentication(self.database)
 

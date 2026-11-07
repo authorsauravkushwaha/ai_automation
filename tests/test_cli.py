@@ -11,9 +11,9 @@ class CliTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         environment = os.environ.copy()
-        environment["FRIDAY_DATA_DIR"] = str(Path(temporary.name) / "data")
+        environment["HINATA_DATA_DIR"] = str(Path(temporary.name) / "data")
         return subprocess.run(
-            [sys.executable, "-m", "friday", "--no-llm", *arguments],
+            [sys.executable, "-m", "hinata", "--no-llm", *arguments],
             input=input_text,
             text=True,
             capture_output=True,
