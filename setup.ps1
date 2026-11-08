@@ -14,8 +14,16 @@ param(
     [switch]$SkipOllama,
     [switch]$SkipModelDownload,
     [switch]$SkipSpeechDownload,
-    [switch]$Dev
+    [switch]$Dev,
+    [switch]$CheckSyntax
 )
+
+# This early exit lets the real setup.cmd launcher verify parsing without
+# installing dependencies, downloading models, or starting the application.
+if ($CheckSyntax) {
+    Write-Host "Windows setup script syntax OK."
+    return
+}
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
