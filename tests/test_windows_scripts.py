@@ -16,6 +16,9 @@ Keeping the shipped scripts ASCII-only (or explicitly BOM-prefixed UTF-8) makes
 the decoding identical under every PowerShell host.
 """
 
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -26,12 +29,18 @@ UTF8_BOM = b"\xef\xbb\xbf"
 POWERSHELL_QUOTE_LOOKALIKES = "\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f"
 
 
-def script_files() -> list[Path]:
-    return sorted(
-        path
-        for path in ROOT.rglob("*")
-        if path.is_file() and path.suffix.lower() in SCRIPT_SUFFIXES and ".git" not in path.parts
-    )
+def script_files(root: Path = ROOT) -> list[Path]:
+    # Setup creates .venv before running the suite. Its generated and installed
+    # scripts are not part of this project and can be numerous or non-ASCII.
+    excluded_dirs = {".git", ".venv", "venv", "__pycache__", "node_modules"}
+    files = []
+    for directory, dirs, names in os.walk(root):
+        dirs[:] = [name for name in dirs if name not in excluded_dirs]
+        for name in names:
+            path = Path(directory) / name
+            if path.is_file() and path.suffix.lower() in SCRIPT_SUFFIXES:
+                files.append(path)
+    return sorted(files)
 
 
 class WindowsScriptEncodingTests(unittest.TestCase):
@@ -40,6 +49,15 @@ class WindowsScriptEncodingTests(unittest.TestCase):
         self.assertIn("setup.ps1", names)
         self.assertIn("setup.cmd", names)
         self.assertIn("hinata.cmd", names)
+
+    def test_script_discovery_excludes_virtual_environments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "setup.ps1").write_text("# project", encoding="ascii")
+            external = root / ".venv" / "Scripts"
+            external.mkdir(parents=True)
+            (external / "external.ps1").write_bytes(b"\xff")
+            self.assertEqual(script_files(root), [root / "setup.ps1"])
 
     def test_bootstrap_scripts_are_ascii_or_bom_prefixed(self) -> None:
         for path in script_files():
@@ -58,6 +76,23 @@ class WindowsScriptEncodingTests(unittest.TestCase):
                     f"Windows PowerShell 5.1 mis-decodes non-ASCII bytes. "
                     f"Offending lines: {offenders[:3]}"
                 )
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows PowerShell and cmd.exe")
+    def test_setup_cmd_parses_without_running_setup(self) -> None:
+        # Exercise the same powershell.exe -File path used by users, including
+        # argument forwarding. -CheckSyntax must take precedence over -Run.
+        result = subprocess.run(
+            f'call "{ROOT / "setup.cmd"}" -CheckSyntax -Run',
+            cwd=ROOT,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Windows setup script syntax OK.", result.stdout)
+        self.assertNotIn("[1/7]", result.stdout)
 
     def test_setup_ps1_has_no_powershell_quote_lookalikes(self) -> None:
         text = (ROOT / "setup.ps1").read_bytes().decode("utf-8", "replace")
