@@ -4,6 +4,20 @@ HINATA is a local-first, permission-controlled desktop assistant designed for a 
 
 **No paid APIs. No OpenAI dependency. No cloud conversation service. No arbitrary model-generated shell execution.**
 
+## One-click start from the downloaded ZIP
+
+No terminal experience needed:
+
+1. On the GitHub page, click the green **Code** button, then **Download ZIP**. (Or use this link: [Download the repository ZIP](https://github.com/authorsauravkushwaha/ai_automation/archive/refs/heads/main.zip).)
+2. Right-click the downloaded ZIP → **Extract All…** and open the extracted `ai_automation-main` folder.
+3. Double-click **`start.bat`**.
+
+The first double-click checks for Python 3.11+ (it offers to install it via `winget` if missing), creates the environment, installs HINATA, installs/checks Ollama, downloads the local models, runs the tests, and then opens the desktop window. It needs internet and can take several minutes; keep the window open.
+
+Every double-click after that just starts the local Ollama service (when installed and not already running) and opens HINATA — that is all.
+
+If Windows shows a warning because the file came from the internet, choose **Run anyway** / **More info → Run anyway**. `start.bat` is a plain text script; you can read it before running it.
+
 ## Run directly from GitHub — no ZIP needed
 
 ### Prerequisites
