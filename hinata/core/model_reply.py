@@ -14,6 +14,8 @@ import re
 from typing import Any
 
 CHAT_TYPES = {"chat", "clarify"}
+CHAT_TEXT_KEYS = ("content", "response", "message", "answer", "text", "reply", "output")
+ACTION_KEYS = frozenset({"tool", "arguments", "objective", "steps"})
 
 
 class ModelReplyError(ValueError):
@@ -93,11 +95,59 @@ def normalize_plan(candidate: dict[str, Any]) -> dict[str, Any]:
     return {**candidate, "steps": normalized}
 
 
-def plain_text_reply(text: str) -> str | None:
-    """Use a model's non-JSON prose as an answer instead of discarding it."""
-    stripped = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
-    if not stripped or stripped.startswith("{") or stripped.endswith("}"):
+def _display_chat_text(candidate: dict[str, Any]) -> str | None:
+    """Recover text from a readable, non-action JSON shape.
+
+    Ollama's JSON mode guarantees syntax, not HINATA's response schema.  Small
+    models commonly use ``response`` or an OpenAI-style nested ``message``
+    instead.  These shapes are safe to display as chat, but anything resembling
+    an action remains the caller's responsibility to validate or reject.
+    """
+    if candidate.get("type") in {"tool", "plan"} or ACTION_KEYS.intersection(candidate):
         return None
+    for key in CHAT_TEXT_KEYS:
+        value = candidate.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    nested = candidate.get("message")
+    if isinstance(nested, dict) and not ACTION_KEYS.intersection(nested):
+        for key in CHAT_TEXT_KEYS:
+            value = nested.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _without_code_fence(text: str) -> str:
+    """Remove one optional outer Markdown fence without eating inner fences."""
+    stripped = text.strip()
+    match = re.fullmatch(r"```[a-zA-Z0-9_-]*\s*\n?(.*?)\n?```", stripped, re.DOTALL)
+    return match.group(1).strip() if match else stripped
+
+
+def plain_text_reply(text: str) -> str | None:
+    """Use prose or a readable non-action JSON reply as display-only chat."""
+    stripped = _without_code_fence(text)
     if len(stripped) < 2:
+        return None
+
+    # A JSON string is another common small-model response to a greeting.
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        decoded = None
+    if isinstance(decoded, str) and decoded.strip():
+        return decoded.strip()
+
+    for candidate in _candidates(stripped):
+        salvaged = _display_chat_text(candidate)
+        if salvaged:
+            return salvaged
+
+    # Do not show abandoned JSON/action machinery as if it were an assistant's
+    # conversational answer.  Recognized actions are validated elsewhere.
+    if stripped[0] in "{[" or stripped[-1] in "}]":
+        return None
+    if re.search(r'["\']?\s*(?:type|tool|arguments|objective|steps)\s*["\']?\s*:', stripped):
         return None
     return stripped
