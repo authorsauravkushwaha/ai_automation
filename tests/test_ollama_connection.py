@@ -145,6 +145,8 @@ class AutoConnectClientTests(unittest.TestCase):
         self.assertEqual(stub.chat_payload["keep_alive"], 0)
         self.assertEqual(stub.chat_payload["format"], "json")
         self.assertEqual(stub.chat_payload["messages"][0]["role"], "system")
+        self.assertIn('user says "Hello"', stub.chat_payload["messages"][0]["content"])
+        self.assertIn("When in doubt", stub.chat_payload["messages"][0]["content"])
         self.assertEqual(stub.chat_payload["messages"][-1]["content"], "hello")
 
     def test_another_installed_model_is_used_when_the_configured_one_is_missing(self) -> None:

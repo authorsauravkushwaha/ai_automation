@@ -1,6 +1,7 @@
 import unittest
 
 from hinata.core.intent_parser import IntentParser, PlanError
+from hinata.core.planner import Planner, PlanningError
 from hinata.security.action_validator import ActionValidator, ValidationError
 
 
@@ -99,9 +100,50 @@ class ValidationAndParsingTests(unittest.TestCase):
             with self.subTest(reply=reply):
                 self.assertEqual(self.parser.parse_llm_plan(reply, "hi"), ("chat", "Hi"))
 
+    def test_llm_readable_non_schema_json_is_display_only_chat(self) -> None:
+        replies = (
+            ('{"response":"Hi there!"}', "Hi there!"),
+            ('{"answer":"Hello from your PC."}', "Hello from your PC."),
+            ('{"type":"chat","response":"Still just hello."}', "Still just hello."),
+            ('{"message":{"role":"assistant","content":"Hello!"}}', "Hello!"),
+            ('```json\n{"reply":"Hi locally."}\n```', "Hi locally."),
+        )
+        for reply, expected in replies:
+            with self.subTest(reply=reply):
+                self.assertEqual(self.parser.parse_llm_plan(reply, "Hello"), ("chat", expected))
+
+    def test_llm_json_string_and_fenced_prose_are_chat(self) -> None:
+        self.assertEqual(
+            self.parser.parse_llm_plan('"Hello! How can I help?"', "Hello"),
+            ("chat", "Hello! How can I help?"),
+        )
+        self.assertEqual(
+            self.parser.parse_llm_plan("```text\nHello there!\n```", "Hello"),
+            ("chat", "Hello there!"),
+        )
+
+    def test_llm_action_like_json_is_never_salvaged_as_chat(self) -> None:
+        replies = (
+            '{"type":"tool","tool":"shell","arguments":{},"response":"Done"}',
+            '{"tool":"open_application","arguments":{"name":"notepad"},"response":"Opened"}',
+            '{"type":"tool","tool":"shell",arguments:{},"response":"Done"}',
+        )
+        for reply in replies:
+            with self.subTest(reply=reply), self.assertRaises(PlanError):
+                self.parser.parse_llm_plan(reply, "do something")
+
+        kind, candidate = self.parser.parse_llm_plan(
+            '{"type":"plan","objective":"Do things","steps":[],"response":"Done"}',
+            "do something",
+        )
+        self.assertEqual(kind, "plan")
+        with self.assertRaises(PlanningError):
+            Planner(self.validator).validate(candidate)
+
     def test_empty_model_output_still_raises(self) -> None:
-        with self.assertRaises(PlanError):
-            self.parser.parse_llm_plan("   ", "hi")
+        for reply in ("   ", "```\n```", "{}", '{"response":"   "}'):
+            with self.subTest(reply=reply), self.assertRaises(PlanError):
+                self.parser.parse_llm_plan(reply, "hi")
 
     def test_llm_chat_and_clarification(self) -> None:
         self.assertEqual(

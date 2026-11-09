@@ -80,6 +80,14 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(response.text, "Local hello")
         self.assertTrue(response.success)
 
+    def test_model_non_schema_json_greeting_is_not_a_model_failure(self) -> None:
+        self.assistant.orchestrator.llm_enabled = True
+        self.assistant.llm.complete = lambda *args: '{"response":"Hello! How can I help?"}'
+        response = self.assistant.process_text("Hello. Hello.")
+        self.assertTrue(response.success, response.text)
+        self.assertEqual(response.status, "completed")
+        self.assertEqual(response.text, "Hello! How can I help?")
+
     def test_model_proposed_tool_still_needs_approval(self) -> None:
         self.assistant.orchestrator.llm_enabled = True
         self.assistant.llm.complete = lambda *args: (

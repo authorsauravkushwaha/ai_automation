@@ -112,8 +112,14 @@ class IntentParser:
             except ValidationError as exc:
                 raise PlanError(f"The local model proposed an invalid action: {exc}") from exc
             return "tool", replace(action, original_text=original_text)
-        if kind in {"chat", "clarify"} and isinstance(candidate.get("content"), str):
-            text = candidate["content"].strip()
-            if text:
-                return kind, text[:4000]
+        if kind in {"chat", "clarify"}:
+            text = candidate.get("content")
+            if isinstance(text, str) and text.strip():
+                return kind, text.strip()[:4000]
+            # The model identified a conversational response but chose another
+            # common text key.  Recover display text only; actions never reach
+            # this branch and remain strictly validated above.
+            salvaged = plain_text_reply(content)
+            if salvaged:
+                return kind, salvaged[:4000]
         raise PlanError("The local model did not return a valid HINATA JSON plan")
