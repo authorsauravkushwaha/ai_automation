@@ -47,6 +47,21 @@ jobs:
             $errors | ForEach-Object { Write-Error $_ }
             exit 1
           }
+      # Double-clicked from an extracted ZIP, start.bat is decoded by cmd.exe,
+      # so it must stay ASCII-only with CRLF line endings.
+      - name: Check start.bat encoding and line endings
+        shell: bash
+        run: |
+          if grep -qP '[^\x00-\x7F]' start.bat; then
+            echo "start.bat must stay ASCII-only (cmd.exe misreads other encodings)"
+            exit 1
+          fi
+          while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+              *$'\r') ;;
+              *) echo "start.bat has an LF-only line: $line"; exit 1 ;;
+            esac
+          done < start.bat
       # pwsh defaults to UTF-8, so the check above cannot see the ANSI decoding
       # that setup.cmd actually gets from Windows PowerShell 5.1.
       - name: Validate Windows bootstrap syntax with Windows PowerShell 5.1
