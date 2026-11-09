@@ -43,9 +43,18 @@ ollama --version
 Invoke-RestMethod http://127.0.0.1:11434/api/tags | ConvertTo-Json -Depth 5
 ```
 
-Expected: a version and a JSON response (possibly with an empty model list). If the API is unavailable but `ollama.exe` exists, run `ollama serve` in a separate terminal and repeat the API check. Diagnose port/service errors before pulling a model.
+Expected: a version and a JSON response (possibly with an empty model list).
 
-Relevant HINATA file: `hinata/core/llm_manager.py`. Its configuration rejects non-loopback hosts.
+`setup.ps1` performs this step for you: it locates `ollama.exe` (including the default
+per-user install folder when PATH has not been refreshed yet), starts `ollama serve`
+hidden on `127.0.0.1:11434`, and waits for the API to answer. HINATA repeats the same
+automatic start whenever the desktop window opens, when **Reconnect** is pressed, and
+before a chat request if the service was stopped in the meantime. Manual
+`ollama serve` is therefore a fallback for diagnosis, not a required step.
+
+Relevant HINATA files: `hinata/core/ollama_service.py` (find/start/verify the local
+runtime) and `hinata/core/llm_manager.py` (loopback-only client). The configuration
+rejects non-loopback hosts.
 
 ## STAGE 2 — Local model installation and inference test
 
@@ -55,7 +64,13 @@ Relevant HINATA file: `hinata/core/llm_manager.py`. Its configuration rejects no
 ollama pull qwen2.5:0.5b-instruct-q4_K_M
 ollama run qwen2.5:0.5b-instruct-q4_K_M "Return only this JSON: {\"type\":\"chat\",\"content\":\"local test passed\"}"
 ollama show qwen2.5:0.5b-instruct-q4_K_M
+.\.venv\Scripts\python.exe -m hinata model status
 ```
+
+`hinata model status` connects automatically and prints the runtime state
+(`ready`, `model_missing`, `not_installed`, `unreachable`, or `disabled`), the
+detected executable, and every installed model. `hinata doctor` reports the same
+connection state.
 
 Expected: a local response and model metadata showing the selected quantization. This setup step needs internet; subsequent inference does not. Do not upgrade to a larger model on 4 GB RAM without measuring memory first.
 

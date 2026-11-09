@@ -30,6 +30,10 @@ class OllamaConfig:
     context_tokens: int = 2048
     threads: int = 2
     temperature: float = 0.2
+    # Start the loopback Ollama service automatically when it is not running.
+    auto_start: bool = True
+    # Download the configured model once if it is genuinely missing.
+    auto_pull: bool = False
 
     def validate(self) -> None:
         parsed = urlsplit(self.host)
@@ -42,8 +46,10 @@ class OllamaConfig:
             or parsed.fragment
         ):
             raise ConfigError("ollama.host must be a plain HTTP loopback URL")
-        if not self.model.strip() or len(self.model) > 150:
-            raise ConfigError("ollama.model must be a non-empty local model name")
+        # An empty model means "use whichever model is already present locally",
+        # which keeps a fresh install usable before the configured model downloads.
+        if len(self.model) > 150 or ("\x00" in self.model) or self.model != self.model.strip():
+            raise ConfigError("ollama.model must be a local model name of at most 150 characters")
         if not 1 <= self.timeout_seconds <= 600:
             raise ConfigError("ollama.timeout_seconds must be between 1 and 600")
         if not 16 <= self.max_tokens <= 4096:

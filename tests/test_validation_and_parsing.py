@@ -71,6 +71,38 @@ class ValidationAndParsingTests(unittest.TestCase):
         self.assertEqual(kind, "plan")
         self.assertEqual(candidate["objective"], "Inspect project")
 
+    def test_llm_plain_prose_is_used_as_a_chat_answer(self) -> None:
+        self.assertEqual(
+            self.parser.parse_llm_plan("Hello! I am HINATA, running locally.", "hi"),
+            ("chat", "Hello! I am HINATA, running locally."),
+        )
+
+    def test_llm_unquoted_chat_content_and_plan_arguments_are_recovered(self) -> None:
+        kind, text = self.parser.parse_llm_plan(
+            '{"type": "chat", "content": Hello, this is local.}', "hi"
+        )
+        self.assertEqual(kind, "chat")
+        self.assertEqual(text, "Hello, this is local.")
+        kind, plan = self.parser.parse_llm_plan(
+            '{"type":"plan","objective":"Check disk","steps":[{"tool":"system_info"}]}',
+            "check disk",
+        )
+        self.assertEqual(kind, "plan")
+        self.assertEqual(plan["steps"][0]["arguments"], {})
+
+    def test_llm_json_inside_prose_or_fence_is_found(self) -> None:
+        for reply in (
+            'Sure, here you go: {"type":"chat","content":"Hi"}',
+            '```json\n{"type":"chat","content":"Hi"}\n```',
+            "{'type': 'chat', 'content': 'Hi'}",
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(self.parser.parse_llm_plan(reply, "hi"), ("chat", "Hi"))
+
+    def test_empty_model_output_still_raises(self) -> None:
+        with self.assertRaises(PlanError):
+            self.parser.parse_llm_plan("   ", "hi")
+
     def test_llm_chat_and_clarification(self) -> None:
         self.assertEqual(
             self.parser.parse_llm_plan('{"type":"chat","content":"Hello"}', "hi"),

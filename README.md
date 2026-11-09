@@ -12,9 +12,33 @@ No terminal experience needed:
 2. Right-click the downloaded ZIP → **Extract All…** and open the extracted `ai_automation-main` folder.
 3. Double-click **`start.bat`**.
 
-The first double-click checks for Python 3.11+ (it offers to install it via `winget` if missing), creates the environment, installs HINATA, installs/checks Ollama, downloads the local models, runs the tests, and then opens the desktop window. It needs internet and can take several minutes; keep the window open.
+The first double-click checks for Python 3.11+ (it offers to install it via `winget` if missing), creates the environment, installs HINATA, installs/checks Ollama, **starts the local Ollama service**, downloads the local models, verifies the model connection, runs the tests, and then opens the desktop window. It needs internet and can take several minutes; keep the window open.
 
 Every double-click after that just starts the local Ollama service (when installed and not already running) and opens HINATA — that is all.
+
+### Ollama connects automatically
+
+You never have to run `ollama serve` yourself. HINATA connects to the loopback
+Ollama runtime on its own:
+
+- `setup.ps1` finds `ollama.exe` even when the freshly installed PATH is not
+  refreshed yet (it also checks `%LOCALAPPDATA%\Programs\Ollama`, `%ProgramFiles%\Ollama`),
+  starts it hidden on `127.0.0.1:11434`, and pulls the model only when it is missing.
+- The desktop window connects as soon as it opens. The badge in the header shows
+  **LOCAL ONLY** when the runtime and model are ready, otherwise **OLLAMA OFFLINE**,
+  **MODEL MISSING**, or **OLLAMA NOT INSTALLED**. The **Reconnect** button retries, and
+  a missing model offers a one-click download.
+- If the service is stopped while HINATA is running (reboot, closed terminal, sleep),
+  the next message starts it again before inference. If the runtime is genuinely
+  unavailable, chat reports *why* and structured commands keep working.
+- `hinata doctor`, `hinata model status`, and the in-app status dialog now report the
+  connection state instead of a bare "unavailable".
+
+Leave `ollama.model = ""` in `config.toml` to use whichever local model is already
+installed; if the configured model is missing but another local model exists, HINATA
+uses that one instead of failing. Set `ollama.auto_pull = true` to let HINATA download a
+missing configured model once. Set `ollama.auto_start = false` to keep the old
+"never start a service" behaviour.
 
 If Windows shows a warning because the file came from the internet, choose **Run anyway** / **More info → Run anyway**. `start.bat` is a plain text script; you can read it before running it.
 
@@ -91,7 +115,7 @@ Useful setup switches: `-SkipOllama`, `-SkipModelDownload`, `-SkipSpeechDownload
 
 ## What is implemented
 
-- **Local AI brain:** loopback-only Ollama client; `qwen2.5:0.5b-instruct-q4_K_M`; 2 CPU threads, 2048-token context, 256-token responses; model configurable in `config.toml`. Ollama is asked to unload it after each response to reduce overlapping RAM use; later responses may start more slowly.
+- **Local AI brain:** loopback-only Ollama client that starts and verifies the local service automatically; `qwen2.5:0.5b-instruct-q4_K_M`; 2 CPU threads, 2048-token context, 256-token responses; model configurable in `config.toml`. Requests use Ollama's JSON mode, and a small model's slightly malformed JSON (unquoted chat text, plan steps without `arguments`, prose around the object, or plain prose) is recovered instead of discarded. Ollama is asked to unload the model after each response to reduce overlapping RAM use; later responses may start more slowly.
 - **Offline voice input:** configurable microphone, explicit start/stop controls, faster-whisper `tiny` with INT8 CPU inference, or Vosk. Normal transcription uses cached Whisper files only; `setup-speech` explicitly permits the initial download. The STT model is released after each voice request to reduce RAM overlap.
 - **Owner speaker profile:** 3–8 in-memory enrollment samples, local embeddings, conservative accept/reject/uncertain states, DPAPI-protected profile on Windows, no raw recordings saved.
 - **Typed input:** same parser/planner/tool pipeline as voice, persistent command/conversation history.
@@ -153,9 +177,11 @@ See [SECURITY.md](docs/SECURITY.md).
 
 ```toml
 [ollama]
-model = "qwen2.5:0.5b-instruct-q4_K_M"
+model = "qwen2.5:0.5b-instruct-q4_K_M"  # or "" to use any installed local model
 threads = 2
 context_tokens = 2048
+auto_start = true   # start the local Ollama service automatically
+auto_pull = false   # download the configured model once if it is missing
 
 [speech]
 whisper_model = "tiny"

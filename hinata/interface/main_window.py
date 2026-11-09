@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QObject, QThreadPool, Signal
+from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -96,9 +96,12 @@ class MainWindow(QMainWindow):
         title_layout.addWidget(subtitle)
         header_layout.addLayout(title_layout)
         header_layout.addStretch()
-        badge = QLabel("●  LOCAL ONLY")
-        badge.setObjectName("localBadge")
-        header_layout.addWidget(badge)
+        self.connection_badge = QLabel("●  CONNECTING TO OLLAMA…")
+        self.connection_badge.setObjectName("localBadge")
+        self.connection_badge.setToolTip(
+            "Local Ollama connection. HINATA starts it automatically and never uses a cloud model."
+        )
+        header_layout.addWidget(self.connection_badge)
         self.mode_combo = QComboBox()
         for mode in self.assistant.personality.choices:
             self.mode_combo.addItem(f"{mode.label} mode", mode.key)
@@ -107,6 +110,10 @@ class MainWindow(QMainWindow):
         self.mode_combo.setToolTip("Choose HINATA's conversational style; security permissions stay unchanged")
         self.mode_combo.currentIndexChanged.connect(self.change_personality_mode)
         header_layout.addWidget(self.mode_combo)
+        self.reconnect_button = QPushButton("Reconnect")
+        self.reconnect_button.setToolTip("Start the local Ollama service and check the local model")
+        self.reconnect_button.clicked.connect(self.reconnect_ollama)
+        header_layout.addWidget(self.reconnect_button)
         status_button = QPushButton("System status")
         status_button.clicked.connect(self.open_status)
         settings_button = QPushButton("Settings")
@@ -169,12 +176,12 @@ class MainWindow(QMainWindow):
         outer.addLayout(tools)
 
         footer = QHBoxLayout()
-        model = QLabel(
-            f"Model: {self.assistant.config.ollama.model}  •  CPU profile  •  "
+        self.model_label = QLabel(
+            f"Model: {self.assistant.config.ollama.model or 'auto-detect'}  •  CPU profile  •  "
             f"STT: {self.assistant.config.speech.stt_backend}"
         )
-        model.setObjectName("muted")
-        footer.addWidget(model)
+        self.model_label.setObjectName("muted")
+        footer.addWidget(self.model_label)
         footer.addStretch()
         privacy = QLabel("No telemetry  •  No cloud conversations")
         privacy.setObjectName("muted")
@@ -182,6 +189,15 @@ class MainWindow(QMainWindow):
         outer.addLayout(footer)
         self.statusBar().showMessage("Local memory ready")
         self.input.setFocus()
+        # Connect to the local Ollama runtime as soon as the window is ready, so a
+        # fresh install chats without the owner starting a service by hand.
+        if self.assistant.orchestrator.llm_enabled:
+            if self.assistant.config.ollama.auto_pull:
+                QTimer.singleShot(150, lambda: self.connect_ollama(download_missing=True))
+            else:
+                QTimer.singleShot(150, self.connect_ollama)
+        else:
+            self.connection_badge.setText("●  LOCAL MODEL OFF")
 
     def run_task(
         self,
@@ -251,6 +267,15 @@ class MainWindow(QMainWindow):
     def handle_response(self, response: AssistantResponse, voice: VoiceResult | None = None) -> None:
         self.conversation.add_message("HINATA", response.text)
         self.statusBar().showMessage(response.status.replace("_", " "), 5000)
+        if response.status == "model_unavailable":
+            text = response.text.lower()
+            connected_but_wrong = "unexpected format" in text
+            if not connected_but_wrong:
+                self.connection_badge.setText("●  OLLAMA OFFLINE")
+            # Keep the header honest and make the one-click fix obvious.
+            self.reconnect_button.setEnabled(True)
+            self.reconnect_button.setObjectName("primary")
+            self._repolish(self.reconnect_button)
         source = "voice" if voice is not None else "text"
         speaker_match = voice.speaker_match if voice is not None else None
         speaker_required = voice.speaker_required if voice is not None else False
@@ -405,6 +430,90 @@ class MainWindow(QMainWindow):
         self.activity_label.setText("Stop requested — an action already in progress may finish")
         self.statusBar().showMessage("Stop requested; HINATA will not start another action", 7000)
 
+    # --------------------------------------------------------------- Ollama
+    def connect_ollama(self, *, download_missing: bool = False) -> None:
+        """Start/verify loopback Ollama in the background and report the result."""
+        self.connection_badge.setText("●  CONNECTING TO OLLAMA…")
+        self.reconnect_button.setEnabled(False)
+        label = (
+            "Downloading the local model (one-time internet)"
+            if download_missing
+            else "Connecting to local Ollama"
+        )
+        self.run_task(
+            lambda: self.assistant.orchestrator.recheck_model(download_missing=download_missing),
+            self.apply_connection_state,
+            self.connection_error,
+            label,
+        )
+
+    def connection_error(self, message: str) -> None:
+        self.reconnect_button.setEnabled(True)
+        self.connection_badge.setText("●  OLLAMA OFFLINE")
+        self.statusBar().showMessage(f"Local model unavailable: {message}", 9000)
+        self.show_task_error(message)
+
+    def apply_connection_state(self, report: dict[str, Any]) -> None:
+        self.reconnect_button.setEnabled(True)
+        if report.get("state") in {"ready", "model_missing"}:
+            # Connected: return the button to its quiet default style.
+            self.reconnect_button.setObjectName("")
+            self._repolish(self.reconnect_button)
+        state = str(report.get("state", ""))
+        if state == "ready":
+            model = str(report.get("model") or self.assistant.config.ollama.model)
+            self.connection_badge.setText("●  LOCAL ONLY")
+            self.model_label.setText(
+                f"Model: {model}  •  CPU profile  •  STT: {self.assistant.config.speech.stt_backend}"
+            )
+            self.statusBar().showMessage("Local Ollama connected", 4000)
+            return
+        if state == "model_missing":
+            self.connection_badge.setText("●  MODEL MISSING")
+            self.statusBar().showMessage(
+                "Ollama is running but the local model is not downloaded", 8000
+            )
+            self.offer_model_download(str(report.get("model") or ""))
+            return
+        if state == "not_installed":
+            self.connection_badge.setText("●  OLLAMA NOT INSTALLED")
+            self.conversation.add_message(
+                "System",
+                str(report.get("guidance") or "Ollama is not installed.")
+                + "\nStructured commands such as 'open notepad' and 'system info' still work.",
+            )
+            return
+        if state == "disabled":
+            self.connection_badge.setText("●  LOCAL MODEL OFF")
+            return
+        self.connection_badge.setText("●  OLLAMA OFFLINE")
+        detail = report.get("error") or report.get("guidance") or "Ollama did not answer."
+        self.conversation.add_message(
+            "System",
+            f"{detail}\nStructured commands such as 'open notepad', 'system info', and "
+            "'find files for report in Downloads' still work without the model. "
+            "Press Reconnect to try starting Ollama again.",
+        )
+
+    def offer_model_download(self, model: str) -> None:
+        name = model or self.assistant.config.ollama.model or "the configured model"
+        answer = QMessageBox.question(
+            self,
+            "Download the local model",
+            f"Ollama is connected, but {name} is not downloaded yet.\n\n"
+            "Download it now? This is the only step that uses internet; afterwards all "
+            "responses are generated on this PC.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.connect_ollama(download_missing=True)
+
+    def reconnect_ollama(self) -> None:
+        if self.pending_tasks:
+            return
+        self.connect_ollama()
+
     def open_settings(self) -> None:
         dialog = SettingsDialog(
             self.assistant,
@@ -425,6 +534,8 @@ class MainWindow(QMainWindow):
             "ui.llm_enabled", str(self.assistant.orchestrator.llm_enabled).lower()
         )
         self.assistant.database.set_setting("ui.microphone", selected)
+        if self.assistant.orchestrator.llm_enabled and not self.pending_tasks:
+            QTimer.singleShot(0, self.connect_ollama)
         self.statusBar().showMessage("Settings saved locally", 4000)
 
     def open_memory(self) -> None:
