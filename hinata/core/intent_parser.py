@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import replace
 from typing import Any
 
+from hinata.core.model_reply import extract_reply_object, normalize_plan, plain_text_reply
 from hinata.core.types import ActionRequest
 from hinata.security.action_validator import ActionValidator, ValidationError
 
@@ -92,30 +92,28 @@ class IntentParser:
         return replace(action, original_text=original)
 
     def parse_llm_plan(self, content: str, original_text: str) -> tuple[str, Any]:
-        decoder = json.JSONDecoder()
-        for index, character in enumerate(content):
-            if character != "{":
-                continue
+        candidate = extract_reply_object(content)
+        # A small model sometimes answers in plain prose.  That is still a usable
+        # answer; only an unrelated blob is rejected as an invalid plan.
+        if candidate is None:
+            prose = plain_text_reply(content)
+            if prose is not None:
+                return "chat", prose[:4000]
+            raise PlanError("The local model did not return a valid HINATA JSON plan")
+        kind = candidate.get("type")
+        if kind == "plan":
+            return "plan", normalize_plan(candidate)
+        if kind == "tool":
+            tool_name = candidate.get("tool")
+            if not isinstance(tool_name, str):
+                raise PlanError("The local model omitted a valid tool name")
             try:
-                candidate, _ = decoder.raw_decode(content[index:])
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(candidate, dict):
-                continue
-            kind = candidate.get("type")
-            if kind == "plan":
-                return "plan", candidate
-            if kind == "tool":
-                tool_name = candidate.get("tool")
-                if not isinstance(tool_name, str):
-                    raise PlanError("The local model omitted a valid tool name")
-                try:
-                    action = self.validator.validate(tool_name, candidate.get("arguments"))
-                except ValidationError as exc:
-                    raise PlanError(f"The local model proposed an invalid action: {exc}") from exc
-                return "tool", replace(action, original_text=original_text)
-            if kind in {"chat", "clarify"} and isinstance(candidate.get("content"), str):
-                text = candidate["content"].strip()
-                if text:
-                    return kind, text[:4000]
+                action = self.validator.validate(tool_name, candidate.get("arguments"))
+            except ValidationError as exc:
+                raise PlanError(f"The local model proposed an invalid action: {exc}") from exc
+            return "tool", replace(action, original_text=original_text)
+        if kind in {"chat", "clarify"} and isinstance(candidate.get("content"), str):
+            text = candidate["content"].strip()
+            if text:
+                return kind, text[:4000]
         raise PlanError("The local model did not return a valid HINATA JSON plan")

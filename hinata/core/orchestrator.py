@@ -15,6 +15,7 @@ from hinata.automation.windows_control import WindowsControl
 from hinata.core.intent_parser import IntentParser, PlanError
 from hinata.core.llm_manager import LLMManager, OllamaError
 from hinata.core.memory import Memory
+from hinata.core.ollama_service import MODEL_MISSING
 from hinata.core.permissions import PermissionManager
 from hinata.core.personality import PersonalityManager
 from hinata.core.planner import Planner, PlanningError
@@ -40,6 +41,7 @@ class Orchestrator:
         windows: WindowsControl,
         system: SystemInfo,
         llm_enabled: bool = True,
+        pull_missing_model: bool = False,
     ) -> None:
         self.validator = validator
         self.parser = parser
@@ -53,6 +55,7 @@ class Orchestrator:
         self.windows = windows
         self.system = system
         self.llm_enabled = llm_enabled
+        self._pull_missing = pull_missing_model
         self._stop_requested = threading.Event()
 
     def request_stop(self) -> None:
@@ -91,13 +94,7 @@ class Orchestrator:
 
         if action is None and self.llm_enabled:
             try:
-                raw_plan = self.llm.complete(
-                    cleaned,
-                    self.memory.recent_messages(),
-                    self.memory.preferences(),
-                    self.validator.tool_descriptions(),
-                    self.personality.mode.instruction,
-                )
+                raw_plan = self._model_reply(cleaned)
                 if self._cancelled():
                     response = self._cancel_response()
                     self.memory.add_message("assistant", response.text, source)
@@ -125,9 +122,7 @@ class Orchestrator:
                     self.memory.add_message("assistant", response.text, source)
                     return response
                 response = AssistantResponse(
-                    f"I could not use the local model: {exc}\n"
-                    "Structured commands such as 'open notepad', 'system info', and "
-                    "'find files for report in Downloads' still work.",
+                    self._model_failure_text(exc),
                     False,
                     "model_unavailable",
                 )
@@ -295,6 +290,57 @@ class Orchestrator:
             "completed" if result.success else "failed",
             data=result.data,
         )
+
+    def _model_reply(self, text: str) -> str:
+        """Ask the local model, connecting first and tolerating older adapters."""
+        arguments = (
+            text,
+            self.memory.recent_messages(),
+            self.memory.preferences(),
+            self.validator.tool_descriptions(),
+            self.personality.mode.instruction,
+        )
+        try:
+            return self.llm.complete(*arguments, connect=True, pull_missing=self._pull_missing)
+        except TypeError:
+            # An injected adapter with the previous positional-only signature.
+            return self.llm.complete(*arguments)
+
+    @staticmethod
+    def _model_failure_text(exc: Exception) -> str:
+        """Explain a local-model failure in terms the owner can act on."""
+        detail = str(exc)
+        lowered = detail.lower()
+        if isinstance(exc, (PlanError, PlanningError)) or "json" in lowered:
+            hint = (
+                "The local model answered in an unexpected format. Try rephrasing, "
+                "or send a structured command instead."
+            )
+        elif "no local model is installed" in lowered or "pull" in lowered:
+            hint = "Download the local model once with: hinata model pull"
+        elif "not installed" in lowered:
+            hint = "Install Ollama from https://ollama.com/download/windows, then press Reconnect."
+        elif "cannot reach" in lowered or "did not answer" in lowered:
+            hint = "Ollama is not answering on loopback yet. Press Reconnect to start it again."
+        else:
+            hint = "Check the local Ollama service, then try again."
+        return (
+            f"I could not use the local model: {detail}\n{hint}\n"
+            "Structured commands such as 'open notepad', 'system info', and "
+            "'find files for report in Downloads' still work without the model."
+        )
+
+    def recheck_model(self, *, download_missing: bool = False) -> dict[str, Any]:
+        """Force a fresh connection attempt (used by the desktop Reconnect control)."""
+        report = self.llm.ensure_connected(force=True)
+        if download_missing and report.get("state") in {MODEL_MISSING, "ready"}:
+            if not report.get("model_installed"):
+                LOGGER.info(
+                    "Local model %s is missing; starting a one-time download",
+                    self.llm.config.model,
+                )
+                report = self.llm.service.install_model()
+        return report
 
     @staticmethod
     def _safe_arguments(action: ActionRequest) -> dict[str, Any]:

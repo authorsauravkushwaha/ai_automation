@@ -8,7 +8,7 @@ for staged setup and hands-on checks. Downloads require internet and explicit se
 
 | Requested stage | Present in repository | What still needs work or target-machine validation |
 |---|---|---|
-| 1. Ollama | Local HTTP client, status and Windows setup script. | Install and run Ollama on the target Windows machine. |
+| 1. Ollama | Loopback-only HTTP client plus an automatic runtime connector: `setup.ps1` installs, starts, and verifies Ollama, and the app restarts it on launch, on Reconnect, and before a chat request. | Confirm the hidden `ollama serve` start and the Reconnect badge on the target Windows machine. |
 | 2. Small model | Qwen2.5 0.5B Q4 model is configurable and the setup can pull it. | Pull it, run real inference, measure performance and verify its answers locally. |
 | 3. Text conversation | CLI, local model request, deterministic command pipeline. | Test against the real runtime; this is not a general-purpose runtime abstraction yet. |
 | 4. Personality and memory | Five modes, SQLite conversations/preferences, search, export, deletion, configurable conversation retention. | Memory categories, editing and retention controls do not cover every requested category. SQLite is not encrypted. |

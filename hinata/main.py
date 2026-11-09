@@ -20,6 +20,7 @@ from hinata import __version__
 from hinata.automation.system_info import SystemInfo
 from hinata.config import ConfigError, load_config
 from hinata.core.assistant import HinataAssistant
+from hinata.core.ollama_service import OllamaService
 from hinata.core.types import AssistantResponse
 
 EXAMPLES = """Structured commands (work without an LLM):
@@ -123,7 +124,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "delete-voice-profile":
             return delete_voice_profile(assistant)
         if args.command == "model":
-            print(json.dumps(assistant.llm.status(), indent=2))
+            # status: connect (starting the service if needed) so the report is real.
+            report = assistant.llm.ensure_connected()
+            print(json.dumps({**report, "tags": assistant.llm.status()}, indent=2))
             return 0
         if args.command == "memory":
             return memory_command(assistant, args)
@@ -241,8 +244,30 @@ def emit_with_approvals(
         return 0 if response.success else 1
 
 
+def connect_local_model(assistant: HinataAssistant) -> None:
+    """Best-effort: start the loopback Ollama service before the first request."""
+    if not assistant.orchestrator.llm_enabled:
+        return
+    report = assistant.llm.ensure_connected()
+    state = report.get("state")
+    if state == "ready":
+        print(f"Local model ready: {report.get('model')}")
+    elif state == "model_missing":
+        print(
+            f"Ollama is running but {assistant.config.ollama.model} is not downloaded. "
+            "Run 'hinata model pull', or set ollama.auto_pull = true in config.toml."
+        )
+    elif state == "not_installed":
+        print("Ollama is not installed; structured commands still work. See https://ollama.com/download/windows")
+    elif state == "disabled":
+        print("Local model is disabled in config.toml; structured commands still work.")
+    else:
+        print("Ollama is not responding; structured commands still work. Run 'hinata doctor'.")
+
+
 def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
     print(f"HINATA {__version__} — local assistant. Type /help for commands, /quit to exit.")
+    connect_local_model(assistant)
     if not assistant.authentication.is_configured:
         print("Setup recommended: run 'hinata setup-pin' before sensitive actions or enrollment.")
     while True:
@@ -257,7 +282,13 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
             return 0
         if text == "/help":
             print(EXAMPLES)
-            print("\nShell: /voice /speak /stop /status /memory /pin /forget /quit")
+            print("\nShell: /voice /speak /stop /reconnect /status /memory /pin /forget /quit")
+            continue
+        if text == "/reconnect":
+            report = assistant.orchestrator.recheck_model(
+                download_missing=assistant.config.ollama.auto_pull
+            )
+            print(f"Ollama connection: {report.get('state')} {report.get('guidance') or ''}".strip())
             continue
         if text == "/status":
             print(json.dumps(assistant.status(), indent=2))
@@ -407,6 +438,10 @@ def pull_model(model: str) -> int:
         print("Ollama is not installed. See https://ollama.com/download/windows", file=sys.stderr)
         return 1
     print(f"Downloading {model} through local Ollama. Internet is required for this setup step only.")
+    # Start the local service first so a fresh install can pull immediately.
+    config = load_config()
+    config.ollama.model = model
+    OllamaService(config.ollama).ensure_running()
     try:
         result = subprocess.run([executable, "pull", model], shell=False, check=False, timeout=1800)
     except subprocess.TimeoutExpired:
@@ -421,6 +456,8 @@ def doctor(assistant: HinataAssistant) -> int:
     if os.name != "nt":
         print("WARNING: Windows app, volume, typing, SAPI, and desktop tests require Windows 11.")
     print("System:", json.dumps(SystemInfo().snapshot()))
+    connection = assistant.llm.connect_status()
+    print("Ollama connection:", connection.get("state"), "-", connection.get("guidance") or "ok")
     model = assistant.llm.status()
     print("Ollama:", "available" if model["available"] else f"unavailable ({model.get('error', '')})")
     print("Configured model:", assistant.config.ollama.model, "installed:", model["installed"])

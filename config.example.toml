@@ -5,12 +5,17 @@
 [ollama]
 enabled = true
 host = "http://127.0.0.1:11434"  # Loopback only; remote AI hosts are rejected.
+# Leave empty ("") to use whichever local model is already installed.
 model = "qwen2.5:0.5b-instruct-q4_K_M"  # 494M parameters, Q4_K_M, about 398 MB download.
 timeout_seconds = 90
 max_tokens = 256
 context_tokens = 2048
 threads = 2
 temperature = 0.2
+# Connect to Ollama automatically: start the local service when it is not running.
+auto_start = true
+# Set true to download "model" automatically the first time it is missing.
+auto_pull = false
 
 [speech]
 # microphone = 0  # Optional sounddevice index; find it with 'hinata devices'.

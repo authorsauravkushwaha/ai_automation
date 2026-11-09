@@ -86,9 +86,16 @@ class LLMTests(unittest.TestCase):
 
     def test_chat_releases_model_after_inference(self) -> None:
         manager = LLMManager(OllamaConfig())
-        with patch.object(manager, "_request", return_value={"message": {"content": "ok"}}) as request:
+        tags = {"models": [{"name": "qwen2.5:0.5b-instruct-q4_K_M"}]}
+        replies = [tags, {"message": {"content": "ok"}}]
+        with patch.object(manager._service, "ensure_running", return_value={"state": "ready", "service_ready": True}), patch.object(
+            manager, "_request", side_effect=replies
+        ) as request:
             self.assertEqual(manager.chat([], "system"), "ok")
-        self.assertEqual(request.call_args.args[1]["keep_alive"], 0)
+        chat_call = request.call_args_list[-1]
+        self.assertEqual(chat_call.args[0], "/api/chat")
+        self.assertEqual(chat_call.args[1]["keep_alive"], 0)
+        self.assertEqual(chat_call.args[1]["model"], "qwen2.5:0.5b-instruct-q4_K_M")
 
     def test_default_model_is_small_local_qwen_profile(self) -> None:
         config = OllamaConfig()

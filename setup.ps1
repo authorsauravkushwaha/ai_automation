@@ -53,6 +53,37 @@ function Test-Ollama {
     }
 }
 
+function Find-Ollama {
+    $command = Get-Command ollama.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    # The installer registers these paths but only updates PATH for new terminals.
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"),
+        (Join-Path $env:ProgramFiles "Ollama\ollama.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Ollama\ollama.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) { return $candidate }
+    }
+    return $null
+}
+
+# Make the local runtime answer on loopback so HINATA's first chat request works.
+# Best effort: structured commands remain available when this fails.
+function Start-OllamaService {
+    param([string]$Executable, [int]$TimeoutSeconds = 25)
+    if (Test-Ollama) { return $true }
+    if (-not $Executable) { return $false }
+    Write-Host "Starting the local Ollama service on 127.0.0.1:11434..."
+    $env:OLLAMA_HOST = "127.0.0.1:11434"
+    Start-Process -FilePath $Executable -ArgumentList @("serve") -WindowStyle Hidden
+    for ($Attempt = 0; $Attempt -lt ($TimeoutSeconds * 2); $Attempt++) {
+        Start-Sleep -Milliseconds 500
+        if (Test-Ollama) { return $true }
+    }
+    return $false
+}
+
 Write-Host "`nHINATA setup - local, offline-first assistant" -ForegroundColor Cyan
 Write-Host "Repository: $Root"
 Write-Host "Target: Windows 11, CPU inference, low-memory defaults`n"
@@ -123,7 +154,8 @@ Invoke-Native $VenvPython @("scripts\run_tests.py")
 $Model = (& $VenvPython -c "from hinata.config import load_config; print(load_config().ollama.model)").Trim()
 if (-not $SkipOllama) {
     Write-Host "[4/7] Checking local Ollama runtime..."
-    if (-not (Get-Command ollama.exe -ErrorAction SilentlyContinue)) {
+    $OllamaPath = Find-Ollama
+    if (-not $OllamaPath) {
         if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
             Write-Host "Installing Ollama through Windows Package Manager..."
             & winget.exe install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements
@@ -131,36 +163,36 @@ if (-not $SkipOllama) {
                 throw "Ollama installation failed. Install from https://ollama.com/download/windows and rerun setup."
             }
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+            $OllamaPath = Find-Ollama
         }
         else {
             throw "Ollama is missing and winget is unavailable. Install https://ollama.com/download/windows or rerun with -SkipOllama."
         }
     }
-    $Ollama = Get-Command ollama.exe -ErrorAction SilentlyContinue
-    if (-not $Ollama) {
-        throw "Ollama was installed but ollama.exe is not on PATH. Open a new terminal and rerun setup."
+    if (-not $OllamaPath) {
+        throw "Ollama was installed but ollama.exe was not found in PATH or the default install folders. Install from https://ollama.com/download/windows and rerun setup."
     }
-    if (-not (Test-Ollama)) {
-        Write-Host "Starting the local Ollama service..."
-        Start-Process -FilePath $Ollama.Source -ArgumentList @("serve") -WindowStyle Hidden
-        $Ready = $false
-        for ($Attempt = 0; $Attempt -lt 30; $Attempt++) {
-            Start-Sleep -Milliseconds 500
-            if (Test-Ollama) {
-                $Ready = $true
-                break
-            }
-        }
-        if (-not $Ready) {
-            throw "Ollama did not start on loopback port 11434. Check its Windows service/logs."
-        }
-    }
-    if (-not $SkipModelDownload) {
-        Write-Host "[5/7] Pulling $Model (internet setup download)..."
-        Invoke-Native $Ollama.Source @("pull", $Model)
+    Write-Host "Ollama executable: $OllamaPath"
+    # Connect automatically: a fresh install leaves the service stopped, which is
+    # what made the first HINATA message fail with "not a valid JSON plan".
+    if (Start-OllamaService -Executable $OllamaPath) {
+        Write-Host "Ollama is connected on http://127.0.0.1:11434."
     }
     else {
+        Write-Warning "Ollama is installed but is not answering yet. HINATA also starts it automatically when it opens."
+    }
+    $env:OLLAMA_HOST = "127.0.0.1:11434"
+    Write-Host "[5/7] Making sure the local model $Model is present..."
+    $InstalledModels = (& $OllamaPath list 2>$null) -join "`n"
+    if ($InstalledModels -match [regex]::Escape($Model)) {
+        Write-Host "$Model is already downloaded; nothing to fetch."
+    }
+    elseif ($SkipModelDownload) {
         Write-Host "[5/7] Skipping Ollama model download"
+    }
+    else {
+        Write-Host "[5/7] Pulling $Model (internet setup download)..."
+        Invoke-Native $OllamaPath @("pull", $Model)
     }
 }
 else {
@@ -179,6 +211,11 @@ else {
 
 Write-Host "[7/7] Running a real text-pipeline smoke test..."
 Invoke-Native $VenvPython @("-m", "hinata", "--no-llm", "ask", "system", "info")
+if (-not $SkipOllama -and -not $Lite) {
+    # Prove the automatic connection end to end before the owner sees the window.
+    Write-Host "Checking the local model connection..."
+    & $VenvPython -m hinata model status
+}
 
 Write-Host "`nHINATA setup completed successfully." -ForegroundColor Green
 Write-Host "Next recommended step: .\.venv\Scripts\python.exe -m hinata setup-pin"

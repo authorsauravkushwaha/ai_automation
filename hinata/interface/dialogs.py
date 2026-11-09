@@ -56,8 +56,14 @@ class SettingsDialog(QDialog):
         self.llm_checkbox.setChecked(llm_enabled)
         form.addRow(self.speak_checkbox)
         form.addRow(self.llm_checkbox)
-        form.addRow("Configured model", QLabel(assistant.config.ollama.model))
+        form.addRow("Configured model", QLabel(assistant.config.ollama.model or "auto-detect"))
         form.addRow("Ollama endpoint", QLabel(assistant.config.ollama.host))
+        connection = assistant.llm.connect_status()
+        form.addRow(
+            "Ollama connection",
+            QLabel(self.describe_connection(str(connection.get("state", "")))),
+        )
+        form.addRow("Auto-start service", QLabel("Yes" if assistant.config.ollama.auto_start else "No"))
         form.addRow("Model changes", QLabel("Edit config.toml and restart HINATA"))
         tabs.addTab(general, "General")
 
@@ -101,6 +107,16 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
         self._current_device = current_device
         QTimer.singleShot(0, self.refresh_devices)
+
+    @staticmethod
+    def describe_connection(state: str) -> str:
+        return {
+            "ready": "Connected, local model installed",
+            "model_missing": "Connected, model not downloaded yet",
+            "not_installed": "Ollama is not installed",
+            "unreachable": "Not reachable; HINATA will start it on the next request",
+            "disabled": "Local model disabled in config.toml",
+        }.get(state, "Unknown")
 
     def refresh_devices(self) -> None:
         configured = "" if self._current_device is None else str(self._current_device)

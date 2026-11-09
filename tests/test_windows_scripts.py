@@ -94,6 +94,25 @@ class WindowsScriptEncodingTests(unittest.TestCase):
         self.assertIn("Windows setup script syntax OK.", result.stdout)
         self.assertNotIn("[1/7]", result.stdout)
 
+    def test_setup_script_connects_ollama_automatically(self) -> None:
+        # A fresh Ollama install leaves the service stopped; setup must find the
+        # executable (even off PATH) and start the loopback service itself.
+        text = (ROOT / "setup.ps1").read_text(encoding="utf-8")
+        for required in (
+            "function Find-Ollama",
+            "function Start-OllamaService",
+            "Programs\\Ollama\\ollama.exe",
+            '$env:OLLAMA_HOST = "127.0.0.1:11434"',
+            "-ArgumentList @(\"serve\")",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+        self.assertNotIn("Open a new terminal and rerun setup.", text)
+
+    def test_start_bat_points_at_the_in_window_reconnect(self) -> None:
+        text = (ROOT / "start.bat").read_bytes().decode("ascii")
+        self.assertIn("Reconnect", text)
+
     def test_setup_ps1_has_no_powershell_quote_lookalikes(self) -> None:
         text = (ROOT / "setup.ps1").read_bytes().decode("utf-8", "replace")
         found = sorted(

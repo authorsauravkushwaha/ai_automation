@@ -15,6 +15,7 @@ from hinata.config import HinataConfig, load_config
 from hinata.core.intent_parser import IntentParser
 from hinata.core.llm_manager import LLMManager
 from hinata.core.memory import Memory
+from hinata.core.ollama_service import OllamaService
 from hinata.core.orchestrator import Orchestrator
 from hinata.core.permissions import PermissionManager
 from hinata.core.personality import PersonalityManager
@@ -44,7 +45,8 @@ class HinataAssistant:
         self.validator = ActionValidator()
         self.parser = IntentParser(self.validator)
         self.planner = Planner(self.validator)
-        self.llm = LLMManager(self.config.ollama)
+        self.ollama = OllamaService(self.config.ollama)
+        self.llm = LLMManager(self.config.ollama, self.ollama)
         self.permissions = PermissionManager(self.authentication)
         self.orchestrator = Orchestrator(
             validator=self.validator,
@@ -59,6 +61,7 @@ class HinataAssistant:
             windows=WindowsControl(),
             system=SystemInfo(),
             llm_enabled=self.config.ollama.enabled if llm_enabled is None else llm_enabled,
+            pull_missing_model=self.config.ollama.auto_pull,
         )
         self.microphone = Microphone(self.config.speech.microphone, self.config.speech.sample_rate)
         self.stt = SpeechToText(self.config.speech)
@@ -162,6 +165,7 @@ class HinataAssistant:
                 for name in ("PySide6", "faster_whisper", "vosk", "sounddevice", "pyttsx3", "resemblyzer", "openwakeword")
             },
             "model": self.llm.status() if check_model else {"model": self.config.ollama.model},
+            "ollama_connection": self.llm.connect_status(),
             "wake_word_enabled": self.config.wake_word.enabled,
         }
 

@@ -77,6 +77,7 @@ for /l %%I in (1,1,30) do (
     if not errorlevel 1 exit /b 0
 )
 echo Ollama is not responding yet; HINATA will still open and structured commands will work.
+echo HINATA retries the connection automatically; use Reconnect inside the window.
 exit /b 0
 
 :PYTHON_FAIL
