@@ -103,6 +103,9 @@ class LLMManager:
             "model": self.config.model,
             "stream": False,
             "keep_alive": 0,  # Release model RAM when the response is complete.
+            # Decode-time guarantee of syntactically valid JSON; the schema is
+            # still enforced by the caller (IntentParser/Planner).
+            "format": "json",
             "messages": [{"role": "system", "content": system}, *messages],
             "options": {
                 "temperature": self.config.temperature,
@@ -145,7 +148,9 @@ Rules:
 - Use a tool only when the user requests an action it can actually perform.
 - Never invent tools, arguments, paths, command lines, or action results.
 - Use clarify if a path, application, or other required detail is ambiguous.
-- For general questions use chat; do not claim to have performed an action.
+- For general questions or small talk (such as "Hello") use chat; do not claim to have performed an action.
+- Example: user says "Hello" -> {{"type":"chat","content":"Hello! How can I help you today?"}}
+- When in doubt, answer with type chat rather than guessing a tool.
 - Approved user preferences: {preference_text or 'none'}
 - Voice and speaker scores are not authentication. Sensitive tools require separate approval.
 """

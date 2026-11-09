@@ -81,6 +81,39 @@ class ValidationAndParsingTests(unittest.TestCase):
             ("clarify", "Which file?"),
         )
 
+    def test_plain_prose_reply_is_used_as_chat(self) -> None:
+        kind, payload = self.parser.parse_llm_plan(
+            "Hello! How can I help you today?", "Hello"
+        )
+        self.assertEqual((kind, payload), ("chat", "Hello! How can I help you today?"))
+
+    def test_code_fenced_prose_reply_is_used_as_chat(self) -> None:
+        kind, payload = self.parser.parse_llm_plan(
+            "```\nHello there! What would you like me to do?\n```", "hi"
+        )
+        self.assertEqual(kind, "chat")
+        self.assertEqual(payload, "Hello there! What would you like me to do?")
+
+    def test_commentary_around_json_is_tolerated(self) -> None:
+        kind, payload = self.parser.parse_llm_plan(
+            'Sure! Here you go: {"type":"chat","content":"Hi!"}', "hi"
+        )
+        self.assertEqual((kind, payload), ("chat", "Hi!"))
+
+    def test_json_of_unknown_shape_salvages_readable_text(self) -> None:
+        kind, payload = self.parser.parse_llm_plan('{"response":"Hi there!"}', "hi")
+        self.assertEqual((kind, payload), ("chat", "Hi there!"))
+
+    def test_broken_action_json_is_still_rejected(self) -> None:
+        with self.assertRaises(PlanError):
+            self.parser.parse_llm_plan('{"type":"tool","tool":"shell",arguments:{}}', "bad")
+
+    def test_empty_model_output_is_rejected(self) -> None:
+        with self.assertRaises(PlanError):
+            self.parser.parse_llm_plan("   ", "hi")
+        with self.assertRaises(PlanError):
+            self.parser.parse_llm_plan("```\n```", "hi")
+
 
 if __name__ == "__main__":
     unittest.main()

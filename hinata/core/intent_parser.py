@@ -91,6 +91,15 @@ class IntentParser:
         action = self.validator.validate(tool, arguments)
         return replace(action, original_text=original)
 
+    # Small local models often answer greetings with plain prose, wrap the answer
+    # in JSON of the wrong shape, or add commentary around the object. Salvage
+    # anything readable as a display-only chat message. Tool and plan payloads
+    # are never salvaged: they stay strictly validated or raise PlanError.
+    _CHAT_SALVAGE_KEYS = ("content", "response", "message", "answer", "text", "reply", "output")
+    _FENCE_START = re.compile(r"^```[a-zA-Z0-9]*\s*")
+    _FENCE_END = re.compile(r"\s*```\s*$")
+    _ACTION_LIKE = re.compile(r'"\s*(type|tool|arguments|objective|steps)"\s*:')
+
     def parse_llm_plan(self, content: str, original_text: str) -> tuple[str, Any]:
         decoder = json.JSONDecoder()
         for index, character in enumerate(content):
@@ -114,8 +123,38 @@ class IntentParser:
                 except ValidationError as exc:
                     raise PlanError(f"The local model proposed an invalid action: {exc}") from exc
                 return "tool", replace(action, original_text=original_text)
-            if kind in {"chat", "clarify"} and isinstance(candidate.get("content"), str):
-                text = candidate["content"].strip()
-                if text:
-                    return kind, text[:4000]
-        raise PlanError("The local model did not return a valid HINATA JSON plan")
+            if kind in {"chat", "clarify"}:
+                text = candidate.get("content")
+                if isinstance(text, str) and text.strip():
+                    return kind, text.strip()[:4000]
+            salvaged = self._salvage_chat_text(candidate)
+            if salvaged:
+                return "chat", salvaged
+        return self._prose_chat(content)
+
+    @classmethod
+    def _salvage_chat_text(cls, candidate: dict[str, Any]) -> str | None:
+        for key in cls._CHAT_SALVAGE_KEYS:
+            value = candidate.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:4000]
+        nested = candidate.get("message")
+        if isinstance(nested, dict):
+            for key in cls._CHAT_SALVAGE_KEYS:
+                value = nested.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()[:4000]
+        return None
+
+    @classmethod
+    def _prose_chat(cls, content: str) -> tuple[str, Any]:
+        payload = content.strip()
+        payload = cls._FENCE_START.sub("", payload)
+        payload = cls._FENCE_END.sub("", payload).strip()
+        if not payload:
+            raise PlanError("The local model did not return a valid HINATA JSON plan")
+        if payload[0] in "{[" or cls._ACTION_LIKE.search(payload):
+            # Broken JSON, most likely an abandoned action payload. Never
+            # display machine debris and never treat it as an action.
+            raise PlanError("The local model did not return a valid HINATA JSON plan")
+        return "chat", payload[:4000]

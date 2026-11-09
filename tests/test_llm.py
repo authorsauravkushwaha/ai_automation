@@ -90,6 +90,12 @@ class LLMTests(unittest.TestCase):
             self.assertEqual(manager.chat([], "system"), "ok")
         self.assertEqual(request.call_args.args[1]["keep_alive"], 0)
 
+    def test_chat_requests_decode_time_json_from_ollama(self) -> None:
+        manager = LLMManager(OllamaConfig())
+        with patch.object(manager, "_request", return_value={"message": {"content": "ok"}}) as request:
+            manager.chat([], "system")
+        self.assertEqual(request.call_args.args[1]["format"], "json")
+
     def test_default_model_is_small_local_qwen_profile(self) -> None:
         config = OllamaConfig()
         self.assertEqual(config.model, "qwen2.5:0.5b-instruct-q4_K_M")
