@@ -16,6 +16,15 @@ class PermissionLevel(StrEnum):
 
 
 POLICY = {
+    "code_inspect": PermissionLevel.SAFE,
+    "knowledge_list": PermissionLevel.SAFE,
+    "knowledge_sync": PermissionLevel.CONFIRM,
+    "knowledge_index_semantic": PermissionLevel.CONFIRM,
+    "knowledge_semantic_search": PermissionLevel.SAFE,
+    "knowledge_answer": PermissionLevel.SAFE,
+    "knowledge_index": PermissionLevel.CONFIRM,
+    "knowledge_remove": PermissionLevel.CONFIRM,
+    "knowledge_search": PermissionLevel.SAFE,
     "open_application": PermissionLevel.SAFE,
     "close_application": PermissionLevel.CONFIRM,
     "open_folder": PermissionLevel.SAFE,

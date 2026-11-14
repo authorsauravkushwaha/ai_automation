@@ -98,7 +98,28 @@ class Memory:
         }
         if scope not in tables:
             raise ValueError("Memory scope must be conversations, commands, preferences, or all")
-        deleted = 0
+        deleted_tasks = 0
+        if scope in {"commands", "all"} and self.database.fetch_one(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_tasks'"
+        ):
+            # Do not remove active checkpoints: deletion would obscure whether
+            # an in-flight side effect happened. Terminal tasks may be cleared.
+            with self.database.connect() as connection:
+                cursor = connection.execute("DELETE FROM agent_tasks WHERE state IN ('COMPLETED', 'FAILED', 'CANCELLED')")
+                deleted_tasks = cursor.rowcount
+        if scope in {"commands", "all"} and self.database.fetch_one(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_events'"
+        ):
+            with self.database.connect() as connection:
+                cursor = connection.execute("DELETE FROM agent_events WHERE status IN ('COMPLETED', 'FAILED')")
+                deleted_tasks += cursor.rowcount
+        # Knowledge imports are separate from conversations, but clearing all
+        # memory also removes their locally stored document copies.
+        if scope == "all" and self.database.fetch_one(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_documents'"
+        ):
+            tables[scope].insert(0, "knowledge_documents")
+        deleted = deleted_tasks
         for table in tables[scope]:
             row = self.database.fetch_one(f"SELECT COUNT(*) AS count FROM {table}")
             deleted += int(row["count"] if row else 0)

@@ -302,7 +302,7 @@ Select one of these forms:
 {{"type":"clarify","content":"one specific question"}}
 Available tools and exact argument rules: {json.dumps(schemas, separators=(',', ':'))}
 Plans are limited to five validated low-impact steps and require owner approval before any step runs.
-Plan steps may use only open_application, open_folder, search_files, create_folder, read_text_file, volume, system_info, memory_search, list_preferences, or set_personality_mode.
+Plan steps may use only code_inspect, open_application, open_folder, search_files, create_folder, read_text_file, volume, system_info, memory_search, list_preferences, or set_personality_mode.
 Rules:
 - Use a tool only when the user requests an action it can actually perform.
 - Never invent tools, arguments, paths, command lines, or action results.

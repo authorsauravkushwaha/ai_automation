@@ -37,3 +37,6 @@ models/
 
 # Rendered desktop preview (python scripts/preview_ui.py)
 ui-preview.png
+
+# Generated sandbox configurations contain local host paths
+*.wsb

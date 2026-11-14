@@ -118,6 +118,49 @@ class WindowsScriptEncodingTests(unittest.TestCase):
         self.assertLess(repair, launch)
         self.assertIn("scripts\\ensure_components.py", text)
 
+    def test_start_menu_guides_and_requires_setup_consent(self) -> None:
+        text = (ROOT / "start.bat").read_bytes().decode("ascii")
+        menu = text[text.index(":MENU"):text.index(":CHECK_LAUNCH")]
+        for option in ("goto CONNECTED_SETUP", "goto DIAGNOSTICS", "goto GUIDE", "goto CHECK_LAUNCH"):
+            self.assertIn(option, menu)
+        setup = text[text.index(":CONNECTED_SETUP"):text.index(":START_APP")]
+        self.assertLess(setup.index('if /i not "%ANS%"=="y" goto MENU'), setup.index('call :ensure_python'))
+        self.assertLess(setup.index('call :ensure_python'), setup.index('setup.cmd" -Run'))
+        guide = text[text.index(":GUIDE"):text.index("\n:ensure_python")]
+        for detail in ("ollama pull nomic-embed-text", "ollama.auto_pull = false",
+                       "does NOT disable networking", "OFFLINE_ISOLATION.md", "microphone and speaker"):
+            self.assertIn(detail, guide)
+        self.assertNotIn("setup.cmd", guide)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows cmd.exe and choice.exe")
+    def test_start_menu_exit_on_windows(self) -> None:
+        result = subprocess.run(["cmd.exe", "/c", str(ROOT / "start.bat")], input="5", text=True,
+                                capture_output=True, timeout=15, cwd=ROOT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Offline readiness and acceptance guide", result.stdout)
+        self.assertNotIn("Starting the HINATA desktop", result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows cmd.exe and choice.exe")
+    def test_start_menu_guide_and_declined_setup_on_windows(self) -> None:
+        # Isolate the launcher from an installed environment; never install or
+        # download anything during these interaction tests.
+        with tempfile.TemporaryDirectory() as tmp:
+            launcher = Path(tmp) / "start.bat"
+            launcher.write_bytes((ROOT / "start.bat").read_bytes())
+            for input_text, expected in (
+                ("4m5", "Offline readiness checklist"),
+                ("2n\n5", "Start connected installation and downloads now?"),
+                ("1\n5", "HINATA is not installed yet"),
+                ("3\n5", "HINATA is not installed yet"),
+            ):
+                with self.subTest(input_text=input_text):
+                    result = subprocess.run(["cmd.exe", "/c", str(launcher)], cwd=tmp,
+                                            input=input_text, text=True, capture_output=True, timeout=20)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(expected, result.stdout)
+                    self.assertNotIn("Starting the HINATA desktop", result.stdout)
+                    self.assertFalse((Path(tmp) / ".venv").exists())
+
     def test_setup_ps1_has_no_powershell_quote_lookalikes(self) -> None:
         text = (ROOT / "setup.ps1").read_bytes().decode("utf-8", "replace")
         found = sorted(

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from dataclasses import asdict
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,9 @@ from hinata.core.personality import PersonalityManager
 from hinata.core.planner import Planner
 from hinata.core.types import ActionRequest, AssistantResponse
 from hinata.database.database import Database
+from hinata.knowledge.embeddings import OllamaEmbeddings
+from hinata.knowledge.index import KnowledgeIndex
+from hinata.tasks.store import TaskStore
 from hinata.security.action_validator import ActionValidator
 from hinata.security.authentication import Authentication
 from hinata.speech.microphone import Microphone
@@ -48,6 +53,9 @@ class HinataAssistant:
         self.ollama = OllamaService(self.config.ollama)
         self.llm = LLMManager(self.config.ollama, self.ollama)
         self.permissions = PermissionManager(self.authentication)
+        files = FileManager(self.config.security)
+        self.knowledge = KnowledgeIndex(self.database, files, OllamaEmbeddings(self.llm, self.config.ollama.embedding_model))
+        self.tasks = TaskStore(self.database)
         self.orchestrator = Orchestrator(
             validator=self.validator,
             parser=self.parser,
@@ -57,7 +65,9 @@ class HinataAssistant:
             personality=self.personality,
             permissions=self.permissions,
             apps=AppControl(self.config.applications),
-            files=FileManager(self.config.security),
+            files=files,
+            knowledge=self.knowledge,
+            tasks=self.tasks,
             windows=WindowsControl(),
             system=SystemInfo(),
             llm_enabled=self.config.ollama.enabled if llm_enabled is None else llm_enabled,
@@ -108,13 +118,32 @@ class HinataAssistant:
         source: str = "text",
         speaker_match: bool | None = None,
         speaker_required: bool = False,
+        task_id: str | None = None,
     ) -> AssistantResponse:
         return self.orchestrator.execute_plan(
             actions,
             source=source,
             speaker_match=speaker_match,
             speaker_required=speaker_required,
+            task_id=task_id,
         )
+
+    def review_task(self, task_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        task = self.tasks.get(task_id)
+        if not task or task["state"] != "VERIFYING":
+            raise ValueError("Task is not awaiting verification")
+        candidate = {"type": "plan", "objective": task["objective"], "steps": [
+            {"tool": step["tool"], "arguments": json.loads(step["arguments_json"])}
+            for step in task["steps"]
+        ]}
+        plan = self.planner.validate(candidate)
+        return task, [asdict(check) for check in self.orchestrator.reviewer.review(plan.steps)]
+
+    def attest_task(self, task_id: str, evidence: str, *, satisfied: bool) -> bool:
+        _, checks = self.review_task(task_id)
+        if satisfied and any(check["status"] == "contradicted" for check in checks):
+            raise ValueError("A postcondition is contradicted; task cannot be marked complete")
+        return self.tasks.attest(task_id, evidence, satisfied=satisfied, checks=checks)
 
     def resume(
         self,

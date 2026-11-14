@@ -65,7 +65,7 @@ class SpeechToText:
         try:
             segments, _ = model.transcribe(
                 audio,
-                language="en",
+                language=self.config.language,
                 beam_size=1,
                 best_of=1,
                 vad_filter=True,

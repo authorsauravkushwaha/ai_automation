@@ -1,0 +1,21 @@
+name: Windows launcher validation
+
+on:
+  push:
+    branches: [arena/4d90627b-ai-automation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launcher:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test launcher with Windows cmd.exe and PowerShell
+        run: python -m unittest tests.test_windows_scripts -v

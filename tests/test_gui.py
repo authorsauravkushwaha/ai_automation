@@ -2,6 +2,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tests.helpers import make_assistant
 
@@ -54,6 +55,25 @@ class DesktopTests(unittest.TestCase):
         self.assertIsNotNone(self.window.speaking_pill)
         self.assertEqual(self.window.mode_combo.count(), 5)
         self.assertEqual(self.window.stop_button.text(), "Emergency stop")
+
+    def test_task_review_requires_user_confirmation_and_evidence(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        self.assistant.orchestrator.llm_enabled = True
+        self.assistant.llm.complete = lambda *args, **kwargs: (
+            '{"type":"plan","objective":"Make folder",'
+            '"steps":[{"tool":"create_folder","arguments":{"path":"Documents/test-review"}}]}'
+        )
+        proposed = self.assistant.process_text("please prepare the workspace")
+        result = self.assistant.execute_plan(proposed.plan_actions, task_id=proposed.data["task_id"])
+        task_id = result.data["task_id"]
+        with patch("hinata.interface.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+            self.window.handle_response(result)
+        self.assertEqual(self.assistant.tasks.get(task_id)["state"], "VERIFYING")
+        with patch("hinata.interface.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), patch(
+            "hinata.interface.main_window.QInputDialog.getMultiLineText", return_value=("I inspected the requested folder.", True)
+        ):
+            self.window.handle_response(result)
+        self.assertEqual(self.assistant.tasks.get(task_id)["state"], "COMPLETED")
 
     def test_conversation_escapes_model_html(self) -> None:
         self.window.conversation.add_message("HINATA", "<img src=x onerror=alert(1)>")
