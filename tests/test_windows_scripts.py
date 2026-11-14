@@ -109,9 +109,14 @@ class WindowsScriptEncodingTests(unittest.TestCase):
                 self.assertIn(required, text)
         self.assertNotIn("Open a new terminal and rerun setup.", text)
 
-    def test_start_bat_points_at_the_in_window_reconnect(self) -> None:
+    def test_start_bat_repairs_components_before_opening_the_gui(self) -> None:
         text = (ROOT / "start.bat").read_bytes().decode("ascii")
         self.assertIn("Reconnect", text)
+        start = text.index(":START_APP")
+        repair = text.index("call :ensure_components", start)
+        launch = text.index("-m hinata gui", start)
+        self.assertLess(repair, launch)
+        self.assertIn("scripts\\ensure_components.py", text)
 
     def test_setup_ps1_has_no_powershell_quote_lookalikes(self) -> None:
         text = (ROOT / "setup.ps1").read_bytes().decode("utf-8", "replace")

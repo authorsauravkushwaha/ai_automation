@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from hinata import __version__
 from hinata.core.assistant import HinataAssistant
 from hinata.core.types import AssistantResponse
+from hinata.interface.canvas import OrbLogo, SceneCanvas
 from hinata.interface.components import ConversationView, StatusPill, Worker
 from hinata.interface.dialogs import EnrollmentDialog, MemoryDialog, SettingsDialog, StatusDialog
 from hinata.interface.styles import STYLE_SHEET
@@ -78,7 +79,8 @@ class MainWindow(QMainWindow):
             )
 
     def _build_ui(self) -> None:
-        central = QWidget()
+        # The animated 3D backdrop paints itself; every panel floats on top.
+        central = SceneCanvas()
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
         outer.setContentsMargins(18, 16, 18, 14)
@@ -87,6 +89,7 @@ class MainWindow(QMainWindow):
         header = QFrame()
         header.setObjectName("header")
         header_layout = QHBoxLayout(header)
+        header_layout.addWidget(OrbLogo(header))
         title_layout = QVBoxLayout()
         title = QLabel("HINATA")
         title.setObjectName("brand")
