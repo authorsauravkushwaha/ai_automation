@@ -13,6 +13,7 @@ Reviewed for the HINATA 0.1.0 integration on **2026-11-07**. HINATA does not bun
 | [PySide6 / Qt for Python](https://pypi.org/project/PySide6/) | Optional desktop UI | Package metadata lists LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only; Qt also offers commercial licensing. Dynamic-linking/relocation and notice obligations apply when redistributing Qt. |
 | [pyttsx3](https://github.com/nateshmbhat/pyttsx3) | Offline SAPI driver integration | MIT Python project; installed Windows voices have their own terms. |
 | [python-sounddevice](https://github.com/spatialaudio/python-sounddevice) | Microphone capture | MIT Python code; PortAudio is separately licensed (MIT-like PortAudio notice). |
+| [pypdf](https://github.com/py-pdf/pypdf) | Optional local PDF text extraction | BSD-3-Clause. Installed separately with the documents extra; review notices when redistributing. |
 | [NumPy](https://github.com/numpy/numpy) | Audio/vector processing | BSD-3-Clause. |
 | [pycaw](https://github.com/AndreMiras/pycaw) | Optional exact Windows endpoint volume | MIT project; `comtypes` and Windows audio APIs have their own notices/terms. |
 | [openWakeWord](https://github.com/dscripka/openWakeWord) | Experimental optional wake-word inference | Apache-2.0 **code**. Official included/pretrained models are documented as **CC BY-NC-SA 4.0**, not Apache; custom model/data rights must be reviewed separately. |

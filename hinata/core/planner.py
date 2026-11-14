@@ -18,6 +18,7 @@ class PlanningError(ValueError):
 # available as individual requests and cannot be smuggled into a multi-step plan.
 PLAN_SAFE_TOOLS = frozenset(
     {
+        "code_inspect",
         "open_application",
         "open_folder",
         "search_files",

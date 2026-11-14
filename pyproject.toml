@@ -36,6 +36,8 @@ light-speech = [
   "vosk>=0.3.45,<0.4",
 ]
 tts = ["pyttsx3>=2.90,<3"]
+# PDF extraction runs in a bounded subprocess; DOCX requires no extra dependency.
+documents = ["pypdf==7.1.0"]
 windows-audio = ["pycaw>=20240210"]
 speaker = ["numpy>=1.26,<2", "resemblyzer>=0.1.3,<0.2"]
 wake = ["openwakeword>=0.6,<0.7", "onnxruntime>=1.17,<2"]

@@ -43,6 +43,22 @@ class VoskStateTests(unittest.TestCase):
 
 
 class WhisperOfflineTests(unittest.TestCase):
+    def test_requested_whisper_languages_are_passed_to_local_model(self) -> None:
+        calls = []
+        class FakeModel:
+            def transcribe(self, audio, **kwargs):
+                calls.append(kwargs["language"])
+                return [types.SimpleNamespace(text=" hello ")], None
+        for language in ("en", "hi", "fr", "de"):
+            config = SpeechConfig(language=language)
+            config.validate()
+            stt = SpeechToText(config)
+            stt._model = FakeModel()
+            self.assertEqual(stt._transcribe_whisper(object()), "hello")
+        self.assertEqual(calls, ["en", "hi", "fr", "de"])
+        with self.assertRaises(ValueError):
+            SpeechConfig(language="xx").validate()
+
     def test_only_explicit_setup_allows_downloading(self) -> None:
         calls = []
 

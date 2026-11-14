@@ -40,7 +40,7 @@ Allow-list only applications and roots you intend HINATA to control. Adding a wh
 - Memory JSON exports deliberately exclude settings/PIN material, but can contain private conversations and preferences. Protect/delete exports appropriately.
 - Voice embeddings are protected with the current Windows user's DPAPI keys. Owner-only ACLs are applied best-effort to private paths. On non-Windows development systems, protection is owner-only filesystem permissions rather than DPAPI.
 - No enrollment WAV files are created. Voice embeddings remain sensitive biometric-adjacent data even though they are not raw recordings.
-- Read-file content is omitted from `task_results`; it can still appear in the visible conversation/history because that is the requested result. Typed-text command arguments are reduced to a character count in command metadata.
+- Tool output is shown in the UI but omitted from subsequent model conversation history; a short tool/status marker is retained instead. Read-file, knowledge-search and memory-search content is also omitted from command messages and task results. Typed-text command arguments are reduced to a character count in command metadata. Existing historical records created by older versions are not retroactively redacted.
 
 ## Network behavior
 
@@ -66,3 +66,78 @@ Internet is used by explicit setup/download operations (`pip`, `winget`, `ollama
 This is a local productivity assistant, not a hardened security boundary against malware already running as your user, an administrator, an attacker with unlocked physical access, malicious audio played through your microphone, or a compromised model/runtime. LLM output can be wrong even when JSON is valid. File search/read and active-window typing can have unintended consequences if the wrong path/window is selected.
 
 To stop activity in the desktop, click **Emergency stop**; it discards late desktop results and blocks pending actions until a fresh request starts; an already-running Windows action may finish. In the interactive terminal, `/stop` stops audio; Ctrl+C interrupts the current foreground command. To revoke voice use, run `hinata delete-voice-profile`. To erase local memory, use the PIN-protected memory controls and then remove any external exports/backups. To change the PIN, run `hinata setup-pin` and verify the current PIN.
+
+## Local knowledge index
+
+Indexing requires confirmation and stores document text unencrypted in SQLite.
+Search excerpts are untrusted and are not replayed as model history. Excerpts
+are nevertheless displayed in the UI/terminal; do not treat document content as
+authoritative instructions. `remove document from index PATH` removes the copy,
+not the source; PIN-protected `clear memory` removes all indexed copies as well.
+Optional semantic indexing sends document text only to the configured loopback
+Ollama service and stores vectors locally, unencrypted. Question answering sends
+retrieved passages to that service as untrusted data, and treats the answer as
+text only; citations and factual support must be checked by the user. Neither
+prompt instructions nor citation-label validation prevent all prompt injection or
+hallucinations. Model processes are not sandboxed or network-restricted by HINATA.
+HINATA does not enforce a network firewall for its process tree.
+
+## Plan checkpoints
+
+The exact steps, arguments, objective and source are stored in local unencrypted
+SQLite before the interactive approval. The stored plan is atomically claimed
+once; changing steps or approving under a different source is rejected. A step is
+marked RUNNING before its action and recorded after it returns. This deliberately
+leaves a RUNNING/unknown outcome on interruption, including interruption between
+a successful side effect and its checkpoint. Nothing is automatically replayed
+or resumed, even if the step might have been safe. A separate concurrent process
+may still be executing a RUNNING task, so startup does not mark it as failed or
+cancelled. Review the environment before issuing a new request. No hard timeout or
+OS-level process sandbox is provided for existing tools. Clearing command history
+removes completed/failed/cancelled checkpoints, but retains awaiting/running and
+VERIFYING checkpoints; pending ones can first be cancelled with `hinata tasks ID --cancel`.
+Successful action results alone do not complete the objective. For a single
+create-folder step and the exact request `ensure folder PATH exists` (with a
+whitespace-free path), the reviewer compares both resolved paths and rechecks
+folder existence; the objective can then be recorded as automatically verified.
+The exact comma-separated plural form `ensure folders PATH1, PATH2 exist` also
+supports two to five unique whitespace-free paths, with a one-to-one match to
+completed create-folder steps. Otherwise it marks unsupported checks unknown, and a human must inspect the
+original request and supply evidence before marking complete. The CLI and desktop
+review paths recheck folder postconditions. Attestations are not cryptographic
+proof; a mistaken user can still assert an incorrect result. Legacy completed
+tasks without such attestations are migrated to VERIFYING. Worker events store
+only worker name, tool name, and status, locally in SQLite. All workers are called
+only after central validation and authorization; worker allowlists do not grant
+additional permissions.
+
+## Optional OS-level isolation
+
+See [offline isolation](OFFLINE_ISOLATION.md) for the Linux namespace launcher
+and Windows Sandbox configuration generator, including important IPC, shared
+folder and host-process limitations. The Linux launcher is tested with an actual
+namespace in this environment. The Windows configuration is generated and
+unit-tested, but has not been run on Windows. Neither mechanism monitors all
+attempted external connections, and ordinary HINATA launches are not isolated.
+
+## Document ingestion
+
+Local PDF import uses the optional pypdf package in a separate process with a
+15-second wall timeout, bounded input and extracted text, a 100-page cap, and
+POSIX CPU/address-space limits where supported. It is not an OS sandbox, and
+Windows does not receive the POSIX memory/CPU limits. Do not assume malicious
+PDFs are harmless. DOCX extraction limits the compressed input and main XML,
+rejects XML DTD/entity declarations, reads no external resources and executes no
+macros. Both formats are parsed locally. PDF text extraction is not OCR; DOCX
+headers, comments and embedded objects are not indexed. An approved folder sync
+can commit some successful imports before an error; it only removes missing
+index entries when every import succeeds. Original documents are never deleted.
+
+## Code inspection
+
+`inspect code PATH` statically parses Python source under allowed roots, bounded to
+20,000 characters, without importing or running it. It reports a few suspicious
+call patterns, not a comprehensive security assessment; aliases, dynamic calls and
+many other vulnerabilities can be missed. It does not grant permission to execute
+or modify code. Output identifiers may contain sensitive project metadata and are
+stored in local command results. Filesystem checks are still subject to path races.

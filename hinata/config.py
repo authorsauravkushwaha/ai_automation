@@ -25,6 +25,7 @@ class OllamaConfig:
     enabled: bool = True
     host: str = "http://127.0.0.1:11434"
     model: str = "qwen2.5:0.5b-instruct-q4_K_M"
+    embedding_model: str = "nomic-embed-text"
     timeout_seconds: int = 90
     max_tokens: int = 256
     context_tokens: int = 2048
@@ -50,6 +51,8 @@ class OllamaConfig:
         # which keeps a fresh install usable before the configured model downloads.
         if len(self.model) > 150 or ("\x00" in self.model) or self.model != self.model.strip():
             raise ConfigError("ollama.model must be a local model name of at most 150 characters")
+        if not isinstance(self.embedding_model, str) or not self.embedding_model or len(self.embedding_model) > 150 or self.embedding_model != self.embedding_model.strip() or "\x00" in self.embedding_model:
+            raise ConfigError("ollama.embedding_model must be a local model name of at most 150 characters")
         if not 1 <= self.timeout_seconds <= 600:
             raise ConfigError("ollama.timeout_seconds must be between 1 and 600")
         if not 16 <= self.max_tokens <= 4096:
@@ -65,6 +68,7 @@ class SpeechConfig:
     microphone: str | int | None = None
     sample_rate: int = 16000
     stt_backend: str = "faster-whisper"
+    language: str = "en"
     whisper_model: str = "tiny"
     whisper_compute_type: str = "int8"
     vosk_model_path: str = ""
@@ -80,6 +84,8 @@ class SpeechConfig:
     def validate(self) -> None:
         if self.stt_backend not in {"faster-whisper", "vosk"}:
             raise ConfigError("speech.stt_backend must be 'faster-whisper' or 'vosk'")
+        if self.language not in {"en", "hi", "fr", "de"}:
+            raise ConfigError("speech.language must be en, hi, fr, or de")
         if self.tts_backend not in {"pyttsx3", "piper"}:
             raise ConfigError("speech.tts_backend must be 'pyttsx3' or 'piper'")
         if not 100 <= self.tts_rate <= 250:

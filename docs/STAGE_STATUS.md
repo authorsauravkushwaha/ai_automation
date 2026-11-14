@@ -18,7 +18,7 @@ for staged setup and hands-on checks. Downloads require internet and explicit se
 | 8. Voice output | Optional Windows SAPI or a separately installed Piper executable and voice. | Select and license a suitable feminine voice and test playback/interruption on Windows. No voice is bundled. |
 | 9. Wake word | Optional streaming adapter, disabled by default. | Obtain/train a legally usable custom model, configure it, measure accuracy and resource use. No wake model is included. |
 | 10. Desktop interface | PySide6 chat, mode, status, permission prompts and emergency stop. | Validate on Windows; an audio waveform and some requested controls are not implemented. |
-| 11. Planning | Up to five allowlisted validated steps with explicit plan approval. | This is a bounded executor, not a general project organizer or autonomous recovery engine. |
+| 11. Planning | Up to five allowlisted steps, durable checkpoints, one approval-gated revision, narrow folder-objective verification and human review. | Interrupted steps are uncertain and never automatically replayed. Generic objectives are not automatically verified; autonomous recovery remains incomplete. |
 | 12. Reliability and security | Unit tests, schema checks, PIN, bounded paths and cooperative stop. | Test the full offline workflow, device integrations, failure cases and RAM on the target. There is no integrated safe-update/rollback system, no independent security audit, and actions already running may finish after stop. |
 
 ## Measure the actual Windows resource budget

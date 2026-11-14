@@ -13,6 +13,15 @@ class ValidationError(ValueError):
 
 
 SCHEMAS: dict[str, dict[str, Any]] = {
+    "code_inspect": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
+    "knowledge_list": {"required": [], "properties": {}},
+    "knowledge_sync": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
+    "knowledge_index_semantic": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
+    "knowledge_semantic_search": {"required": ["query"], "properties": {"query": ("string", 1, 200), "limit": ("integer", 1, 10)}},
+    "knowledge_answer": {"required": ["query"], "properties": {"query": ("string", 1, 200)}},
+    "knowledge_index": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
+    "knowledge_remove": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
+    "knowledge_search": {"required": ["query"], "properties": {"query": ("string", 1, 200), "limit": ("integer", 1, 10)}},
     "open_application": {"required": ["name"], "properties": {"name": ("string", 1, 64)}},
     "close_application": {"required": ["name"], "properties": {"name": ("string", 1, 64)}},
     "open_folder": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},

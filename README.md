@@ -1,8 +1,64 @@
-# HINATA — Personal Offline AI Assistant for Windows 11
+# HINATA
 
-HINATA is a local-first, permission-controlled desktop assistant designed for a **Windows 11 laptop with 4 GB RAM**. It combines a quantized Ollama model, deterministic natural-language commands, offline speech, optional owner voice verification, SQLite memory, a dark PySide6 interface, and bounded Windows automation.
+**Your files, your models, your machine.** An offline-first Windows desktop
+assistant for local conversation, document search, memory and permission-aware
+automation.
 
-**No paid APIs. No OpenAI dependency. No cloud conversation service. No arbitrary model-generated shell execution.**
+[![Tests](https://github.com/authorsauravkushwaha/ai_automation/actions/workflows/tests.yml/badge.svg)](https://github.com/authorsauravkushwaha/ai_automation/actions/workflows/tests.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+[Get started](#one-click-start-from-the-downloaded-zip) ·
+[Try without a model](#try-the-core-without-a-model) ·
+[Examples](#what-can-i-try) ·
+[Security & offline isolation](#security-and-project-status) ·
+[Contribute](CONTRIBUTING.md)
+
+> **Alpha software.** HINATA targets Windows 11 and a low-memory laptop; it has
+> not been independently security-audited or fully validated on physical devices.
+> Check the [roadmap and validation gaps](docs/STAGE_STATUS.md) before relying on it.
+
+## What can I try?
+
+| You want to… | Try this in HINATA | What to know |
+|---|---|---|
+| See your machine's status | `system info` | Deterministic; no model needed. |
+| Search local notes | `index document Documents/notes.txt` then `search knowledge for project` | Indexing requires approval. Files must be under an allowed root. |
+| Remember a preference | `remember that my editor is vim` then `list preferences` | Saving requires approval; memory is stored locally in unencrypted SQLite. |
+| Inspect Python code | `inspect code Documents/script.py` | Read-only static inspection, not a security audit. |
+| Use a local model | Ask a question in the desktop or CLI | Requires an installed Ollama runtime and prepared model. |
+
+HINATA also offers optional semantic retrieval, offline speech, bounded plans
+and Windows automation. Some components require separately installed models or
+hardware; fixed specialist workers are not autonomous AI agents. See the
+[feature details](#local-document-search-and-question-answering) and
+[roadmap](docs/STAGE_STATUS.md).
+
+## Try the core without a model
+
+With Python 3.11+ installed, run this from the extracted or cloned project folder:
+
+```text
+python -m hinata --no-llm ask "system info"
+```
+
+This deterministic command needs no model or paid API. It creates local application
+data in HINATA's configured data directory. For the desktop, speech and model-backed
+features, follow the Windows setup below.
+
+## Security and project status
+
+- Normal use is **local-first, not network-isolated**. The optional
+  [offline isolation guide](docs/OFFLINE_ISOLATION.md) describes stronger network
+  restrictions and their limitations.
+- Actions are allowlisted and sensitive actions require approval; arbitrary
+  model-generated shell commands are not executed. These controls are not a full
+  operating-system sandbox. [Security model](docs/SECURITY.md).
+- Successful tool calls do not prove arbitrary objectives. Automatic verification
+  is limited to specific folder-existence requests; other objectives require review.
+- No model weights or voice recordings are bundled. Connected setup and optional
+  downloads require consent; physical audio and real-model acceptance need testing
+  on the target computer.
 
 ## One-click start from the downloaded ZIP
 
@@ -12,9 +68,25 @@ No terminal experience needed:
 2. Right-click the downloaded ZIP → **Extract All…** and open the extracted `ai_automation-main` folder.
 3. Double-click **`start.bat`**.
 
-The first double-click checks for Python 3.11+ (it offers to install it via `winget` if missing), creates the environment, installs HINATA, installs/checks Ollama, **starts the local Ollama service**, downloads the local models, verifies the model connection, runs the tests, and then opens the desktop window. It needs internet and can take several minutes; keep the window open.
+The start menu guides you through these choices:
 
-Every later double-click first checks that the GUI, Whisper (or the selected Vosk speech backend), text-to-speech, Windows audio controls, and configured offline speech model are still present. If a component or model is missing or incomplete, HINATA repairs/downloads just that part before opening the desktop window; keep the internet connection available for repairs. When everything is already installed, it simply checks/starts local Ollama and opens HINATA.
+1. **Open HINATA normally** after setup. Optional connected component repair is
+   separately confirmed before it runs.
+2. **Connected setup or full repair**. Approve the download prompt to install
+   dependencies, the chat model and speech assets, run tests and open the desktop.
+   If setup was interrupted, choose this option again. It needs internet and can
+   take several minutes; keep the window open. Semantic search additionally needs
+   a separately downloaded embedding model; option 4 explains how to prepare it.
+3. **Check this PC and local model** for diagnostics after installation.
+4. **Offline readiness and acceptance guide** for preparation, manual checks after
+   restart, and the separate Windows Sandbox isolation instructions.
+5. **Exit** without setup.
+
+A normal launch is local-first, **not network-isolated**. Declining repair does
+not block internet access, and user-modified settings such as `auto_pull = true`
+may permit downloads. For an actual network restriction, follow the Windows
+Sandbox instructions in the guide; that path and physical voice need testing on
+your own Windows computer. Diagnostics do not certify end-to-end readiness.
 
 ### Ollama connects automatically
 
@@ -101,6 +173,59 @@ Set a PIN before sensitive operations or voice enrollment:
 ```
 
 > Setup downloads packages and models. Once those downloads finish, normal chat, speech recognition, speech output, memory, and automation do not require internet. Structured commands also work when Ollama is stopped.
+
+## Local document search and question answering
+
+For lexical search without an embedding model, import a text file within an
+allowed root, approve the request, and search:
+
+```text
+index document Documents/notes.txt
+search knowledge for project
+remove document from index Documents/notes.txt
+sync knowledge folder Documents
+list knowledge
+```
+
+For semantic search, first prepare both Ollama and the configured local chat and
+embedding models **while online**. For the default embedding model, explicitly run
+`ollama pull nomic-embed-text`; `ollama.embedding_model` may instead name another
+installed Ollama embedding model such as `bge-m3` (check its hardware needs and
+license). Normal semantic indexing never pulls a model. Once prepared:
+
+```text
+semantic index document Documents/notes.txt
+semantic search for project delivery date
+ask knowledge when is the project delivery date?
+```
+
+Approve each semantic import. Embeddings are generated locally and saved in
+SQLite with the exact embedding-model digest; a changed model requires reindexing.
+The model-generated answer is display-only, includes source references, and may
+be incorrect or follow malicious text despite instructions to ignore it. Check
+the cited passages. These commands do not run code or actions proposed in a
+passage or answer. If an embedding model or Ollama is unavailable, the request
+fails rather than downloading or silently falling back. `--no-llm` disables this
+path; lexical search remains available.
+
+The index accepts configured text extensions, DOCX, and text-based PDF. PDF support
+requires the optional pinned dependency, installed during connected setup:
+`python -m pip install -e ".[documents]"`. Scanned PDFs need external OCR and are
+not supported. Imports are limited to the configured byte limit and 200,000
+extracted characters; PDFs are limited to 100 pages and a 15-second extraction
+timeout. DOCX imports read the main document body only.
+
+Folder sync requires approval and scans at most 20 supported files across 500
+directories. It indexes changed files lexically and removes index entries for
+missing files only after all imports succeed; it never deletes originals. If a
+changed document had semantic vectors, sync removes those stale vectors and
+reports that semantic reindexing is needed. Existing unchanged vectors are kept.
+Use `list knowledge` to inspect up to 100 entries and whether their files changed.
+Stale or deleted sources are not returned in search. The unencrypted local SQLite
+database contains document copies and vectors; clearing all memory also removes
+the index. Retrieval uses an in-process cosine scan, not an external vector
+database, and is not designed for large libraries.
+See [architecture assessment](docs/ARCHITECTURE_ASSESSMENT.md).
 
 ## Recommended profiles
 
@@ -280,6 +405,9 @@ hinata/
   main.py                  terminal entry point
   config.py                validated TOML configuration
   core/                    assistant, orchestrator, LLM, bounded planner, memory, personality, permissions
+  agents/                  bounded replanner, postcondition reviewer, restricted dispatch workers
+  tasks/                   persistent plan checkpoints and review state
+  knowledge/               local document extraction, indexing and retrieval
   speech/                  microphone, STT, TTS, speaker, wake-word, voice pipeline
   automation/              apps, files, Windows input/audio, system information
   interface/               PySide6 windows, dialogs, widgets, dark styles
@@ -292,3 +420,59 @@ setup.ps1 / setup.cmd       one-command Windows bootstrap
 ```
 
 The core uses only the Python standard library. Optional AI/GUI packages are lazy-loaded so `hinata --no-llm` stays lightweight. HINATA is released under [MIT](LICENSE); third-party code/model notices are in [THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).
+
+### Specialist workers
+
+The orchestrator routes validated, authorized tool actions through fixed research,
+read-only coding, memory, and execution workers; each has an explicit tool allowlist
+and records a local activity event. Use `inspect code Documents/script.py` to parse
+an approved-root Python file without executing it. It reports syntax, imports,
+definitions and a few heuristic warnings—not a security audit. A proposal-only
+replanner and a read-only reviewer are separate components. These deterministic
+workers are not independent autonomous AI personas: coding does not yet write code
+or run tests, and specialist scheduling and open-ended agent communication are not
+implemented. `hinata agents` lists the permitted tools and recent events.
+
+### Inspecting approved plans
+
+Plans proposed by the local model are saved before approval. Their exact steps
+must match the preview and are claimed once when approved. Inspect recent plans
+or a specific task without starting or resuming anything:
+
+```text
+hinata tasks
+hinata tasks TASK_ID
+hinata tasks TASK_ID --cancel
+hinata tasks TASK_ID --verify
+hinata tasks TASK_ID --reject
+hinata agents
+```
+
+`--cancel` only cancels a plan still awaiting approval. An interrupted `RUNNING`
+step has an **unknown outcome**: it might already have changed the system. It is
+never replayed automatically. Inspect the target manually and start a new plan
+if appropriate. Emergency stop remains cooperative and an in-flight action may
+finish. Successful tool returns normally leave the task in `VERIFYING`, not
+`COMPLETED`. A narrow exception is an exact request `ensure folder PATH exists`
+(with a whitespace-free path) and a single approved create-folder step targeting
+that same path. The exact form `ensure folders PATH1, PATH2 exist` also supports
+up to five unique whitespace-free paths and matching create-folder steps. An
+independent filesystem check can verify these objectives and record evidence
+automatically. For other plans, a read-only reviewer checks
+that created folders exist; unsupported postconditions are explicitly unknown. Review the original request,
+steps, and checks with `hinata tasks TASK_ID --verify` or the desktop review
+prompt. Only record completion after personally inspecting the result and entering
+observed evidence. `--reject` records that the objective was not met. Human
+attestation is not proof against a mistaken or dishonest reviewer, and generic
+objectives beyond these exact folder forms are not automatically verified. Legacy tasks previously marked
+completed from tool success are migrated to `VERIFYING` for review. Task metadata,
+including requests, paths, arguments and attestations, is stored unencrypted in
+SQLite. Clearing commands or all memory removes terminal tasks; pending, running
+and verifying records are retained to avoid erasing uncertain side effects.
+
+## Optional offline isolation
+
+For Linux network namespaces and the separately configured Windows Sandbox
+approach, including prerequisites, commands and security limitations, see
+[offline isolation](docs/OFFLINE_ISOLATION.md). These launch paths are optional;
+the normal launchers do not enforce operating-system network isolation.

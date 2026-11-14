@@ -282,6 +282,40 @@ class MainWindow(QMainWindow):
         source = "voice" if voice is not None else "text"
         speaker_match = voice.speaker_match if voice is not None else None
         speaker_required = voice.speaker_required if voice is not None else False
+        if response.status == "verification_required" and response.data.get("task_id"):
+            task_id = response.data["task_id"]
+            try:
+                task, checks = self.assistant.review_task(task_id)
+            except (ValueError, RuntimeError) as exc:
+                self.show_task_error(str(exc))
+                return
+            details = "\n".join(f"Step {check['step']} ({check['tool']}): {check['status']} — {check['detail']}" for check in checks)
+            request = task.get("user_request") or "Not recorded; inspect the task history manually."
+            answer = QMessageBox.question(
+                self, "Review task outcome",
+                f"Original request: {request}\nPlan objective: {task['objective']}\n\n{details}\n\n"
+                "Have you personally checked that the original request was satisfied? "
+                "Choose No to leave the task awaiting review.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.conversation.add_message("System", f"Task {task_id} remains unverified. Review it later with hinata tasks.")
+                return
+            evidence, accepted = QInputDialog.getMultiLineText(
+                self, "Record observed evidence", "Describe what you personally checked (10–1000 characters):"
+            )
+            if not accepted:
+                self.conversation.add_message("System", f"Task {task_id} remains unverified.")
+                return
+            try:
+                if self.assistant.attest_task(task_id, evidence, satisfied=True):
+                    self.conversation.add_message("System", "Human review recorded; task marked complete.")
+                else:
+                    self.conversation.add_message("System", "Task state changed; review was not recorded.")
+            except (ValueError, RuntimeError) as exc:
+                self.show_task_error(str(exc))
+            return
         if response.needs_plan_confirmation:
             answer = QMessageBox.question(
                 self,
@@ -291,11 +325,14 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.No,
             )
             if answer != QMessageBox.StandardButton.Yes:
+                if response.data.get("task_id"):
+                    self.assistant.tasks.cancel_pending(response.data["task_id"])
                 self.conversation.add_message("System", "Plan cancelled; no steps were executed.")
                 return
             self.run_task(
                 lambda: self.assistant.execute_plan(
                     response.plan_actions,
+                    task_id=response.data.get("task_id"),
                     source=source,
                     speaker_match=speaker_match,
                     speaker_required=speaker_required,

@@ -31,6 +31,12 @@ EXAMPLES = """Structured commands (work without an LLM):
   volume up / volume down / mute       set volume to 35
   system info                          remember that my editor is VS Code
   list preferences                     search memory for editor
+  inspect code Documents\\script.py
+  index document Documents\\notes.txt  search knowledge for project
+  sync knowledge folder Documents      list knowledge
+  semantic index document Documents\\notes.txt
+  semantic search for project          ask knowledge what is the project?
+  remove document from index Documents\\notes.txt
   clear conversations                  clear memory
 Anything else is sent to the configured loopback Ollama model, if enabled."""
 
@@ -69,6 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     model = commands.add_parser("model", help="Inspect or download the configured Ollama model")
     model.add_argument("operation", choices=["status", "pull"])
+
+    commands.add_parser("agents", help="Show registered specialist workers and recent activity")
+    tasks = commands.add_parser("tasks", help="Inspect saved plan checkpoints (never resumes execution)")
+    tasks.add_argument("id", nargs="?", help="Task ID; omit to list recent tasks")
+    task_action = tasks.add_mutually_exclusive_group()
+    task_action.add_argument("--cancel", action="store_true", help="Cancel an unapproved plan by ID")
+    task_action.add_argument("--verify", action="store_true", help="Review an executed task and record observed evidence")
+    task_action.add_argument("--reject", action="store_true", help="Record that an executed task did not meet its objective")
 
     memory = commands.add_parser("memory", help="Inspect, export, or delete local memory")
     operation = memory.add_mutually_exclusive_group(required=True)
@@ -127,6 +141,46 @@ def main(argv: list[str] | None = None) -> int:
             # status: connect (starting the service if needed) so the report is real.
             report = assistant.llm.ensure_connected()
             print(json.dumps({**report, "tags": assistant.llm.status()}, indent=2))
+            return 0
+        if args.command == "agents":
+            from hinata.agents.workers import WORKERS
+            print(json.dumps({"workers": {name: sorted(worker.allowed_tools) for name, worker in WORKERS.items()},
+                              "planning": "proposal-only bounded replanner",
+                              "review": "read-only postcondition checks and human attestation",
+                              "recent_events": assistant.orchestrator.workers.recent()}, indent=2))
+            return 0
+        if args.command == "tasks":
+            if args.verify or args.reject:
+                if not args.id:
+                    print("A task ID is required.", file=sys.stderr)
+                    return 1
+                task, checks = assistant.review_task(args.id)
+                print(json.dumps({"task": task, "current_checks": checks}, indent=2, ensure_ascii=False))
+                try:
+                    evidence = input("Describe the evidence you personally observed (10-1000 characters): ").strip()
+                    answer = input("Record this review? Type yes to confirm [y/N]: ").strip().lower()
+                except EOFError:
+                    print("Review cancelled.")
+                    return 1
+                if answer not in {"y", "yes"}:
+                    print("Review cancelled.")
+                    return 1
+                if not assistant.attest_task(args.id, evidence, satisfied=args.verify):
+                    print("Task state changed; review not recorded.", file=sys.stderr)
+                    return 1
+                print("Human review recorded; task " + ("marked complete." if args.verify else "marked failed."))
+                return 0
+            if args.cancel:
+                if not args.id or not assistant.tasks.cancel_pending(args.id):
+                    print("Task is not awaiting approval; it was not changed.", file=sys.stderr)
+                    return 1
+                print("Unapproved task cancelled. No steps were run.")
+                return 0
+            result = assistant.tasks.get(args.id) if args.id else assistant.tasks.recent()
+            if result is None:
+                print("Task not found.", file=sys.stderr)
+                return 1
+            print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
         if args.command == "memory":
             return memory_command(assistant, args)
@@ -189,13 +243,18 @@ def emit_with_approvals(
             try:
                 answer = input("Approve this entire plan? Type yes to confirm [y/N]: ").strip().lower()
             except EOFError:
+                if response.data.get("task_id"):
+                    assistant.tasks.cancel_pending(response.data["task_id"])
                 print("\nHINATA: Plan cancelled; no steps were executed.")
                 return 1
             if answer not in {"y", "yes"}:
+                if response.data.get("task_id"):
+                    assistant.tasks.cancel_pending(response.data["task_id"])
                 print("HINATA: Plan cancelled; no steps were executed.")
                 return 1
             response = assistant.execute_plan(
                 response.plan_actions,
+                task_id=response.data.get("task_id"),
                 source=source,
                 speaker_match=getattr(voice, "speaker_match", None),
                 speaker_required=getattr(voice, "speaker_required", False),

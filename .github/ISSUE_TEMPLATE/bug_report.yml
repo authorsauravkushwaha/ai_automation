@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a reproducible problem in HINATA
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a problem. Please remove private files, paths,
+        recordings, model prompts and credentials from logs and screenshots.
+        For security vulnerabilities, follow SECURITY.md rather than posting details here.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include what you expected and the actual result.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Start HINATA\n2. ..."
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS version, Python version, HINATA version or commit, and optional model or backend.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Remove personal data before sharing.

@@ -1,0 +1,19 @@
+# Copy into your mapped DATA directory as offline-config.toml before launching.
+# Documents are mounted read-only in the sandbox. Models must already exist locally.
+[ollama]
+enabled = true
+host = "http://127.0.0.1:11434"
+model = "qwen2.5:0.5b-instruct-q4_K_M"
+embedding_model = "nomic-embed-text"
+auto_start = false
+auto_pull = false
+
+[security]
+allowed_roots = ['C:\hinata\documents']
+
+[speech]
+language = "en"
+stt_backend = "faster-whisper"
+# Optional: put a complete local faster-whisper model directory here first.
+whisper_model = 'C:\hinata\models\whisper-tiny'
+tts_backend = "pyttsx3"

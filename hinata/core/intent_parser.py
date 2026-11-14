@@ -21,6 +21,32 @@ class IntentParser:
 
     def parse(self, text: str) -> ActionRequest | None:
         stripped = text.strip()
+        match = re.fullmatch(r"(?:inspect|analyze) (?:python|code)(?: file)?\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("code_inspect", {"path": match.group(1)}, text)
+        if re.fullmatch(r"(?:list|show) knowledge(?: documents)?", stripped, re.IGNORECASE):
+            return self._action("knowledge_list", {}, text)
+        match = re.fullmatch(r"(?:index folder|sync knowledge folder)\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("knowledge_sync", {"path": match.group(1)}, text)
+        match = re.fullmatch(r"(?:semantic index|semantically index) document\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("knowledge_index_semantic", {"path": match.group(1)}, text)
+        match = re.fullmatch(r"(?:semantic search|search semantic knowledge)(?: for)?\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("knowledge_semantic_search", {"query": match.group(1)}, text)
+        match = re.fullmatch(r"ask knowledge\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("knowledge_answer", {"query": match.group(1)}, text)
+        match = re.fullmatch(r"(?:index|import) document\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("knowledge_index", {"path": match.group(1)}, text)
+        match = re.fullmatch(r"remove document from index\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("knowledge_remove", {"path": match.group(1)}, text)
+        match = re.fullmatch(r"search knowledge(?: for)?\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("knowledge_search", {"query": match.group(1)}, text)
         mode_match = re.fullmatch(
             r"(?:(?:switch|change|set)(?:\s+to)?\s+)?"
             r"(friend|advisor|technical|strategist|professional)(?:\s+mode)?",
