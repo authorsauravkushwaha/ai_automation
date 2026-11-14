@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from hinata.agents.workers import DelegationError, WORKERS
+from hinata.agents.workers import WORKERS, DelegationError
 from hinata.core.types import ActionRequest, ActionResult
 from hinata.tasks.store import TaskStateError
 from tests.helpers import make_assistant

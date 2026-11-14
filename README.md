@@ -1,8 +1,64 @@
-# HINATA — Personal Offline AI Assistant for Windows 11
+# HINATA
 
-HINATA is a local-first, permission-controlled desktop assistant designed for a **Windows 11 laptop with 4 GB RAM**. It combines a quantized Ollama model, deterministic natural-language commands, offline speech, optional owner voice verification, SQLite memory, a dark PySide6 interface, and bounded Windows automation.
+**Your files, your models, your machine.** An offline-first Windows desktop
+assistant for local conversation, document search, memory and permission-aware
+automation.
 
-**No paid APIs. No OpenAI dependency. No cloud conversation service. No arbitrary model-generated shell execution.**
+[![Tests](https://github.com/authorsauravkushwaha/ai_automation/actions/workflows/tests.yml/badge.svg)](https://github.com/authorsauravkushwaha/ai_automation/actions/workflows/tests.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+[Get started](#one-click-start-from-the-downloaded-zip) ·
+[Try without a model](#try-the-core-without-a-model) ·
+[Examples](#what-can-i-try) ·
+[Security & offline isolation](#security-and-project-status) ·
+[Contribute](CONTRIBUTING.md)
+
+> **Alpha software.** HINATA targets Windows 11 and a low-memory laptop; it has
+> not been independently security-audited or fully validated on physical devices.
+> Check the [roadmap and validation gaps](docs/STAGE_STATUS.md) before relying on it.
+
+## What can I try?
+
+| You want to… | Try this in HINATA | What to know |
+|---|---|---|
+| See your machine's status | `system info` | Deterministic; no model needed. |
+| Search local notes | `index document Documents/notes.txt` then `search knowledge for project` | Indexing requires approval. Files must be under an allowed root. |
+| Remember a preference | `remember that my editor is vim` then `list preferences` | Saving requires approval; memory is stored locally in unencrypted SQLite. |
+| Inspect Python code | `inspect code Documents/script.py` | Read-only static inspection, not a security audit. |
+| Use a local model | Ask a question in the desktop or CLI | Requires an installed Ollama runtime and prepared model. |
+
+HINATA also offers optional semantic retrieval, offline speech, bounded plans
+and Windows automation. Some components require separately installed models or
+hardware; fixed specialist workers are not autonomous AI agents. See the
+[feature details](#local-document-search-and-question-answering) and
+[roadmap](docs/STAGE_STATUS.md).
+
+## Try the core without a model
+
+With Python 3.11+ installed, run this from the extracted or cloned project folder:
+
+```text
+python -m hinata --no-llm ask "system info"
+```
+
+This deterministic command needs no model or paid API. It creates local application
+data in HINATA's configured data directory. For the desktop, speech and model-backed
+features, follow the Windows setup below.
+
+## Security and project status
+
+- Normal use is **local-first, not network-isolated**. The optional
+  [offline isolation guide](docs/OFFLINE_ISOLATION.md) describes stronger network
+  restrictions and their limitations.
+- Actions are allowlisted and sensitive actions require approval; arbitrary
+  model-generated shell commands are not executed. These controls are not a full
+  operating-system sandbox. [Security model](docs/SECURITY.md).
+- Successful tool calls do not prove arbitrary objectives. Automatic verification
+  is limited to specific folder-existence requests; other objectives require review.
+- No model weights or voice recordings are bundled. Connected setup and optional
+  downloads require consent; physical audio and real-model acceptance need testing
+  on the target computer.
 
 ## One-click start from the downloaded ZIP
 

@@ -67,10 +67,10 @@ def _extract_docx(raw: bytes) -> str:
             documents = [item for item in entries if item.filename == "word/document.xml"]
             if len(documents) != 1:
                 raise AutomationError("DOCX must contain exactly one main document")
-            item = documents[0]
-            if item.file_size > MAX_DOCX_XML_BYTES or item.flag_bits & 1:
+            document = documents[0]
+            if document.file_size > MAX_DOCX_XML_BYTES or document.flag_bits & 1:
                 raise AutomationError("DOCX main document is too large or encrypted")
-            with archive.open(item) as stream:
+            with archive.open(document) as stream:
                 xml_bytes = stream.read(MAX_DOCX_XML_BYTES + 1)
             if len(xml_bytes) > MAX_DOCX_XML_BYTES:
                 raise AutomationError("DOCX main document exceeds the extraction limit")

@@ -11,7 +11,6 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-
 TARGETS = {
     "project": (r"C:\hinata\project", True),
     "python": (r"C:\hinata\python", True),

@@ -7,9 +7,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
-import re
 
 from hinata.automation.app_control import AutomationError
 from hinata.automation.file_manager import FileManager

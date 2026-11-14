@@ -26,7 +26,6 @@ from hinata.core.types import ActionRequest, AssistantResponse
 from hinata.database.database import Database
 from hinata.knowledge.embeddings import OllamaEmbeddings
 from hinata.knowledge.index import KnowledgeIndex
-from hinata.tasks.store import TaskStore
 from hinata.security.action_validator import ActionValidator
 from hinata.security.authentication import Authentication
 from hinata.speech.microphone import Microphone
@@ -35,6 +34,7 @@ from hinata.speech.speech_to_text import SpeechToText
 from hinata.speech.text_to_speech import TextToSpeech
 from hinata.speech.voice_pipeline import VoicePipeline, VoiceResult
 from hinata.speech.wake_word import WakeWordDetector, WakeWordService
+from hinata.tasks.store import TaskStore
 
 
 class HinataAssistant:

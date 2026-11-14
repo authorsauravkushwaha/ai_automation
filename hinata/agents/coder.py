@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 from typing import Any
 
 from hinata.automation.app_control import AutomationError
@@ -31,7 +30,10 @@ class CodeInspector:
                     "functions": [], "classes": [], "imports": [], "warnings": [], "truncated": False}
         except (RecursionError, MemoryError, ValueError) as exc:
             raise AutomationError("Python source exceeds parser limits") from exc
-        functions, classes, imports, warnings = [], [], [], []
+        functions: list[dict[str, Any]] = []
+        classes: list[dict[str, Any]] = []
+        imports: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
         totals = {"functions": 0, "classes": 0, "imports": 0, "warnings": 0}
         def add(kind: str, collection: list, item: dict) -> None:
             totals[kind] += 1
