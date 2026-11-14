@@ -34,3 +34,6 @@ Thumbs.db
 
 # Downloaded local models (Ollama normally stores these elsewhere)
 models/
+
+# Rendered desktop preview (python scripts/preview_ui.py)
+ui-preview.png

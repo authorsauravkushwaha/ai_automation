@@ -4,17 +4,31 @@ from __future__ import annotations
 
 import html
 import logging
+import math
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from PySide6.QtCore import QObject, QRunnable, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QTextBrowser, QVBoxLayout
 
 LOGGER = logging.getLogger(__name__)
 
 
+def _blend(dim: QColor, target: QColor, amount: float) -> str:
+    """Interpolate two colours; ``amount`` 0 keeps dim, 1 keeps target."""
+    red = round(dim.red() + (target.red() - dim.red()) * amount)
+    green = round(dim.green() + (target.green() - dim.green()) * amount)
+    blue = round(dim.blue() + (target.blue() - dim.blue()) * amount)
+    return f"#{red:02x}{green:02x}{blue:02x}"
+
+
 class StatusPill(QFrame):
+    """LED-style status indicator whose active dot breathes with a soft pulse."""
+
+    DIM = "#53677b"
+
     def __init__(self, title: str) -> None:
         super().__init__()
         self.setObjectName("panel")
@@ -22,14 +36,36 @@ class StatusPill(QFrame):
         layout.setContentsMargins(9, 5, 9, 5)
         layout.setSpacing(6)
         self.dot = QLabel("●")
-        self.dot.setStyleSheet("color: #53677b;")
+        self.dot.setStyleSheet(f"color: {self.DIM};")
         self.label = QLabel(title)
         self.label.setObjectName("muted")
         layout.addWidget(self.dot)
         layout.addWidget(self.label)
+        self._active = False
+        self._target = QColor("#62d6b1")
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(55)
+        self._timer.timeout.connect(self._pulse)
 
     def set_active(self, active: bool, color: str = "#62d6b1") -> None:
-        self.dot.setStyleSheet(f"color: {color if active else '#53677b'};")
+        self._active = active
+        self._target = QColor(color)
+        self._phase = 0.0
+        if active:
+            self.dot.setStyleSheet(f"color: {color};")
+            self._timer.start()
+        else:
+            self._timer.stop()
+            self.dot.setStyleSheet(f"color: {self.DIM};")
+
+    def _pulse(self) -> None:
+        self._phase += 0.3
+        amount = 0.62 + 0.38 * math.sin(self._phase)
+        if not self._active:
+            self._timer.stop()
+            return
+        self.dot.setStyleSheet(f"color: {_blend(QColor(self.DIM), self._target, amount)};")
 
 
 class ConversationView(QTextBrowser):

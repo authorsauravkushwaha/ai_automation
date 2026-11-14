@@ -22,7 +22,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-gui = ["PySide6-Essentials>=6.7,<7"]
+# 6.12.0 aborts with a shiboken refcount error (none_dealloc) while QPainter
+# paints the animated desktop backdrop; 6.11.x and earlier are stable.
+gui = ["PySide6-Essentials>=6.7,<6.12"]
 speech = [
   "numpy>=1.26,<3",
   "sounddevice>=0.4.7,<1",
@@ -47,6 +49,9 @@ Repository = "https://github.com/authorsauravkushwaha/ai_automation"
 
 [tool.setuptools.packages.find]
 include = ["hinata*"]
+
+[tool.setuptools.package-data]
+"hinata.interface" = ["assets/*.png"]
 
 [tool.mypy]
 python_version = "3.11"

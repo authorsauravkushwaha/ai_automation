@@ -8,7 +8,7 @@ echo   HINATA - local AI assistant for Windows
 echo ============================================
 echo.
 
-rem Already installed? Then just make sure Ollama is up and launch the app.
+rem Already installed? Then repair anything missing and launch the app.
 if exist "%~dp0.venv\Scripts\python.exe" goto START_APP
 
 rem -------- First run: set everything up, then launch --------
@@ -34,6 +34,13 @@ if not exist "%~dp0config.toml" (
     copy "%~dp0config.example.toml" "%~dp0config.toml" >nul
     echo Created config.toml from the reviewed example.
 )
+
+rem Repair the install before opening: GUI, offline speech (Whisper), TTS,
+rem audio control, and the cached voice model. Internet is used only for
+rem the parts that are actually missing on this computer.
+call :ensure_components
+if errorlevel 1 goto COMPONENTS_FAIL
+
 call :ensure_ollama
 echo Starting the HINATA desktop...
 "%~dp0.venv\Scripts\python.exe" -m hinata gui
@@ -60,6 +67,15 @@ for /f "delims=" %%P in ('powershell.exe -NoProfile -Command "[Environment]::Get
 py -3.11 -c "import sys" >nul 2>&1 && exit /b 0
 python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1 && exit /b 0
 exit /b 1
+
+rem ----------------------------------------------------------------
+rem Verify the runtime pieces and the offline voice model, installing
+rem whatever is missing BEFORE the desktop window opens. The helper
+rem script prints exactly what it is doing.
+rem ----------------------------------------------------------------
+:ensure_components
+"%~dp0.venv\Scripts\python.exe" "%~dp0scripts\ensure_components.py"
+exit /b %ERRORLEVEL%
 
 rem ----------------------------------------------------------------
 rem Best effort: make sure the loopback Ollama API answers so the local
@@ -94,6 +110,14 @@ echo Setup did not complete (exit code %RC%). Read the messages above.
 echo Fix the issue, then double-click start.bat again.
 pause
 exit /b %RC%
+
+:COMPONENTS_FAIL
+echo.
+echo The missing components (Whisper, GUI, TTS) could not be installed.
+echo Check the internet connection, read the messages above, then
+echo double-click start.bat again.
+pause
+exit /b 1
 
 :RUN_FAIL
 echo.

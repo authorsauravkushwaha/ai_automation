@@ -14,7 +14,7 @@ No terminal experience needed:
 
 The first double-click checks for Python 3.11+ (it offers to install it via `winget` if missing), creates the environment, installs HINATA, installs/checks Ollama, **starts the local Ollama service**, downloads the local models, verifies the model connection, runs the tests, and then opens the desktop window. It needs internet and can take several minutes; keep the window open.
 
-Every double-click after that just starts the local Ollama service (when installed and not already running) and opens HINATA — that is all.
+Every later double-click first checks that the GUI, Whisper (or the selected Vosk speech backend), text-to-speech, Windows audio controls, and configured offline speech model are still present. If a component or model is missing or incomplete, HINATA repairs/downloads just that part before opening the desktop window; keep the internet connection available for repairs. When everything is already installed, it simply checks/starts local Ollama and opens HINATA.
 
 ### Ollama connects automatically
 
@@ -123,7 +123,7 @@ Useful setup switches: `-SkipOllama`, `-SkipModelDownload`, `-SkipSpeechDownload
 - **Controlled PC automation:** allow-listed apps, root-confined files/folders/search/read, active-window Unicode typing, hardware volume keys, optional exact volume through `pycaw`, basic system information.
 - **Owner stop control:** the desktop emergency-stop button stops speech, recording, and wake listening, closes a pending local Ollama response, discards late desktop results and prevents pending approvals or a not-yet-started action while stop is active. A fresh request starts a new operation. A Windows action already executing may finish; HINATA reports that limitation rather than promising forcible rollback.
 - **SQLite memory:** conversations, approved preferences, commands, task results, UI settings, and selected personality mode; inspect/search/export/delete controls.
-- **Desktop UI:** microphone and text input, conversation view, listening/processing/speaking indicators, settings, enrollment, status, memory controls, personality-mode selector, and dark theme.
+- **Desktop UI:** microphone and text input, conversation view, listening/processing/speaking indicators, settings, enrollment, status, memory controls, and personality-mode selector. The dark-glass interface adds a softly animated perspective-grid scene, floating light orbs, a glossy HINATA sphere, translucent panels, and gradient controls with tactile press/focus states; it is painted locally without remote assets.
 - **Five personality modes:** Friend, Advisor, Technical, Strategist, and Professional. Choose a mode in the desktop UI or say/type `switch to technical mode`. Modes adjust response style only and never modify permissions.
 - **Controlled multi-step planning:** a local model may propose up to five schema-validated low-impact tool steps. HINATA shows the complete plan and waits for one explicit owner approval before execution. Higher-impact actions (such as typing into an app, clearing memory, or closing apps) are excluded from batch plans and remain separately gated.
 - **Wake word:** explicit `hinata wake` mode with bounded 80 ms streaming and cooldown for a user-supplied custom **Hey HINATA** ONNX model; disabled by default and never started automatically.
