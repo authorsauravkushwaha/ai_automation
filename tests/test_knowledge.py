@@ -27,7 +27,7 @@ class KnowledgeTests(unittest.TestCase):
         result = self.assistant.process_text("search knowledge for orchid")
         self.assertTrue(result.success)
         self.assertIn("Tuesday", result.text)
-        self.assertIn(str(self.document), result.text)
+        self.assertIn(str(self.document.resolve()), result.text)
         self.assertIn("chunk 1", result.text)
         # Untrusted text is returned as evidence, not interpreted as a command.
         self.assertTrue(self.document.exists())

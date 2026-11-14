@@ -95,7 +95,7 @@ class AgentAndVerificationTests(unittest.TestCase):
         self.assertEqual(task["state"], "COMPLETED")
         self.assertEqual(task["verification_method"], "folder_postcondition")
         evidence = json.loads(task["objective_evidence"])
-        self.assertEqual(evidence["path"], str(self.root / "work"))
+        self.assertEqual(evidence["path"], str((self.root / "work").resolve()))
         self.assistant.close()
         self.assistant = make_assistant(self.tmp.name)
         self.assertEqual(self.assistant.tasks.get(result.data["task_id"])["state"], "COMPLETED")
@@ -122,7 +122,7 @@ class AgentAndVerificationTests(unittest.TestCase):
         request = "ensure folders Documents/a, Documents/b exist"
         proof = reviewer.verify_objective(request, (b, a))
         self.assertEqual(proof["kind"], "folders_exist")
-        self.assertEqual(proof["paths"], [str(self.root / "a"), str(self.root / "b")])
+        self.assertEqual(proof["paths"], [str((self.root / "a").resolve()), str((self.root / "b").resolve())])
         self.assertIsNone(reviewer.verify_objective(request, (a, a)))
         self.assertIsNone(reviewer.verify_objective(request + " and send email", (a, b)))
         self.assertIsNone(reviewer.verify_objective("ensure folders Documents/a, Documents/a exist", (a, a)))
@@ -181,7 +181,7 @@ class AgentAndVerificationTests(unittest.TestCase):
         result = self.assistant.execute_plan(proposal.plan_actions, task_id=proposal.data["task_id"])
         task_id = result.data["task_id"]
         config = Path(self.tmp.name) / "config.toml"
-        config.write_text(f'data_dir = "{Path(self.tmp.name) / "data"}"\n[security]\nallowed_roots = ["{self.root}"]\n', encoding="utf-8")
+        config.write_text(f'data_dir = {json.dumps(str(Path(self.tmp.name) / "data"))}\n[security]\nallowed_roots = [{json.dumps(str(self.root))}]\n', encoding="utf-8")
         command = [sys.executable, "-m", "hinata", "--config", str(config), "--no-llm", "tasks", task_id, "--verify"]
         cancelled = subprocess.run(command, input="checked files and logs\nno\n", text=True, capture_output=True, timeout=10)
         self.assertEqual(cancelled.returncode, 1)

@@ -144,11 +144,11 @@ class SemanticKnowledgeTests(unittest.TestCase):
     def test_folder_sync_preserves_unchanged_vectors_and_reports_changed_sources(self):
         self.import_semantic("schedule.txt")
         result = self.assistant.knowledge.sync_folder(str(self.docs))
-        self.assertIn(str(self.docs / "schedule.txt"), result["unchanged"])
+        self.assertIn(str((self.docs / "schedule.txt").resolve()), result["unchanged"])
         self.assertTrue(self.assistant.knowledge.semantic_search("shipment"))
         (self.docs / "schedule.txt").write_text("The delivery is Wednesday now.", encoding="utf-8")
         result = self.assistant.knowledge.sync_folder(str(self.docs))
-        self.assertIn(str(self.docs / "schedule.txt"), result["semantic_cleared"])
+        self.assertIn(str((self.docs / "schedule.txt").resolve()), result["semantic_cleared"])
         self.assertEqual(self.assistant.knowledge.semantic_search("shipment"), [])
         self.assertTrue(self.assistant.knowledge.search("Wednesday"))
 
