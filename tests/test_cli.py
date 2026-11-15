@@ -121,6 +121,18 @@ class CliTests(unittest.TestCase):
         self.assertEqual(playbooks.returncode, 0, playbooks.stderr)
         self.assertEqual(playbooks.stdout.strip(), "[]")
 
+        briefing = self.run_cli("briefing")
+        self.assertEqual(briefing.returncode, 0, briefing.stderr)
+        self.assertIn("TACTICAL BRIEFING", briefing.stdout)
+
+        override = self.run_cli("override", "--status")
+        self.assertEqual(override.returncode, 0, override.stderr)
+        self.assertIn("lockdown_active", override.stdout)
+
+        sched = self.run_cli("schedule")
+        self.assertEqual(sched.returncode, 0, sched.stderr)
+        self.assertEqual(sched.stdout.strip(), "[]")
+
     def test_voice_diagnostics_barge_in_and_vision_capability_gating(self) -> None:
         from hinata.automation.app_control import AutomationError
         from hinata.automation.file_manager import FileManager

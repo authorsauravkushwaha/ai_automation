@@ -347,6 +347,14 @@ def default_agent_manifests() -> tuple[AgentManifest, ...]:
                     "volume",
                     "system_info",
                     "set_personality_mode",
+                    "list_windows",
+                    "focus_window",
+                    "snap_window",
+                    "send_hotkey",
+                    "read_clipboard",
+                    "write_clipboard",
+                    "capture_screen",
+                    "power_control",
                 }
             ),
             max_risk_tier="high",
@@ -395,7 +403,9 @@ def default_agent_manifests() -> tuple[AgentManifest, ...]:
             scope_description="Reads local CPU, RAM, disk, GPU/VRAM, power state, and runtime health to recommend safe model profiles.",
             system_prompt="Inspect hardware and runtime metrics and recommend conservative laptop-safe profiles without altering security policy.",
             model_role="none",
-            allowed_tools=frozenset({"system_info", "hardware_profile"}),
+            allowed_tools=frozenset(
+                {"system_info", "hardware_profile", "executive_briefing", "list_processes", "list_windows"}
+            ),
             max_risk_tier="low",
             readable_memory_namespaces=frozenset(),
             writable_memory_namespaces=frozenset(),

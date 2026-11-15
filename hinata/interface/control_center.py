@@ -48,9 +48,20 @@ class AgentControlCenterDialog(QDialog):
             self.autonomy_combo.setCurrentIndex(idx)
         self.autonomy_combo.currentIndexChanged.connect(self._change_autonomy)
         top_bar.addWidget(self.autonomy_combo)
+        self.posture_label = QLabel("Posture: STANDARD")
+        top_bar.addWidget(self.posture_label)
         top_bar.addStretch()
+        briefing_btn = QPushButton("Tactical Briefing")
+        briefing_btn.clicked.connect(self._show_briefing)
+        lockdown_btn = QPushButton("Red Alert Lockdown")
+        lockdown_btn.clicked.connect(self._toggle_lockdown)
+        commander_btn = QPushButton("Commander Lease")
+        commander_btn.clicked.connect(self._toggle_commander)
         refresh_btn = QPushButton("Refresh All Panels")
         refresh_btn.clicked.connect(self.refresh_all)
+        top_bar.addWidget(briefing_btn)
+        top_bar.addWidget(lockdown_btn)
+        top_bar.addWidget(commander_btn)
         top_bar.addWidget(refresh_btn)
         outer.addLayout(top_bar)
 
@@ -107,6 +118,62 @@ class AgentControlCenterDialog(QDialog):
         mode = str(self.autonomy_combo.currentData() or "APPROVED_PLAN")
         self.assistant.orchestrator.set_autonomy_mode(mode)
 
+    def _show_briefing(self) -> None:
+        resp = self.assistant.process_text("executive briefing")
+        QMessageBox.information(self, "J.A.R.V.I.S. Tactical Briefing", resp.text)
+        self.refresh_all()
+
+    def _toggle_lockdown(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        if not self.assistant.override_controller.is_lockdown:
+            self.assistant.engage_lockdown("Desktop Control Center Red Alert Lockdown")
+            QMessageBox.warning(
+                self,
+                "Red Alert Lockdown Engaged",
+                "All mutating, UI, and autonomous tools are frozen until unlocked with your Owner PIN.",
+            )
+            self.refresh_all()
+            return
+        pin, ok = QInputDialog.getText(
+            self, "Lift Red Alert Lockdown", "Enter HINATA Owner PIN:", QLineEdit.EchoMode.Password
+        )
+        if not ok or not pin:
+            return
+        try:
+            self.assistant.release_lockdown(pin)
+            QMessageBox.information(self, "Lockdown Lifted", "Normal guarded operations restored.")
+        except PermissionError as exc:
+            QMessageBox.critical(self, "PIN Verification Failed", str(exc))
+        self.refresh_all()
+
+    def _toggle_commander(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        if self.assistant.override_controller.is_commander_active:
+            self.assistant.stand_down_commander_mode()
+            QMessageBox.information(self, "Commander Mode Revoked", "Stood down to standard approval gates.")
+            self.refresh_all()
+            return
+        pin, ok = QInputDialog.getText(
+            self,
+            "Activate Commander Lease (10 min)",
+            "Enter HINATA Owner PIN to unlock timed CONFIRM-tier execution:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok or not pin:
+            return
+        try:
+            self.assistant.activate_commander_mode(pin, minutes=10, label="Desktop HUD Session")
+            QMessageBox.information(
+                self,
+                "Commander Lease Active",
+                "10-minute Commander Lease unlocked. Destructive SENSITIVE tools still require PIN.",
+            )
+        except PermissionError as exc:
+            QMessageBox.critical(self, "Authorization Failed", str(exc))
+        self.refresh_all()
+
     def _inspect_task(self) -> None:
         tid = self.task_id_input.text().strip()
         if not tid:
@@ -141,8 +208,17 @@ class AgentControlCenterDialog(QDialog):
             QMessageBox.warning(self, "Reconcile Task", str(exc))
 
     def refresh_all(self) -> None:
+        ov = self.assistant.override_controller.status()
+        if ov["lockdown_active"]:
+            self.posture_label.setText("Posture: RED ALERT LOCKDOWN")
+        elif ov["commander_mode_active"]:
+            self.posture_label.setText(f"Posture: COMMANDER ({ov['commander_remaining_seconds']:.0f}s)")
+        else:
+            self.posture_label.setText("Posture: STANDARD")
         dash: dict[str, Any] = {
+            "tactical_override": ov,
             "autonomy_mode": self.assistant.orchestrator.autonomy_mode,
+            "scheduled_daemons": self.assistant.scheduler.list_schedules(active_only=True),
             "metrics": self.assistant.tracer.metrics_snapshot(),
             "recent_runs": self.assistant.tracer.recent_runs(10),
         }

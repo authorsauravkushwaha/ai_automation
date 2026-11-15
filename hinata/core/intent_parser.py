@@ -21,6 +21,84 @@ class IntentParser:
 
     def parse(self, text: str) -> ActionRequest | None:
         stripped = text.strip()
+        # J.A.R.V.I.S. tactical & desktop cockpit natural commands
+        if re.fullmatch(
+            r"(?:executive|tactical|morning|jarvis|status)\s+(?:briefing|report)|brief\s+me",
+            stripped,
+            re.IGNORECASE,
+        ):
+            return self._action("executive_briefing", {}, text)
+        match = re.fullmatch(
+            r"list\s+(?:open\s+)?windows(?:\s+matching\s+(.+))?", stripped, re.IGNORECASE
+        )
+        if match:
+            w_args: dict[str, Any] = {}
+            if match.group(1):
+                w_args["filter"] = match.group(1).strip()
+            return self._action("list_windows", w_args, text)
+        match = re.fullmatch(r"focus\s+window\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("focus_window", {"title": match.group(1).strip()}, text)
+        match = re.fullmatch(
+            r"(?:snap|arrange)\s+window\s+(.+?)\s+(left|right|maximize|minimize|restore)",
+            stripped,
+            re.IGNORECASE,
+        )
+        if match:
+            return self._action(
+                "snap_window",
+                {"title": match.group(1).strip(), "layout": match.group(2).lower()},
+                text,
+            )
+        match = re.fullmatch(
+            r"(?:maximize|minimize|restore)\s+window\s+(.+)", stripped, re.IGNORECASE
+        )
+        if match:
+            verb = stripped.split()[0].lower()
+            return self._action(
+                "snap_window", {"title": match.group(1).strip(), "layout": verb}, text
+            )
+        match = re.fullmatch(
+            r"send\s+(?:hotkey|shortcut)\s+(\w+)(?:\s+to\s+(.+))?", stripped, re.IGNORECASE
+        )
+        if match:
+            hk_args: dict[str, Any] = {"shortcut": match.group(1).lower()}
+            if match.group(2):
+                hk_args["target_window"] = match.group(2).strip()
+            return self._action("send_hotkey", hk_args, text)
+        if re.fullmatch(r"read\s+clipboard", stripped, re.IGNORECASE):
+            return self._action("read_clipboard", {}, text)
+        match = re.fullmatch(r"(?:copy\s+to|write)\s+clipboard\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action(
+                "write_clipboard",
+                {"text": self._strip_matching_quotes(match.group(1).strip())},
+                text,
+            )
+        match = re.fullmatch(
+            r"(?:capture|screenshot)\s+screen\s+(?:to\s+)?(\S+)(?:\s+and\s+analyze\s+(.+))?",
+            stripped,
+            re.IGNORECASE,
+        )
+        if match:
+            sc_args: dict[str, Any] = {"path": match.group(1).strip()}
+            if match.group(2):
+                sc_args["analyze_prompt"] = match.group(2).strip()
+            return self._action("capture_screen", sc_args, text)
+        match = re.fullmatch(
+            r"list\s+(?:running\s+|top\s+)?processes(?:\s+for\s+(.+))?", stripped, re.IGNORECASE
+        )
+        if match:
+            p_args: dict[str, Any] = {}
+            if match.group(1):
+                p_args["filter"] = match.group(1).strip()
+            return self._action("list_processes", p_args, text)
+        match = re.fullmatch(
+            r"(lock|sleep|hibernate)\s+(?:workstation|pc|computer)", stripped, re.IGNORECASE
+        )
+        if match:
+            return self._action("power_control", {"action": match.group(1).lower()}, text)
+
         match = re.fullmatch(r"(?:inspect|analyze) (?:python|code)(?: file)?\s+(.+)", stripped, re.IGNORECASE)
         if match:
             return self._action("code_inspect", {"path": match.group(1)}, text)
@@ -84,7 +162,7 @@ class IntentParser:
             return self._action("knowledge_search", {"query": match.group(1)}, text)
         mode_match = re.fullmatch(
             r"(?:(?:switch|change|set)(?:\s+to)?\s+)?"
-            r"(friend|advisor|technical|strategist|professional)(?:\s+mode)?",
+            r"(friend|advisor|technical|strategist|professional|jarvis)(?:\s+mode)?",
             stripped,
             flags=re.IGNORECASE,
         )

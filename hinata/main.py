@@ -117,6 +117,29 @@ def build_parser() -> argparse.ArgumentParser:
     playbooks.add_argument("--description", default="", help="Optional playbook description")
     playbooks.add_argument("--param", action="append", default=[], metavar="KEY=VALUE", help="Parameter binding")
 
+    commands.add_parser("briefing", help="J.A.R.V.I.S. tactical situational awareness briefing")
+
+    override = commands.add_parser(
+        "override",
+        help="Owner tactical protocols: Red Alert Lockdown & PIN-unlocked Commander Lease",
+    )
+    ov_op = override.add_mutually_exclusive_group()
+    ov_op.add_argument("--status", action="store_true", help="Show current tactical posture")
+    ov_op.add_argument("--lockdown", action="store_true", help="Immediately freeze all non-status tools")
+    ov_op.add_argument("--unlock", action="store_true", help="Lift Red Alert Lockdown (requires PIN)")
+    ov_op.add_argument("--commander", type=int, metavar="MINUTES", help="Activate timed Commander Lease (1..30 min, requires PIN)")
+    ov_op.add_argument("--stand-down", action="store_true", help="Revoke active Commander Lease immediately")
+    override.add_argument("--reason", default="Owner engaged Red Alert Lockdown", help="Lockdown reason note")
+
+    schedule = commands.add_parser("schedule", help="Manage bounded offline-only autonomous background jobs")
+    sc_op = schedule.add_mutually_exclusive_group()
+    sc_op.add_argument("--add", metavar="NAME", help="Schedule a recurring bounded offline job")
+    sc_op.add_argument("--tick", action="store_true", help="Execute one bounded scheduler tick now")
+    sc_op.add_argument("--disable", metavar="JOB_ID", help="Disable a scheduled job")
+    schedule.add_argument("--request", default="executive briefing", help="Command/request for --add")
+    schedule.add_argument("--interval", type=int, default=300, help="Interval in seconds for --add")
+    schedule.add_argument("--max-runs", type=int, default=10, help="Bounded run cap for --add")
+
     memory = commands.add_parser("memory", help="Inspect, export, or delete local memory")
     operation = memory.add_mutually_exclusive_group(required=True)
     operation.add_argument("--recent", type=int, metavar="N")
@@ -292,6 +315,66 @@ def main(argv: list[str] | None = None) -> int:
                 print("Playbook deleted." if ok else "Playbook not found.")
                 return 0 if ok else 1
             print(json.dumps(assistant.playbooks.list_playbooks(), indent=2, ensure_ascii=False))
+            return 0
+        if args.command == "briefing":
+            resp = assistant.process_text("executive briefing")
+            print(resp.text)
+            if args.speak:
+                assistant.tts.speak(resp.text)
+                assistant.tts.wait()
+            return 0 if resp.success else 1
+        if args.command == "override":
+            if args.lockdown:
+                print(json.dumps(assistant.engage_lockdown(args.reason), indent=2))
+                return 0
+            if args.stand_down:
+                print(json.dumps(assistant.stand_down_commander_mode(), indent=2))
+                return 0
+            if args.unlock:
+                pin = getpass.getpass("HINATA Owner PIN to lift Red Alert Lockdown: ")
+                print(json.dumps(assistant.release_lockdown(pin), indent=2))
+                return 0
+            if args.commander is not None:
+                pin = getpass.getpass("HINATA Owner PIN to activate Commander Mode: ")
+                print(
+                    json.dumps(
+                        assistant.activate_commander_mode(pin, minutes=args.commander),
+                        indent=2,
+                    )
+                )
+                return 0
+            print(json.dumps(assistant.override_controller.status(), indent=2))
+            return 0
+        if args.command == "schedule":
+            if args.add:
+                sched_id = assistant.scheduler.schedule(
+                    title=args.add,
+                    request_text=args.request,
+                    interval_seconds=args.interval,
+                    max_runs=args.max_runs,
+                    requires_online=False,
+                )
+                print(json.dumps({"schedule_id": sched_id, "title": args.add}, indent=2, ensure_ascii=False))
+                return 0
+            if args.disable:
+                ok = assistant.scheduler.cancel(args.disable)
+                print(f"Scheduled job {args.disable} disabled." if ok else "Schedule ID not found.")
+                return 0 if ok else 1
+            if args.tick:
+                def _run_sched(row: dict[str, Any]) -> dict[str, Any]:
+                    res = assistant.process_text(
+                        str(row["request_text"]),
+                        autonomy_mode=str(row.get("autonomy_mode") or "SUGGEST_ONLY"),
+                    )
+                    return {"status": res.status, "task_id": str(res.data.get("task_id", ""))}
+
+                ran = assistant.scheduler.tick(
+                    _run_sched,
+                    online_mode_enabled=assistant.config.security.online_mode_enabled,
+                )
+                print(json.dumps({"executed_jobs": ran}, indent=2, ensure_ascii=False))
+                return 0
+            print(json.dumps(assistant.scheduler.list_schedules(), indent=2, ensure_ascii=False))
             return 0
         if args.command == "tasks":
             if args.pause:
@@ -509,7 +592,34 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
             return 0
         if text == "/help":
             print(EXAMPLES)
-            print("\nShell: /voice /speak /stop /reconnect /status /memory /pin /forget /quit")
+            print(
+                "\nShell: /briefing /lockdown /unlock /commander /standdown /voice /speak /stop /reconnect /status /memory /pin /forget /quit"
+            )
+            continue
+        if text == "/briefing":
+            emit_with_approvals(assistant, assistant.process_text("executive briefing"), speak=speak)
+            continue
+        if text == "/lockdown":
+            print(json.dumps(assistant.engage_lockdown("Interactive shell Red Alert Lockdown"), indent=2))
+            continue
+        if text == "/unlock":
+            try:
+                pin = getpass.getpass("HINATA Owner PIN: ")
+                print(json.dumps(assistant.release_lockdown(pin), indent=2))
+            except (EOFError, PermissionError) as exc:
+                print(f"HINATA: {exc}")
+            continue
+        if text.startswith("/commander"):
+            parts = text.split()
+            mins = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
+            try:
+                pin = getpass.getpass("HINATA Owner PIN: ")
+                print(json.dumps(assistant.activate_commander_mode(pin, minutes=mins), indent=2))
+            except (EOFError, PermissionError) as exc:
+                print(f"HINATA: {exc}")
+            continue
+        if text == "/standdown":
+            print(json.dumps(assistant.stand_down_commander_mode(), indent=2))
             continue
         if text == "/reconnect":
             report = assistant.orchestrator.recheck_model(

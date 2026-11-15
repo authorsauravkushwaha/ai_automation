@@ -462,6 +462,12 @@ hinata tasks TASK_ID --verify
 hinata tasks TASK_ID --reject
 hinata model hardware
 hinata model benchmark
+hinata briefing
+hinata override --status
+hinata override --lockdown
+hinata override --commander 10
+hinata override --stand-down
+hinata schedule --add "Morning Status" --request "executive briefing" --interval 3600
 hinata playbooks
 hinata workspaces --symbols
 hinata assets --verify

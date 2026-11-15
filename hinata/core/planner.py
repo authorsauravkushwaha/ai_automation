@@ -49,6 +49,9 @@ PLAN_SAFE_TOOLS = frozenset(
         "workspace_symbol_index",
         "run_linter",
         "run_type_checker",
+        "executive_briefing",
+        "list_windows",
+        "list_processes",
     }
 )
 MAX_PLAN_STEPS = 5  # Default cap for standard single-shot plans; configurable up to 32 in Planner.

@@ -13,7 +13,10 @@ class PersonalityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "memory.db")
             manager = PersonalityManager(database)
-            self.assertEqual(set(MODES), {"friend", "advisor", "technical", "strategist", "professional"})
+            self.assertEqual(
+                set(MODES),
+                {"friend", "advisor", "technical", "strategist", "professional", "jarvis"},
+            )
             selected = manager.set_mode("technical")
             self.assertEqual(selected.key, "technical")
             self.assertEqual(PersonalityManager(database).mode.key, "technical")

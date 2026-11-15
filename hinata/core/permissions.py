@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from hinata.automation.jarvis_cockpit import JarvisOverrideController
 from hinata.core.types import ActionRequest
 from hinata.security.authentication import Authentication
 
@@ -62,6 +63,17 @@ POLICY = {
     "run_linter": PermissionLevel.SAFE,
     "run_type_checker": PermissionLevel.SAFE,
     "workspace_symbol_index": PermissionLevel.SAFE,
+    # J.A.R.V.I.S. desktop cockpit & tactical awareness tools
+    "executive_briefing": PermissionLevel.SAFE,
+    "list_windows": PermissionLevel.SAFE,
+    "focus_window": PermissionLevel.CONFIRM,
+    "snap_window": PermissionLevel.CONFIRM,
+    "send_hotkey": PermissionLevel.CONFIRM,
+    "read_clipboard": PermissionLevel.CONFIRM,
+    "write_clipboard": PermissionLevel.CONFIRM,
+    "capture_screen": PermissionLevel.CONFIRM,
+    "list_processes": PermissionLevel.SAFE,
+    "power_control": PermissionLevel.SENSITIVE,
 }
 
 
@@ -75,8 +87,14 @@ class PermissionDecision:
 
 
 class PermissionManager:
-    def __init__(self, authentication: Authentication) -> None:
+    def __init__(
+        self,
+        authentication: Authentication,
+        *,
+        override_controller: JarvisOverrideController | None = None,
+    ) -> None:
         self.authentication = authentication
+        self.override = override_controller or JarvisOverrideController()
         self._revoked_tools: set[str] = set()
         self._agent_denials: dict[str, set[str]] = {}
 
@@ -96,6 +114,7 @@ class PermissionManager:
         return {
             "revoked_tools": sorted(self._revoked_tools),
             "agent_denials": {k: sorted(v) for k, v in sorted(self._agent_denials.items())},
+            "tactical_override": self.override.status(),
         }
 
     def check(
@@ -109,6 +128,14 @@ class PermissionManager:
         pin: str | None,
         agent_id: str = "execution",
     ) -> PermissionDecision:
+        if self.override.is_tool_blocked_by_lockdown(action.tool):
+            return PermissionDecision(
+                False,
+                "denied",
+                f"RED ALERT LOCKDOWN is active — '{action.tool}' is frozen until owner PIN unlock.",
+                reason="red_alert_lockdown",
+                risk_tier="high",
+            )
         if action.tool in self._revoked_tools:
             return PermissionDecision(
                 False,
@@ -141,6 +168,16 @@ class PermissionManager:
         }[level]
         if level is PermissionLevel.SAFE:
             return PermissionDecision(True, "allowed", "Allowed", reason="safe_tier", risk_tier=risk)
+        # Active PIN-unlocked Commander Lease streamlines CONFIRM-tier tools (typed or owner-verified voice),
+        # while SENSITIVE tools ALWAYS enforce confirmation + PIN below.
+        if level is PermissionLevel.CONFIRM and self.override.is_commander_active:
+            return PermissionDecision(
+                True,
+                "allowed",
+                "Authorized under active PIN-verified Commander Lease",
+                reason="commander_lease",
+                risk_tier=risk,
+            )
         if not confirmed:
             return PermissionDecision(
                 False,

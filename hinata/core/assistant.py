@@ -12,6 +12,7 @@ from typing import Any
 from hinata.agents.registry import AgentRegistry
 from hinata.automation.app_control import AppControl
 from hinata.automation.file_manager import FileManager
+from hinata.automation.jarvis_cockpit import DesktopCockpit, JarvisOverrideController
 from hinata.automation.system_info import SystemInfo
 from hinata.automation.windows_control import WindowsControl
 from hinata.automation.workspace import WorkspaceManager
@@ -89,8 +90,12 @@ class HinataAssistant:
         self.validator = ActionValidator()
         self.parser = IntentParser(self.validator)
         self.planner = Planner(self.validator)
-        self.permissions = PermissionManager(self.authentication)
+        self.override_controller = JarvisOverrideController()
+        self.permissions = PermissionManager(
+            self.authentication, override_controller=self.override_controller
+        )
         self.files = FileManager(self.config.security)
+        self.cockpit = DesktopCockpit(self.files)
         self.knowledge = KnowledgeIndex(self.database, self.files, self.embeddings)
         self.knowledge_watcher = ThrottledKnowledgeWatcher(self.knowledge)
         self.tasks = TaskStore(self.database, max_revisions=max(1, self.config.agentic.max_replans))
@@ -132,6 +137,7 @@ class HinataAssistant:
             tool_registry=self.tool_registry,
             agent_registry=self.agent_registry,
             tracer=self.tracer,
+            cockpit=self.cockpit,
             autonomy_mode=self.config.agentic.autonomy_mode,
             default_budget=budget,
             quarantine_dir=self.config.data_dir / "quarantine",
@@ -246,6 +252,56 @@ class HinataAssistant:
     def enroll_owner(self, samples: list[Any]) -> dict[str, Any]:
         return self.speaker.enroll(samples)
 
+    def engage_lockdown(self, reason: str = "Owner engaged Red Alert Lockdown") -> dict[str, Any]:
+        """Immediately halt active operations and engage Red Alert Lockdown."""
+        self.emergency_stop()
+        state = self.override_controller.engage_lockdown(reason)
+        self.tracer.record_event(
+            run_id="tactical-override",
+            agent_id="security_policy",
+            event_type="lockdown_engaged",
+            status="LOCKED_DOWN",
+            payload={"reason": reason[:200]},
+        )
+        return state
+
+    def release_lockdown(self, pin: str) -> dict[str, Any]:
+        if not self.authentication.is_configured or not self.authentication.verify_pin(pin):
+            raise PermissionError("Invalid or unconfigured owner PIN")
+        state = self.override_controller.release_lockdown(pin_verified=True)
+        self.tracer.record_event(
+            run_id="tactical-override",
+            agent_id="security_policy",
+            event_type="lockdown_released",
+            status="OK",
+        )
+        return state
+
+    def activate_commander_mode(self, pin: str, *, minutes: int = 10, label: str = "Commander Session") -> dict[str, Any]:
+        if not self.authentication.is_configured or not self.authentication.verify_pin(pin):
+            raise PermissionError("Invalid or unconfigured owner PIN")
+        state = self.override_controller.activate_commander_lease(
+            pin_verified=True, minutes=minutes, label=label
+        )
+        self.tracer.record_event(
+            run_id="tactical-override",
+            agent_id="security_policy",
+            event_type="commander_lease_activated",
+            status="ACTIVE",
+            payload={"minutes": minutes, "label": label[:120]},
+        )
+        return state
+
+    def stand_down_commander_mode(self) -> dict[str, Any]:
+        state = self.override_controller.stand_down()
+        self.tracer.record_event(
+            run_id="tactical-override",
+            agent_id="security_policy",
+            event_type="commander_lease_revoked",
+            status="STANDARD",
+        )
+        return state
+
     def emergency_stop(self) -> None:
         """Stop speech/recording and request cooperative cancellation of the current action."""
         self.orchestrator.request_stop()
@@ -267,6 +323,7 @@ class HinataAssistant:
             "log": str(self.config.log_path),
             "allowed_roots": [str(path) for path in self.config.security.allowed_roots],
             "autonomy_mode": self.orchestrator.autonomy_mode,
+            "tactical_override": self.override_controller.status(),
             "offline_policy": self.offline_guard.status(),
             "encryption_at_rest": self.vault is not None,
             "database_encryption": self.database.encryption_status(),

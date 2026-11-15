@@ -221,9 +221,9 @@ class PersonalityConfig:
     mode: str = "friend"
 
     def validate(self) -> None:
-        if self.mode not in {"friend", "advisor", "technical", "strategist", "professional"}:
+        if self.mode not in {"friend", "advisor", "technical", "strategist", "professional", "jarvis"}:
             raise ConfigError(
-                "personality.mode must be friend, advisor, technical, strategist, or professional"
+                "personality.mode must be friend, advisor, technical, strategist, professional, or jarvis"
             )
 
 

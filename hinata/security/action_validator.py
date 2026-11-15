@@ -105,7 +105,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "set_personality_mode": {
         "required": ["mode"],
         "properties": {
-            "mode": ("enum", ["friend", "advisor", "technical", "strategist", "professional"])
+            "mode": (
+                "enum",
+                ["friend", "advisor", "technical", "strategist", "professional", "jarvis"],
+            )
         },
     },
     "clear_memory": {
@@ -191,6 +194,81 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "workspace": ("string", 0, 512),
             "query": ("string", 0, 128),
             "max_symbols": ("integer", 1, 500),
+        },
+    },
+    # J.A.R.V.I.S. desktop cockpit & tactical awareness schemas
+    "executive_briefing": {
+        "required": [],
+        "properties": {},
+    },
+    "list_windows": {
+        "required": [],
+        "properties": {
+            "filter": ("string", 0, 120),
+            "limit": ("integer", 1, 100),
+        },
+    },
+    "focus_window": {
+        "required": ["title"],
+        "properties": {"title": ("string", 1, 150)},
+    },
+    "snap_window": {
+        "required": ["title", "layout"],
+        "properties": {
+            "title": ("string", 1, 150),
+            "layout": ("enum", ["left", "right", "maximize", "minimize", "restore"]),
+        },
+    },
+    "send_hotkey": {
+        "required": ["shortcut"],
+        "properties": {
+            "shortcut": (
+                "enum",
+                [
+                    "copy",
+                    "paste",
+                    "cut",
+                    "save",
+                    "undo",
+                    "redo",
+                    "select_all",
+                    "find",
+                    "new_tab",
+                    "close_tab",
+                    "switch_tab",
+                    "enter",
+                    "escape",
+                ],
+            ),
+            "target_window": ("string", 0, 150),
+        },
+    },
+    "read_clipboard": {
+        "required": [],
+        "properties": {"max_chars": ("integer", 1, 20000)},
+    },
+    "write_clipboard": {
+        "required": ["text"],
+        "properties": {"text": ("string", 1, 50000)},
+    },
+    "capture_screen": {
+        "required": ["path"],
+        "properties": {
+            "path": ("string", 1, 512),
+            "analyze_prompt": ("string", 0, 300),
+        },
+    },
+    "list_processes": {
+        "required": [],
+        "properties": {
+            "filter": ("string", 0, 120),
+            "limit": ("integer", 1, 100),
+        },
+    },
+    "power_control": {
+        "required": ["action"],
+        "properties": {
+            "action": ("enum", ["lock", "sleep", "hibernate"]),
         },
     },
 }

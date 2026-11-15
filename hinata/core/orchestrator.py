@@ -31,6 +31,7 @@ from hinata.agents.reviewer import ReviewAgent
 from hinata.agents.workers import WorkerCoordinator
 from hinata.automation.app_control import AppControl, AutomationError
 from hinata.automation.file_manager import FileManager
+from hinata.automation.jarvis_cockpit import DesktopCockpit, build_executive_briefing
 from hinata.automation.system_info import SystemInfo
 from hinata.automation.windows_control import WindowsControl
 from hinata.automation.workspace import WorkspaceManager
@@ -81,6 +82,7 @@ class Orchestrator:
         tool_registry: ToolRegistry | None = None,
         agent_registry: AgentRegistry | None = None,
         tracer: TraceRecorder | None = None,
+        cockpit: DesktopCockpit | None = None,
         autonomy_mode: str = "APPROVED_PLAN",
         default_budget: TaskBudget | None = None,
         quarantine_dir: Path | None = None,
@@ -107,6 +109,7 @@ class Orchestrator:
         self.tool_registry = tool_registry or ToolRegistry(memory.database)
         self.agent_registry = agent_registry or AgentRegistry(memory.database)
         self.tracer = tracer or TraceRecorder(memory.database)
+        self.cockpit = cockpit or DesktopCockpit(files)
         self.hardware_profiler = HardwareCapabilityService()
         self.replanner = Replanner(llm, parser, planner, validator)
         self.reviewer = ReviewAgent(files, memory.database)
@@ -1210,5 +1213,108 @@ class Orchestrator:
                 True,
                 preview or "No Python symbols matched in workspace.",
                 data,
+            )
+        # J.A.R.V.I.S. desktop cockpit & tactical situational awareness tools
+        if tool == "executive_briefing":
+            hw = self.hardware_profiler.detect()
+            t_sum = self.tasks.dashboard_summary() if self.tasks else {"counts_by_state": {}}
+            p_rows = self.memory.database.fetch_all("SELECT * FROM procedural_playbooks ORDER BY name")
+            s_rows = self.memory.database.fetch_all("SELECT * FROM scheduled_tasks WHERE enabled = 1")
+            k_stats = self.knowledge.index_stats() if self.knowledge else {"documents": 0, "chunks": 0, "stored_vectors": 0}
+            procs = self.cockpit.list_processes(limit=5)["processes"]
+            data = build_executive_briefing(
+                hardware=hw,
+                tasks_summary=t_sum,
+                playbooks=p_rows,
+                scheduled_jobs=s_rows,
+                audit_integrity=self.tracer.verify_integrity(),
+                override_status=self.permissions.override.status(),
+                offline_status={"mode": "consented_online" if self.online_mode_enabled else "offline_guarded"},
+                knowledge_stats=k_stats,
+                top_processes=procs,
+            )
+            return ActionResult(tool, True, data["summary_text"], data)
+        if tool == "list_windows":
+            data = self.cockpit.list_windows(
+                filter_text=args.get("filter", ""),
+                limit=args.get("limit", 40),
+            )
+            lines = [
+                f"{'* ' if w.get('active') else '  '}[PID {w['pid']}] {w['title']}"
+                for w in data["windows"][:30]
+            ]
+            msg = "\n".join(lines) or str(data.get("note") or "No visible windows matched.")
+            return ActionResult(tool, True, msg, data)
+        if tool == "focus_window":
+            data = self.cockpit.focus_window(args["title"])
+            return ActionResult(
+                tool, True, f"Focused window: {data['window']['title']}.", data
+            )
+        if tool == "snap_window":
+            data = self.cockpit.snap_window(args["title"], args["layout"])
+            return ActionResult(
+                tool,
+                True,
+                f"Arranged '{data['window']['title']}' -> {data['layout']}.",
+                data,
+            )
+        if tool == "send_hotkey":
+            data = self.cockpit.send_hotkey(
+                args["shortcut"],
+                target_window=args.get("target_window", ""),
+            )
+            return ActionResult(
+                tool,
+                True,
+                f"Sent shortcut '{data['shortcut']}' to {data['target_window']}.",
+                data,
+            )
+        if tool == "read_clipboard":
+            data = self.cockpit.read_clipboard(max_chars=args.get("max_chars", 4000))
+            note = " (secrets redacted)" if data["secrets_redacted"] else ""
+            return ActionResult(
+                tool,
+                True,
+                f"Clipboard ({data['length']} chars{note}):\n{data['content']}",
+                data,
+            )
+        if tool == "write_clipboard":
+            data = self.cockpit.write_clipboard(args["text"])
+            return ActionResult(
+                tool, True, f"Copied {data['written_chars']} character(s) to clipboard.", data
+            )
+        if tool == "capture_screen":
+            data = self.cockpit.capture_screen(args["path"])
+            prompt = args.get("analyze_prompt", "").strip()
+            if prompt:
+                from hinata.speech.multimodal import LocalVisionAdapter
+
+                vision = LocalVisionAdapter(self.files, self.llm if self.llm_enabled else None)
+                try:
+                    analysis = vision.inspect_image(data["path"], prompt=prompt)
+                    data["vision_analysis"] = analysis
+                except AutomationError as exc:
+                    data["vision_note"] = str(exc)
+            return ActionResult(
+                tool,
+                True,
+                f"Captured screen to {data['path']} ({data['bytes']} bytes)."
+                + (f"\nVision: {data['vision_analysis']['text']}" if "vision_analysis" in data else ""),
+                data,
+            )
+        if tool == "list_processes":
+            data = self.cockpit.list_processes(
+                filter_name=args.get("filter", ""),
+                limit=args.get("limit", 25),
+            )
+            lines = [f"Top {data['count']} process(es) by memory:"] + [
+                f"  PID {p['pid']:>6} | {p['rss_mb']:>7.1f} MB | {p['name']}"
+                for p in data["processes"][:25]
+            ]
+            return ActionResult(tool, True, "\n".join(lines), data)
+        if tool == "power_control":
+            data = self.cockpit.power_control(args["action"])
+            return ActionResult(
+                tool, True, f"Executed workstation power command: {data['action']}.", data
             )
         raise AutomationError(f"No executor is registered for {tool}")

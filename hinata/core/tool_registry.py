@@ -83,6 +83,16 @@ DEFAULT_MANIFESTS: tuple[ToolManifest, ...] = (
     ToolManifest("run_linter", "1.0", "Run static linter/compile check in isolated sandbox", "read_only", "low", "idempotent", True, 35.0),
     ToolManifest("run_type_checker", "1.0", "Run static type checker in isolated sandbox", "read_only", "low", "idempotent", True, 45.0),
     ToolManifest("workspace_symbol_index", "1.0", "Zero-execution Python AST class/function symbol & call graph index", "read_only", "low", "idempotent", True, 20.0),
+    ToolManifest("executive_briefing", "1.0", "J.A.R.V.I.S. tactical situational awareness briefing across hardware, tasks, security, and processes", "read_only", "low", "idempotent", True, 10.0),
+    ToolManifest("list_windows", "1.0", "Enumerate visible open desktop windows and active focus state", "read_only", "low", "idempotent", True, 10.0),
+    ToolManifest("focus_window", "1.0", "Bring matching open desktop window to foreground", "ui_focus", "medium", "idempotent", False, 10.0),
+    ToolManifest("snap_window", "1.0", "Snap, maximize, minimize, or restore matching desktop window", "ui_focus", "medium", "idempotent", False, 10.0),
+    ToolManifest("send_hotkey", "1.0", "Send allow-listed productivity shortcut to active or target window", "ui_focus", "medium", "non_idempotent", False, 10.0),
+    ToolManifest("read_clipboard", "1.0", "Read local clipboard text with automatic secret redaction", "read_only", "medium", "idempotent", False, 10.0),
+    ToolManifest("write_clipboard", "1.0", "Write text to local system clipboard", "local_write", "medium", "idempotent", False, 10.0),
+    ToolManifest("capture_screen", "1.0", "Capture desktop screen to permitted .png file with optional local vision/OCR", "local_write", "medium", "deduplicated", False, 20.0),
+    ToolManifest("list_processes", "1.0", "Inspect running local processes sorted by memory footprint", "read_only", "low", "idempotent", True, 10.0),
+    ToolManifest("power_control", "1.0", "PIN-gated workstation lock, sleep, or hibernate power state control", "destructive", "high", "non_idempotent", False, 10.0),
 )
 
 

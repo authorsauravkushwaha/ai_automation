@@ -88,7 +88,7 @@ speak_responses = false
 conversation_limit = 1000
 
 [personality]
-# friend, advisor, technical, strategist, or professional. Change at runtime by text or voice.
+# friend, advisor, technical, strategist, professional, or jarvis. Change at runtime by text or voice.
 mode = "friend"
 
 # Only these applications can be launched. Commands are fixed arrays, never model-generated.

@@ -30,6 +30,12 @@ MODES: dict[str, PersonalityMode] = {
     "professional": PersonalityMode(
         "professional", "Professional", "Be concise, clear, formal, and well-structured.",
     ),
+    "jarvis": PersonalityMode(
+        "jarvis",
+        "Jarvis Tactical",
+        "Respond like an ultra-competent, calm, crisp, tactical AI chief-of-staff (J.A.R.V.I.S. style). "
+        "Lead with situation status, telemetry, and exact execution options; stay dryly articulate, loyal to owner authority, and zero-fluff.",
+    ),
 }
 
 

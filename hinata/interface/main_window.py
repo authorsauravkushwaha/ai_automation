@@ -167,17 +167,25 @@ class MainWindow(QMainWindow):
         outer.addLayout(input_row)
 
         tools = QHBoxLayout()
+        briefing_button = QPushButton("Tactical briefing")
+        briefing_button.setToolTip("Synthesize live hardware, queue, daemon, and security briefing")
+        briefing_button.clicked.connect(lambda: self.submit_text("executive briefing"))
         speak_button = QPushButton("Speak last response")
         speak_button.clicked.connect(lambda: self.speak_text(self.last_response_text))
         self.stop_button = QPushButton("Emergency stop")
         self.stop_button.setToolTip("Stop speech, microphone capture, wake listening, and request task cancellation")
         self.stop_button.clicked.connect(self.emergency_stop)
+        lockdown_button = QPushButton("Red Alert Lockdown")
+        lockdown_button.setToolTip("Immediately freeze all mutating and autonomous tools until PIN unlock")
+        lockdown_button.clicked.connect(self.quick_lockdown)
         enroll_button = QPushButton("Voice enrollment")
         enroll_button.clicked.connect(self.open_enrollment)
         memory_button = QPushButton("Memory")
         memory_button.clicked.connect(self.open_memory)
+        tools.addWidget(briefing_button)
         tools.addWidget(speak_button)
         tools.addWidget(self.stop_button)
+        tools.addWidget(lockdown_button)
         tools.addStretch()
         tools.addWidget(enroll_button)
         tools.addWidget(memory_button)
@@ -590,6 +598,27 @@ class MainWindow(QMainWindow):
 
     def open_control_center(self) -> None:
         AgentControlCenterDialog(self.assistant, self).exec()
+
+    def quick_lockdown(self) -> None:
+        if not self.assistant.override_controller.is_lockdown:
+            self.assistant.engage_lockdown("Main Window Red Alert Lockdown")
+            self.conversation.add_message(
+                "System",
+                "RED ALERT LOCKDOWN ENGAGED. All mutating, UI, and autonomous tools are frozen until unlocked with your Owner PIN.",
+            )
+            self.statusBar().showMessage("RED ALERT LOCKDOWN ACTIVE", 6000)
+            return
+        pin, ok = QInputDialog.getText(
+            self, "Lift Red Alert Lockdown", "Enter HINATA Owner PIN:", QLineEdit.EchoMode.Password
+        )
+        if not ok or not pin:
+            return
+        try:
+            self.assistant.release_lockdown(pin)
+            self.conversation.add_message("System", "Red Alert Lockdown lifted. Normal guarded operations restored.")
+            self.statusBar().showMessage("Lockdown lifted", 4000)
+        except PermissionError as exc:
+            QMessageBox.critical(self, "PIN Verification Failed", str(exc))
 
     def open_enrollment(self) -> None:
         if self.pending_tasks or self.assistant.microphone.recording:
