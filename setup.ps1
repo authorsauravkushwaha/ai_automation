@@ -38,6 +38,23 @@ function Invoke-Native {
     }
 }
 
+function Confirm-OptionalDownload {
+    param([string]$Question)
+    # A redirected/CI setup must never interpret EOF as consent or hang forever.
+    try {
+        if ([Console]::IsInputRedirected) {
+            Write-Host "Non-interactive setup: skipping optional download (no consent)."
+            return $false
+        }
+        $Reply = Read-Host "$Question [y/N]"
+        return ($Reply -match '^(y|yes)$')
+    }
+    catch {
+        Write-Host "No interactive consent received; skipping optional download."
+        return $false
+    }
+}
+
 function Test-Python {
     param([string]$FilePath, [string[]]$Prefix)
     & $FilePath @Prefix -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" 2>$null
@@ -90,6 +107,9 @@ function Start-OllamaService {
 Write-Host "`nHINATA setup - local, offline-first assistant" -ForegroundColor Cyan
 Write-Host "Repository: $Root"
 Write-Host "Target: Windows 11, CPU inference, low-memory defaults`n"
+if ($LenovoLOQFleet) {
+    Write-Host "-LenovoLOQFleet still requires interactive [y/N] consent; no automatic downloads."
+}
 
 $PythonExe = $null
 $PythonPrefix = @()
@@ -159,6 +179,9 @@ if (-not $SkipOllama) {
     Write-Host "[4/7] Checking local Ollama runtime..."
     $OllamaPath = Find-Ollama
     if (-not $OllamaPath) {
+        if (-not (Confirm-OptionalDownload "Ollama is missing. Install the local Ollama runtime now?")) {
+            throw "Ollama installation declined. Rerun with -SkipOllama for structured commands only."
+        }
         if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
             Write-Host "Installing Ollama through Windows Package Manager..."
             & winget.exe install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements
@@ -180,9 +203,6 @@ if (-not $SkipOllama) {
     if ($OllamaVersionText -match '(\d+\.\d+\.\d+)') {
         $OllamaVersion = [version]$Matches[1]
         if ($OllamaVersion -lt [version]"0.6.2") {
-            if ($LenovoLOQFleet) {
-                throw "Ollama 0.6.2 or newer is required for the Lenovo LOQ model fleet. Update via https://ollama.com/download/windows."
-            }
             Write-Warning "Ollama 0.6.2 or newer is recommended for the Lenovo LOQ model fleet."
         }
         Write-Host "Ollama version: $OllamaVersion (minimum 0.6.2)."
@@ -201,26 +221,42 @@ if (-not $SkipOllama) {
     $env:OLLAMA_HOST = "127.0.0.1:11434"
     $env:OLLAMA_MAX_LOADED_MODELS = "1"
     $env:OLLAMA_FLASH_ATTENTION = "1"
-    if ($LenovoLOQFleet -and -not $SkipModelDownload) {
-        Write-Host "Selecting the local Lenovo LOQ i5 pack based on detected RAM, VRAM and power state..."
-        $FleetModels = & $VenvPython -c "from hinata.core.jarvis_models import select_optimal_fleet_pack; from hinata.core.providers import HardwareCapabilityService; print(chr(10).join(select_optimal_fleet_pack(HardwareCapabilityService().detect()).all_ollama_models()))"
-        if ($LASTEXITCODE -ne 0) { throw "Could not detect the Lenovo LOQ fleet" }
-        foreach ($FleetModel in $FleetModels) {
-            if ($FleetModel.Trim()) { Invoke-Native $OllamaPath @("pull", $FleetModel.Trim()) }
+    $FleetInstalled = $false
+    if (-not $SkipModelDownload -and -not $Lite) {
+        $PackInfoJson = & $VenvPython -c "import json; from hinata.core.jarvis_models import select_optimal_fleet_pack; from hinata.core.providers import HardwareCapabilityService; p=select_optimal_fleet_pack(HardwareCapabilityService().detect()); print(json.dumps(p.to_dict()))"
+        if ($LASTEXITCODE -ne 0) { throw "Could not detect the Lenovo LOQ i5 fleet" }
+        $Pack = $PackInfoJson | ConvertFrom-Json
+        Write-Host "Recommended Lenovo LOQ i5 fleet: $($Pack.title)"
+        Write-Host "Selected model downloads (several GB total; internet and free disk space required):"
+        foreach ($FleetModel in $Pack.ollama_pull_commands) { Write-Host "  $FleetModel" }
+        if (Confirm-OptionalDownload "Download and activate this multi-AI fleet during setup?") {
+            if (-not $OllamaVersion -or $OllamaVersion -lt [version]"0.6.2") {
+                throw "Ollama 0.6.2 or newer is required for the selected fleet. Update via https://ollama.com/download/windows."
+            }
+            foreach ($FleetModel in $Pack.ollama_pull_commands) {
+                $Name = ($FleetModel -split ' ', 3)[-1]
+                Invoke-Native $OllamaPath @("pull", $Name)
+            }
+            # Only update [ollama] settings after every pull succeeds; preserve other sections.
+            Invoke-Native $VenvPython @("-m", "hinata", "model", "apply-fleet", "--pack", $Pack.pack_id)
+            $FleetInstalled = $true
+            Write-Host "Multi-AI fleet is installed and configured; previous config.toml is backed up as config.toml.bak*."
         }
-        Write-Host "Apply the profile printed by: .\.venv\Scripts\python.exe -m hinata model fleet"
+        else { Write-Host "Multi-AI fleet declined. No specialist models were downloaded." }
     }
-    Write-Host "[5/7] Making sure the local model $Model is present..."
-    $InstalledModels = (& $OllamaPath list 2>$null) -join "`n"
-    if ($InstalledModels -match [regex]::Escape($Model)) {
-        Write-Host "$Model is already downloaded; nothing to fetch."
-    }
-    elseif ($SkipModelDownload) {
-        Write-Host "[5/7] Skipping Ollama model download"
-    }
-    else {
-        Write-Host "[5/7] Pulling $Model (internet setup download)..."
-        Invoke-Native $OllamaPath @("pull", $Model)
+    if (-not $FleetInstalled) {
+        if ($SkipModelDownload) { Write-Host "[5/7] Model downloads skipped (-SkipModelDownload)" }
+        else {
+            Write-Host "The baseline local chat model is: $Model"
+            $InstalledModels = (& $OllamaPath list 2>$null) -join "`n"
+            if ($InstalledModels -match [regex]::Escape($Model)) {
+                Write-Host "$Model is already downloaded; nothing to fetch."
+            }
+            elseif (Confirm-OptionalDownload "Download this baseline chat model during setup?") {
+                Invoke-Native $OllamaPath @("pull", $Model)
+            }
+            else { Write-Host "Baseline model declined; chat waits until a model is installed." }
+        }
     }
 }
 else {
@@ -228,7 +264,24 @@ else {
     Write-Host "[5/7] Model setup skipped"
 }
 
-if (-not $Lite -and -not $SkipSpeechDownload) {
+# Optional local image generation uses a real SD-Turbo diffusion model, not Qwen
+# pretending to render photos. Packages/weights are installed ONLY after consent.
+if (-not $Lite -and -not $SkipModelDownload) {
+    Write-Host "Optional real PNG image generation: SD-Turbo (large PyTorch install + multi-GB weights)."
+    Write-Host "Inference runs locally after setup; CUDA needs a compatible NVIDIA driver. CPU works slowly."
+    if (Confirm-OptionalDownload "Install image packages and download SD-Turbo weights now?") {
+        Invoke-Native $VenvPython @("-m", "pip", "install", "-e", ".[image]")
+        $CudaAvailable = (& $VenvPython -c "import torch; print('yes' if torch.cuda.is_available() else 'no')").Trim()
+        if ($CudaAvailable -ne "yes") {
+            Write-Warning "PyTorch CUDA is not available. Real image generation will use CPU and may be very slow. Check your NVIDIA driver/CUDA PyTorch wheel."
+        }
+        Invoke-Native $VenvPython @("-m", "hinata", "image", "setup")
+    }
+    else { Write-Host "Image weights declined; SVG creation and existing loopback image servers remain available." }
+}
+
+if (-not $Lite -and -not $SkipSpeechDownload -and -not $SkipModelDownload -and
+    (Confirm-OptionalDownload "Prepare/download the tiny offline Whisper speech model now?")) {
     Write-Host "[6/7] Preparing the tiny INT8 offline Whisper model..."
     Write-Host "The first preparation downloads model weights; subsequent transcription is offline."
     Invoke-Native $VenvPython @("-m", "hinata", "setup-speech")

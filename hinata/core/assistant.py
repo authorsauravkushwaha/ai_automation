@@ -315,6 +315,7 @@ class HinataAssistant:
         import importlib.util
 
         from hinata.core.jarvis_models import select_optimal_fleet_pack
+        from hinata.core.local_image import is_model_ready, model_directory
 
         hardware = self.hardware.detect()
         model_status = self.llm.status() if check_model else {"model": self.config.ollama.model}
@@ -357,6 +358,7 @@ class HinataAssistant:
             "ollama_connection": self.llm.connect_status(),
             "hardware_profile": hardware,
             "recommended_ai_fleet": select_optimal_fleet_pack(hardware).to_dict(),
+            "local_image_model_ready": is_model_ready(model_directory(self.config.data_dir)),
             "configured_model_roles": {
                 "chat": self.config.ollama.model,
                 "planner": self.config.ollama.planner_model,

@@ -117,7 +117,12 @@ class Orchestrator:
         self.tracer = tracer or TraceRecorder(memory.database)
         self.cockpit = cockpit or DesktopCockpit(files)
         self.hardware_profiler = HardwareCapabilityService()
-        self.visual_studio = VisualStudioEngine(files, llm, image_backend_url=llm.config.image_backend_url)
+        from hinata.core.local_image import model_directory
+
+        self.visual_studio = VisualStudioEngine(
+            files, llm, image_backend_url=llm.config.image_backend_url,
+            image_model_dir=model_directory(memory.database.path.parent),
+        )
         self.project_architect = ProjectArchitectEngine(files, self.workspace_manager, llm)
         self.replanner = Replanner(llm, parser, planner, validator)
         self.reviewer = ReviewAgent(files, memory.database)

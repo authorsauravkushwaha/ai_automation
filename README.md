@@ -504,32 +504,40 @@ approach, including prerequisites, commands and security limitations, see
 [offline isolation](docs/OFFLINE_ISOLATION.md). These launch paths are optional;
 the normal launchers do not enforce operating-system network isolation.
 
-### Lenovo LOQ i5 multi-AI fleet (optional)
+### Lenovo LOQ i5 multi-AI fleet and local image creation (optional)
 
-HINATA stays offline/loopback-only after setup. Install **Ollama 0.6.2 or newer** on
-Windows, then run `python -m hinata model fleet` to inspect the automatically
-selected pack based on detected RAM, RTX VRAM and AC/battery state. **The model
-names are recommendations, not silently installed or activated.** Copy the printed
-`[ollama]` block into `config.toml` (replace the existing `[ollama]` section), then
-run `python -m hinata model pull --fleet` with internet access for the one-time
-multi-GB downloads. Windows bootstrap can instead be run as
-`powershell -ExecutionPolicy Bypass -File .\setup.ps1 -LenovoLOQFleet` to pull
-this pack; you still need to apply the printed config. If GPU detection is
-unavailable, HINATA selects the CPU pack. You can override the selection by
-editing the explicit role names in `config.toml`; keep only models that fit your
-actual RAM/VRAM. Ollama releases VRAM between roles (`keep_alive=0`, at most
-one loaded model) so six models do **not** run simultaneously.
+Run `setup.ps1` on Windows 11. Setup detects RAM, NVIDIA VRAM, and battery state,
+shows the recommended Qwen + DeepSeek + reviewer + embedding model list, and asks
+**`[y/N]` before downloading**. If you answer `y`, it pulls each model and then
+updates only `[ollama]` in `config.toml` (backing up the previous config as
+`config.toml.bak`). If any pull fails, the profile is **not** applied. Declining
+keeps your current config; setup separately asks whether to download a baseline
+chat model. `-SkipModelDownload` prevents the optional model and image downloads;
+`-Lite` skips the large fleet and image backend. Non-interactive setup treats
+unanswered prompts as **no**. Ollama 0.6.2+ is required for the multi-model fleet.
 
-- **Qwen 2.5:** chat/orchestration; Qwen2.5-VL is a vision/prompt-director role.
-  Qwen2.5-VL does **not** itself render photorealistic images: for PNG rendering,
-  run a *separate* local A1111/Forge-compatible Stable Diffusion server on
-  `http://127.0.0.1:7860` with `/sdapi/v1/txt2img`. Otherwise `generate_image`
-  creates a self-contained SVG illustration and reports that fallback honestly.
-- **DeepSeek-R1:** planning/automation (reasoning traces stripped before action
-  parsing); **Qwen2.5-Coder / DeepSeek-Coder:** code/project generation;
-  **Llama 3.2:** reviewer; **Nomic Embed Text:** semantic memory.
-- `ai fleet` shows hardware recommendations. `generate image <idea> to <path.svg>`
-  and `build project <specification> in <new-empty-directory>` require explicit
-  approval, are restricted to configured allowed roots, and project tests run in
-  HINATA's offline sandbox. Generated code is untrusted and must be reviewed.
-  Offline scaffolding is a runnable starter, not a guarantee of a finished project.
+For **real offline PNGs**, setup separately asks permission to install optional
+PyTorch/diffusers dependencies and download `stabilityai/sd-turbo` weights to the
+private HINATA data directory (several GB of packages + model; check its model
+license before opting in). On an RTX GPU with a compatible PyTorch CUDA build and
+NVIDIA driver, generation runs locally; CPU is supported but substantially slower.
+The one-shot image process uses only cached files and blocks Python network
+connections. Qwen handles prompt direction; **SD-Turbo** renders the image. You
+can alternatively use an existing A1111/Forge-compatible server on
+`http://127.0.0.1:7860`. If neither renderer is available, HINATA saves a clearly
+labeled `.svg` vector fallback rather than claiming it generated a photo. Output
+is capped at 768px per side with the local model. `python -m hinata image status`
+shows whether its weights are cached.
+
+Without setup, `python -m hinata model fleet` prints a recommendation only; manual
+`python -m hinata model pull --fleet` is an explicit connected download, and
+`python -m hinata model apply-fleet --pack <pack_id>` applies a chosen installed
+pack. Never use `apply-fleet` before the models are actually available. You can
+also choose specific role models in `config.toml`. Roles are loaded one at a time
+(`keep_alive=0`); the fleet does not run six models in VRAM concurrently.
+
+`generate image <idea> to <path.png>` and
+`build project <specification> in <empty-directory>` require owner approval,
+write only to configured allowed roots, and run project checks in the offline
+sandbox. Generated code remains untrusted and requires your review; a fallback
+project is an explicitly labeled scaffold, **not** a completed custom project.

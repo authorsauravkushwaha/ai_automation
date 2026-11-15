@@ -245,6 +245,7 @@ class AgentControlCenterDialog(QDialog):
             )
         )
         from hinata.core.jarvis_models import select_optimal_fleet_pack
+        from hinata.core.local_image import is_model_ready, model_directory
 
         hardware = self.assistant.hardware.detect()
         self.models_view.setPlainText(
@@ -252,6 +253,7 @@ class AgentControlCenterDialog(QDialog):
                 {
                     "hardware": hardware,
                     "recommended_lenovo_loq_fleet": select_optimal_fleet_pack(hardware).to_dict(),
+                    "local_sd_turbo_ready": is_model_ready(model_directory(self.assistant.config.data_dir)),
                     "configured_model_roles": {
                         "chat": self.assistant.config.ollama.model,
                         "planner": self.assistant.config.ollama.planner_model,

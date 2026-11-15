@@ -10,7 +10,7 @@ model = "qwen2.5:0.5b-instruct-q4_K_M"  # 494M parameters, Q4_K_M, about 398 MB 
 # Install explicitly while online: ollama pull nomic-embed-text
 embedding_model = "nomic-embed-text"  # Local semantic search; never downloaded automatically.
 # Optional role-specific local model overrides (Lenovo LOQ i5 multi-AI arsenal; leave empty to share `model`):
-# Run `hinata model fleet` to auto-detect your Lenovo LOQ i5 RAM/VRAM and apply Qwen + DeepSeek + Llama!
+# Windows setup offers this pack with a [y/N] prompt; activation happens only after successful downloads.
 planner_model = ""         # e.g. "deepseek-r1:7b" or "deepseek-r1:1.5b" (reasoning & automation plans)
 coding_model = ""          # e.g. "qwen2.5-coder:7b" or "deepseek-coder:6.7b" (autonomous coding & projects)
 reviewer_model = ""        # e.g. "llama3.2:3b" (independent QA & safety review)
@@ -18,7 +18,7 @@ vision_model = ""          # e.g. "qwen2.5vl:7b" or "qwen2.5vl:3b" (vision & ima
 image_backend_url = "http://127.0.0.1:7860"  # Optional local A1111/Forge-compatible loopback diffusion server.
 allow_model_fallback = true  # Set strict_model_pin = true to fail closed if `model` is missing.
 strict_model_pin = false
-hardware_profile = "auto"  # auto, conservative_cpu, balanced, or accelerated
+hardware_profile = "auto"  # auto, conservative_cpu, balanced, accelerated, lenovo_loq_i5
 timeout_seconds = 90
 max_tokens = 256
 context_tokens = 2048

@@ -75,8 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor", help="Diagnose resources, local runtime, and optional dependencies")
 
     model = commands.add_parser("model", help="Inspect, profile, or download configured Ollama models")
-    model.add_argument("operation", choices=["status", "pull", "hardware", "benchmark", "fleet"])
+    model.add_argument("operation", choices=["status", "pull", "hardware", "benchmark", "fleet", "apply-fleet"])
     model.add_argument("--fleet", action="store_true", help="Pull all models in the detected Lenovo LOQ i5 fleet (large setup download)")
+    model.add_argument("--pack", choices=["lenovo_loq_i5_rtx_8gb", "lenovo_loq_i5_rtx_4gb", "lenovo_loq_i5_cpu_fast"], help="Explicitly select a fleet pack when applying configuration")
+    image = commands.add_parser("image", help="Inspect or explicitly download the optional local SD-Turbo image model")
+    image.add_argument("operation", choices=["status", "setup"])
 
     commands.add_parser("agents", help="Show registered specialist agents, manifests, and recent activity")
     tasks = commands.add_parser("tasks", help="Inspect saved plan checkpoints (never auto-replays execution)")
@@ -166,6 +169,30 @@ def main(argv: list[str] | None = None) -> int:
                         return 1
                 return 0
             return pull_model(config.ollama.model, config.ollama)
+        if args.command == "model" and args.operation == "apply-fleet":
+            # Config is written only by an explicit CLI action after setup pulls succeed.
+            from hinata.core.fleet_setup import apply_fleet_pack
+            from hinata.core.jarvis_models import FLEET_CATALOG
+            if not args.pack:
+                print("--pack is required to apply a fleet", file=sys.stderr)
+                return 2
+            config_path = Path(args.config or os.environ.get("HINATA_CONFIG", os.environ.get("FRIDAY_CONFIG", str(Path(__file__).resolve().parent.parent / "config.toml"))))
+            backup = apply_fleet_pack(config_path, FLEET_CATALOG[args.pack])
+            print(f"Applied {args.pack} to {config_path}; backup: {backup}")
+            return 0
+        if args.command == "image":
+            from hinata.core.local_image import (
+                download_image_model,
+                is_model_ready,
+                model_directory,
+            )
+            folder = model_directory(config.data_dir)
+            if args.operation == "setup":
+                print("Downloading optional SD-Turbo weights into the local model cache. Internet is needed only now.")
+                print(f"Image model ready: {download_image_model(config.data_dir)}")
+            else:
+                print(json.dumps({"model": "stabilityai/sd-turbo", "ready": is_model_ready(folder), "path": str(folder)}, indent=2))
+            return 0
         assistant = HinataAssistant(config, llm_enabled=False if args.no_llm else None)
         if args.command == "ask":
             return emit_with_approvals(

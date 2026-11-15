@@ -337,9 +337,11 @@ class VisualStudioEngine:
         llm: LLMManager | None = None,
         *,
         image_backend_url: str = "http://127.0.0.1:7860",
+        image_model_dir: Path | None = None,
     ) -> None:
         self.files = files
         self.llm = llm
+        self.image_model_dir = image_model_dir
         self.image_backend_url = _validate_loopback_url(image_backend_url) if image_backend_url else ""
         self._opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), _LoopbackNoRedirect()
@@ -548,7 +550,10 @@ class VisualStudioEngine:
         if target.exists():
             raise AutomationError(f"Image already exists (no overwrite): {target}")
         active_llm = self.llm if llm_enabled else None
-        studio = VisualStudioEngine(self.files, active_llm, image_backend_url=self.image_backend_url)
+        studio = VisualStudioEngine(
+            self.files, active_llm, image_backend_url=self.image_backend_url,
+            image_model_dir=self.image_model_dir,
+        )
         direction = studio.expand_prompt_with_qwen(prompt, style=style)
 
         if suffix == ".png":
@@ -556,7 +561,12 @@ class VisualStudioEngine:
                 direction["positive_prompt"], direction["negative_prompt"], w, h
             )
             if png_bytes is not None:
-                target.write_bytes(png_bytes)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    with target.open("xb") as out:
+                        out.write(png_bytes)
+                except FileExistsError as exc:
+                    raise AutomationError(f"Image already exists (no overwrite): {target}") from exc
                 return {
                     "path": str(target),
                     "format": "png",
@@ -566,15 +576,35 @@ class VisualStudioEngine:
                     "height": h,
                     "prompt_direction": direction,
                 }
-            # Offline fallback is an SVG, not a fabricated PNG.
-            target = target.with_suffix(".svg")
+            # SD-Turbo is an independently trained local image model, cached only
+            # after explicit setup consent. No network is used during generation.
+            if self.image_model_dir is not None:
+                from hinata.core.local_image import is_model_ready, render_offline_png
+
+                if is_model_ready(self.image_model_dir):
+                    actual_w = max(256, min(768, w // 8 * 8))
+                    actual_h = max(256, min(768, h // 8 * 8))
+                    rendered = render_offline_png(
+                        self.image_model_dir, target, direction["positive_prompt"], actual_w, actual_h
+                    )
+                    return {
+                        "path": str(target), "format": "png", "backend": "offline_sd_turbo",
+                        "bytes": len(rendered), "width": actual_w, "height": actual_h,
+                        "prompt_direction": direction,
+                    }
+            # Offline vector fallback is an SVG, never misrepresented as PNG.
+            target = self.files.resolve(str(target.with_suffix(".svg")), must_exist=False)
             if target.exists():
                 raise AutomationError(f"Fallback SVG already exists (no overwrite): {target}")
 
         svg_content, backend = studio._generate_qwen_svg(prompt, style, w, h)
         encoded = svg_content.encode("utf-8")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(encoded)
+        try:
+            with target.open("xb") as out:
+                out.write(encoded)
+        except FileExistsError as exc:
+            raise AutomationError(f"Image already exists (no overwrite): {target}") from exc
         return {
             "path": str(target),
             "format": "svg",
@@ -584,8 +614,8 @@ class VisualStudioEngine:
             "height": h,
             "prompt_direction": direction,
             "gpu_diffusion_tip": (
-                "Start local A1111/Forge-compatible diffusion server with --api on http://127.0.0.1:7860 on your Lenovo LOQ "
-                "to render photorealistic PNGs automatically using Qwen's expanded prompt."
+                "Run the optional image setup to cache SD-Turbo weights for real offline PNG generation "
+                "(or connect an A1111/Forge-compatible loopback diffusion server)."
                 if backend != f"loopback_diffusion:{self.image_backend_url}"
                 else ""
             ),
@@ -713,6 +743,20 @@ class ProjectArchitectEngine:
             slug = f"pkg_{slug}"
 
         if llm_enabled and self.llm is not None:
+            # The reasoning specialist decomposes the request; the coding specialist
+            # then writes files. Neither result bypasses path/AST/sandbox checks.
+            implementation_plan = ""
+            try:
+                plan_raw = self.llm.chat(
+                    [{"role": "user", "content": specification[:1500]}],
+                    "You are HINATA's reasoning specialist. Give a concise implementation "
+                    "checklist and test cases for a small, runnable software project. "
+                    "Do not claim anything has been built or tested.",
+                    connect=True, pull_missing=False, role="planner", num_predict=500,
+                )
+                implementation_plan = strip_reasoning_traces(plan_raw)[:1200]
+            except Exception:
+                pass  # A missing planner never authorizes writes or fabricates a plan.
             try:
                 raw = self.llm.chat(
                     [
@@ -724,13 +768,14 @@ class ProjectArchitectEngine:
                                     "package_slug": slug,
                                     "template": template,
                                     "specification": specification[:1500],
+                                    "implementation_plan": implementation_plan,
                                 },
                                 ensure_ascii=False,
                             ),
                         }
                     ],
                     (
-                        "You are DeepSeek Project Architect inside HINATA. Design a complete, clean, runnable "
+                        "You are HINATA's local coding specialist. Design a runnable, testable "
                         "project matching the user's specification. Return ONLY a JSON object with a single key "
                         '"files" mapping relative file paths (e.g. "README.md", "pyproject.toml", '
                         f'"{slug}/__init__.py", "{slug}/core.py", "tests/test_core.py") to their full UTF-8 string '
@@ -753,7 +798,7 @@ class ProjectArchitectEngine:
                                 ast.parse(v, filename=k)
                             validated[k] = v
                     if validated:
-                        return validated, f"deepseek_coder:{self.llm.last_model_identity or 'local'}"
+                        return validated, f"local_coder:{self.llm.last_model_identity or 'local'}"
             except Exception:
                 pass
 
