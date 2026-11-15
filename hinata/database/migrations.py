@@ -444,12 +444,70 @@ def _m005_tamper_evident_traces_and_playbooks(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m006_agent_reports_and_project_records(conn: sqlite3.Connection) -> None:
+    """Migration 6: durable specialist reports and truthful project lifecycle records."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS agent_subtask_reports (
+            report_id TEXT PRIMARY KEY,
+            root_task_id TEXT NOT NULL,
+            child_task_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            success INTEGER NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            structured_data_json TEXT NOT NULL DEFAULT '{}',
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            proposed_actions_json TEXT NOT NULL DEFAULT '[]',
+            limitations_json TEXT NOT NULL DEFAULT '[]',
+            model_identity TEXT NOT NULL DEFAULT '',
+            usage_json TEXT NOT NULL DEFAULT '{}',
+            error_code TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_subtask_reports_task
+            ON agent_subtask_reports(root_task_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS project_records (
+            project_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            root_path TEXT NOT NULL UNIQUE,
+            project_type TEXT NOT NULL DEFAULT 'unknown',
+            stack_json TEXT NOT NULL DEFAULT '{}',
+            requirements_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'DISCOVERING',
+            verification_json TEXT NOT NULL DEFAULT '{}',
+            file_inventory_json TEXT NOT NULL DEFAULT '[]',
+            known_issues_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_records_status ON project_records(status);
+
+        CREATE TABLE IF NOT EXISTS project_iterations (
+            iteration_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES project_records(project_id) ON DELETE CASCADE,
+            phase TEXT NOT NULL,
+            status TEXT NOT NULL,
+            changed_files_json TEXT NOT NULL DEFAULT '[]',
+            checks_json TEXT NOT NULL DEFAULT '{}',
+            diagnostics_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_iterations_project
+            ON project_iterations(project_id, created_at);
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "001_baseline_core", _m001_baseline_core),
     Migration(2, "002_tasks_and_knowledge", _m002_tasks_and_knowledge),
     Migration(3, "003_agentic_runtime_and_observability", _m003_agentic_runtime_and_observability),
     Migration(4, "004_memory_rag_and_workspaces", _m004_memory_rag_and_workspaces),
     Migration(5, "005_tamper_evident_traces_and_playbooks", _m005_tamper_evident_traces_and_playbooks),
+    Migration(6, "006_agent_reports_and_project_records", _m006_agent_reports_and_project_records),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

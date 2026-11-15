@@ -149,12 +149,41 @@ class JarvisStudioTests(unittest.TestCase):
             llm_enabled=False,
         )
         self.assertTrue(project["sandbox_verification"]["tests_passed"])
+        self.assertEqual(project["status"], "PARTIAL")
         self.assertIn("Ran 2 tests", project["sandbox_verification"]["stderr"])
         self.assertTrue((self.root / "todo_app" / "tests" / "test_core.py").is_file())
+        self.assertEqual(database.fetch_one("SELECT status FROM project_records WHERE root_path = ?", (str(self.root / "todo_app"),))["status"], "PARTIAL")
         with self.assertRaises(AutomationError):
             ProjectArchitectEngine(self.files, workspace).build_project(
                 project_dir="todo_app", specification="overwrite", llm_enabled=False,
             )
+
+    def test_missing_or_failing_verification_never_reports_success(self) -> None:
+        database = Database(self.root / "lifecycle.db")
+        database.ensure_migrated()
+        workspace = WorkspaceManager(database, [self.root])
+        architect = ProjectArchitectEngine(self.files, workspace)
+        architect._synthesize_files = Mock(return_value=({"README.md": "requirements pending"}, "test-generator"))  # type: ignore[method-assign]
+        partial = architect.build_project(project_dir="unverified", specification="A product", llm_enabled=False)
+        self.assertEqual(partial["status"], "PARTIAL")
+        self.assertFalse(partial["sandbox_verification"]["executed"])
+        architect._synthesize_files = Mock(
+            return_value=(
+                {
+                    "tests/test_failure.py": (
+                        "import unittest\n\n"
+                        "class FailureTests(unittest.TestCase):\n"
+                        "    def test_failure(self):\n"
+                        "        self.fail('controlled defect')\n"
+                    )
+                },
+                "test-generator",
+            )
+        )  # type: ignore[method-assign]
+        failed = architect.build_project(project_dir="failing", specification="A broken product", llm_enabled=False)
+        self.assertEqual(failed["status"], "FAILED")
+        self.assertFalse(failed["sandbox_verification"]["tests_passed"])
+        self.assertIn("FAILED", {check["status"] for check in failed["sandbox_verification"]["checks"]})
 
 
 if __name__ == "__main__":

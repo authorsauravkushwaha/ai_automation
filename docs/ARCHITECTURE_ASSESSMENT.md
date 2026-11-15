@@ -64,19 +64,22 @@ with two to five unique paths and matching create steps, can be verified against
 the filesystem with recorded evidence. Other objectives remain VERIFYING until a person records observed
 evidence; human attestation is not automatic proof of the objective.
 A proposal-only worker can suggest one bounded revision after a failure, requiring
-fresh approval. Deterministic research, code-inspection, memory, and execution workers route
-already-authorized actions under separate allowlists; they are not autonomous LLM
-agents. Python code inspection uses a bounded AST parser without executing code;
-its warnings are heuristic and not a security audit. Plan timeouts, richer specialist scheduling, automatic action recovery
-and a task dashboard are not implemented. Checkpoints are unencrypted and may
+fresh approval. The current runtime now delegates every validated plan node through
+registered manifests; model-backed research/coding/reviewer roles first return a
+strict report through `AgentExecutor`, while deterministic monitor/execution workers
+use the same registry without fabricating model work. No specialist can authorize
+its own side effects. Python code inspection uses a bounded AST parser without
+executing code; its warnings are heuristic and not a security audit. Iterative
+specialist repair, full lifecycle scheduling, automatic action recovery, and a
+complete task dashboard are not implemented. Checkpoints are unencrypted and may
 contain private paths.
 
-## Agentic OS runtime increment (v1–v4 schema & phases 1–8)
+## Agentic OS runtime increment (v1–v6 schema & phases 1–8)
 
 The platform now includes an offline-first agentic runtime built with zero required
 third-party runtime dependencies on the core path:
 
-1. **Versioned SQLite migrations (`v1`–`v4`)** (`hinata/database/migrations.py`):
+1. **Versioned SQLite migrations (`v1`–`v6`)** (`hinata/database/migrations.py`):
    Ordered schema migrations adding structured 5-tier `memory_records` &
    `memory_revisions`, `tool_idempotency` ledger, `trace_events` observability,
    `scheduled_jobs`, `coding_workspaces` & `coding_patches`, `offline_assets`
@@ -96,14 +99,16 @@ third-party runtime dependencies on the core path:
 4. **DAG planner, 5 autonomy modes & bounded offline scheduler**
    (`hinata/core/planner.py`, `hinata/tasks/store.py`, `hinata/tasks/scheduler.py`):
    `ExecutionPlan` DAG validation (cycle & write-conflict rejection, parallel
-   read-only `topological_batches`, canonical `plan_hash`), 5 autonomy modes
-   (`manual`, `assisted`, `supervised_agent`, `bounded_autonomous`, `read_only_safe`),
+   read-only `topological_batches`, canonical `plan_hash`), five configured autonomy
+   modes (`SUGGEST_ONLY`, `APPROVAL_EACH_STEP`, `APPROVED_PLAN`,
+   `LOW_RISK_AUTONOMY`, `OFFLINE_AUTONOMY`), explicit lifecycle vocabulary,
    safe `pause_task` / `resume_paused_task`, non-replaying `reconcile_interrupted_task`,
    and `TaskScheduler` offline background jobs.
 5. **10-specialist multi-agent coordination & coding workspaces**
-   (`hinata/agents/registry.py`, `hinata/automation/workspace.py`): Typed
-   `AgentManifest` & `AgentMessage` envelopes, delegation depth & cycle prevention,
-   `ResourceLockManager`, independent reviewer consensus, atomic unified-diff/file
+   (`hinata/agents/registry.py`, `hinata/agents/runtime.py`, `hinata/automation/workspace.py`):
+   Typed `AgentManifest`/`AgentMessage` envelopes, strict model-backed `SubtaskReport`
+   preflight, manifest/risk/delegation/concurrency/lock enforcement, durable
+   specialist reports, independent reviewer consensus, atomic unified-diff/file
    patch apply & rollback, and `IsolatedSandboxRunner` (Linux `unshare -rn` when
    available + startup Python sitecustomize socket block, `python -I -B`, stripped env,
    CPU/memory `RLIMIT`s).
@@ -118,6 +123,44 @@ third-party runtime dependencies on the core path:
    PySide6 `AgentControlCenterDialog` accessible from `MainWindow`, `VoiceDiagnostics`
    barge-in TTS interruption, and `LocalVisionAdapter` failing closed unless local
    Ollama vision models or local `pytesseract` OCR are installed.
+
+## 2026-11-15 implementation audit and Phase 0/1 repairs
+
+The audited base was commit `ea3eb9b505df742b382010a67dfa98b5116ad068`. The
+previous text above remains a historical assessment of the earlier increment; the
+current capability matrix and open work are maintained in
+[JARVIS_GAP_REGISTER.md](JARVIS_GAP_REGISTER.md).
+
+This branch now adds a real, bounded specialist runtime. A validated plan node is
+assigned to the registered manifest, receives only its declared assignment
+context, and (for model-backed roles) must first produce a strict JSON report via
+`hinata/agents/runtime.py`. The report is untrusted and cannot execute a tool.
+`AgentRegistry` enforces the manifest tool allowlist, risk ceiling, delegation
+cycle/depth, concurrency, timeout, locks, and tool budget. The central
+`Orchestrator` remains the only side-effect callback and runs the normal
+`PermissionManager` and `WorkerCoordinator` path. Assignment messages and final
+reports are persisted in SQLite, including model identity, evidence, usage, and
+limitations. Deterministic monitor/execution agents use the same delegation and
+report path without inventing a model result.
+
+`ObjectiveContract` now distinguishes the request, desired outcome, acceptance
+criteria, constraints, exclusions, approved workspaces/data sources, budgets,
+risk, approval and verification strategy, and confirmed/inferred/observed facts.
+The contract is persisted with a task plan. This is a conservative first-pass
+understanding layer; it is not a replacement for owner clarification when a
+request is materially ambiguous.
+
+Project creation no longer returns success merely because files were written.
+`ProjectArchitectEngine.build_project` records a lifecycle status and check-level
+evidence. A passing non-empty test suite can produce `SUCCESS` for a local
+model-generated project. Missing/skipped verification produces `PARTIAL`, test
+failure produces `FAILED`, unavailable verification produces `BLOCKED`, and a
+write error with uncertain effect produces `UNKNOWN_OUTCOME`. The deterministic
+offline scaffold deliberately remains `PARTIAL` even when its own smoke tests
+pass. Project status and verification evidence are persisted in the versioned
+`project_records` and `project_iterations` tables. This is still an initial
+bounded scaffold path, not the requested iterative software factory; that gap is
+explicit in the register.
 
 ## Remaining target-hardware validation roadmap
 

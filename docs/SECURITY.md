@@ -46,7 +46,7 @@ Allow-list only applications and roots you intend HINATA to control. Adding a wh
 
 ## Network behavior
 
-The only assistant runtime endpoint is the configured Ollama URL, restricted to `127.0.0.1`, `localhost`, or `::1` over plain HTTP. The Ollama client ignores environment proxies and refuses HTTP redirects. HINATA has no analytics, crash reporter, cloud speech, cloud TTS, or remote-AI fallback.
+The normal assistant runtime endpoint is the configured Ollama URL, restricted to `127.0.0.1`, `localhost`, or `::1` over plain HTTP. The Ollama client ignores environment proxies and refuses HTTP redirects. HINATA has no analytics, crash reporter, cloud speech, cloud TTS, or silent remote-AI fallback. Any future Online Mode use must be explicitly configured with a domain allowlist and is not the default.
 
 In addition, `OfflineGuard` (`hinata.security.offline_guard`) enforces runtime egress policy in Python:
 - When `security.strict_offline = true` (or `online_mode_enabled = false`), non-loopback `socket.socket.connect` / `connect_ex` calls inside the HINATA process fail closed with `OfflinePolicyError`, and child subprocesses receive proxy-stripped offline environment flags (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `PIP_NO_INDEX=1`).
@@ -88,8 +88,7 @@ Ollama service and stores vectors locally, unencrypted. Question answering sends
 retrieved passages to that service as untrusted data, and treats the answer as
 text only; citations and factual support must be checked by the user. Neither
 prompt instructions nor citation-label validation prevent all prompt injection or
-hallucinations. Model processes are not sandboxed or network-restricted by HINATA.
-HINATA does not enforce a network firewall for its process tree.
+hallucinations. The coding verification runner has a best-effort Linux namespace/socket guard and bounded process group; ordinary model/Ollama processes and launched desktop applications are not placed inside that sandbox by HINATA. HINATA does not enforce an operating-system firewall for its entire process tree.
 
 ## Plan checkpoints
 
@@ -101,8 +100,9 @@ leaves a RUNNING/unknown outcome on interruption, including interruption between
 a successful side effect and its checkpoint. Nothing is automatically replayed
 or resumed, even if the step might have been safe. A separate concurrent process
 may still be executing a RUNNING task, so startup does not mark it as failed or
-cancelled. Review the environment before issuing a new request. No hard timeout or
-OS-level process sandbox is provided for existing tools. Clearing command history
+cancelled. Review the environment before issuing a new request. Coding verification
+commands use the isolated workspace runner; existing desktop/file tools are not
+retroactively converted into an OS-level sandbox. Clearing command history
 removes completed/failed/cancelled checkpoints, but retains awaiting/running and
 VERIFYING checkpoints; pending ones can first be cancelled with `hinata tasks ID --cancel`.
 Successful action results alone do not complete the objective. For a single

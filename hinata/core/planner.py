@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from hinata.core.tool_registry import DEFAULT_MANIFESTS, ToolManifest
@@ -71,11 +71,30 @@ _MANIFEST_MAP: dict[str, ToolManifest] = {m.name: m for m in DEFAULT_MANIFESTS}
 
 @dataclass(frozen=True, slots=True)
 class ObjectiveContract:
+    """Owner-visible contract separating facts, constraints, hypotheses, and proof."""
+
     user_request: str
     objective: str
+    desired_outcome: str = ""
     acceptance_criteria: tuple[str, ...] = ()
-    estimated_complexity: str = "low"  # low, medium, high
+    constraints: tuple[str, ...] = ()
+    exclusions: tuple[str, ...] = ()
+    permitted_workspaces: tuple[str, ...] = ()
+    data_sources: tuple[str, ...] = ()
+    deadline: str | None = None
+    budget_limits: dict[str, Any] = field(default_factory=dict)
     requires_specialist: tuple[str, ...] = ()
+    required_model_capabilities: tuple[str, ...] = ()
+    risk_classification: str = "low"
+    online_offline_requirement: str = "offline_only"
+    approval_requirements: tuple[str, ...] = ()
+    verification_strategy: tuple[str, ...] = ()
+    completion_definition: str = ""
+    assumptions: tuple[str, ...] = ()
+    confirmed_facts: tuple[str, ...] = ()
+    inferred_facts: tuple[str, ...] = ()
+    observed_facts: tuple[str, ...] = ()
+    estimated_complexity: str = "low"  # low, medium, high
     autonomy_mode: str = "APPROVED_PLAN"
 
     def to_dict(self) -> dict[str, Any]:
@@ -201,6 +220,60 @@ class Planner:
         self.max_steps = max(1, min(max_steps, 32))
 
     @staticmethod
+    def understand_request(
+        user_request: str,
+        *,
+        autonomy_mode: str = "APPROVED_PLAN",
+        permitted_workspaces: tuple[str, ...] = (),
+    ) -> ObjectiveContract:
+        """Create a conservative first-pass contract before a plan exists.
+
+        This method intentionally records hypotheses and asks the caller to
+        resolve missing target details rather than inventing paths, credentials,
+        deployment destinations, or user preferences.
+        """
+        normalized = " ".join(user_request.strip().split())[:4000]
+        if not normalized:
+            raise PlanningError("A task contract requires the original user request")
+        lowered = normalized.casefold()
+        high_risk_terms = ("delete", "destroy", "send", "publish", "purchase", "deploy", "credential")
+        medium_risk_terms = ("write", "modify", "install", "change", "build", "patch", "create")
+        risk = "high" if any(term in lowered for term in high_risk_terms) else (
+            "medium" if any(term in lowered for term in medium_risk_terms) else "low"
+        )
+        complexity = "high" if len(normalized) > 800 or "project" in lowered else (
+            "medium" if len(normalized) > 240 else "low"
+        )
+        criteria = ("The requested outcome is produced and directly verified.",)
+        assumptions = (
+            "The request is interpreted only as a goal; target resources and irreversible details require confirmation.",
+        )
+        return ObjectiveContract(
+            user_request=normalized,
+            objective=normalized,
+            desired_outcome=normalized,
+            acceptance_criteria=criteria,
+            constraints=("Offline-first local execution", "Owner remains the final authority"),
+            exclusions=("No invented credentials, external destinations, or unapproved network access",),
+            permitted_workspaces=tuple(p[:512] for p in permitted_workspaces[:10]),
+            data_sources=(),
+            budget_limits={"max_steps": 1 if complexity == "low" else 12},
+            requires_specialist=(),
+            required_model_capabilities=("structured_json",) if complexity != "low" else (),
+            risk_classification=risk,
+            online_offline_requirement="offline_only",
+            approval_requirements=("Clarify materially missing parameters before side effects.",),
+            verification_strategy=("Use fresh observations and label skipped checks NOT_RUN.",),
+            completion_definition="The owner-visible acceptance criteria have evidence-backed results.",
+            assumptions=assumptions,
+            confirmed_facts=("The owner supplied the original request.",),
+            inferred_facts=(normalized,),
+            observed_facts=(),
+            estimated_complexity=complexity,
+            autonomy_mode=autonomy_mode if autonomy_mode in AUTONOMY_MODES else "APPROVED_PLAN",
+        )
+
+    @staticmethod
     def build_contract(user_request: str, objective: str, steps: tuple[ActionRequest, ...], autonomy_mode: str = "APPROVED_PLAN") -> ObjectiveContract:
         specialists: list[str] = []
         criteria: list[str] = []
@@ -217,12 +290,68 @@ class Planner:
         complexity = "low" if len(steps) <= 2 else ("medium" if len(steps) <= 5 else "high")
         if not criteria:
             criteria.append("All approved steps succeed and independent postconditions are reviewed")
+        workspaces = sorted(
+            {
+                str(step.arguments.get("workspace", "")).strip()
+                for step in steps
+                if str(step.arguments.get("workspace", "")).strip()
+            }
+        )
+        data_sources = sorted(
+            {
+                str(step.arguments.get(key, "")).strip()
+                for step in steps
+                for key in ("path", "root", "workspace")
+                if str(step.arguments.get(key, "")).strip()
+            }
+        )
+        required_capabilities: list[str] = []
+        if "coding" in specialists:
+            required_capabilities.extend(["structured_json", "local_code_reasoning"])
+        if "research" in specialists:
+            required_capabilities.append("local_retrieval")
+        if any(step.tool.startswith("capture_") for step in steps):
+            required_capabilities.append("screen_capture")
+        risk_order = {"low": 0, "medium": 1, "high": 2}
+        risk = max(
+            ("high" if step.tool in {"quarantine_delete_file", "clear_memory", "power_control"}
+             else "medium" if step.tool in {"write_text_file", "workspace_apply_patch", "build_project"}
+             else "low") for step in steps
+        ) if steps else "low"
+        approvals = (
+            ("owner approval before every side effect",)
+            if risk_order[risk] >= risk_order["medium"]
+            else ("owner approval is bound to the displayed plan hash",)
+        )
+        verification = tuple(
+            [
+                "Revalidate every tool argument at dispatch",
+                "Persist typed tool observations and effect state",
+                "Run independent postcondition checks; unknown evidence remains unverified",
+            ]
+        )
         return ObjectiveContract(
             user_request=user_request[:4000],
             objective=objective,
+            desired_outcome=objective,
             acceptance_criteria=tuple(criteria[:10]),
-            estimated_complexity=complexity,
+            constraints=("Offline-first local execution", "Only declared approved roots and tools may be used"),
+            exclusions=("No credentials, network access, or external communication unless separately approved",),
+            permitted_workspaces=tuple(workspaces[:10]),
+            data_sources=tuple(data_sources[:20]),
+            budget_limits={"max_steps": len(steps), "max_model_calls": max(1, len(specialists))},
             requires_specialist=tuple(specialists),
+            required_model_capabilities=tuple(dict.fromkeys(required_capabilities)),
+            risk_classification=risk,
+            online_offline_requirement="offline_only",
+            approval_requirements=approvals,
+            verification_strategy=verification,
+            completion_definition="All acceptance criteria have fresh evidence; skipped checks are not passed.",
+            assumptions=("Natural-language inferences remain hypotheses until confirmed or observed.",),
+            confirmed_facts=(),
+            inferred_facts=(objective,),
+            observed_facts=(),
+            estimated_complexity=complexity,
             autonomy_mode=autonomy_mode if autonomy_mode in AUTONOMY_MODES else "APPROVED_PLAN",
         )
 
