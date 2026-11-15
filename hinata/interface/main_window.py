@@ -30,8 +30,10 @@ from hinata.core.assistant import HinataAssistant
 from hinata.core.types import AssistantResponse
 from hinata.interface.canvas import OrbLogo, SceneCanvas
 from hinata.interface.components import ConversationView, StatusPill, Worker
+from hinata.interface.control_center import AgentControlCenterDialog
 from hinata.interface.dialogs import EnrollmentDialog, MemoryDialog, SettingsDialog, StatusDialog
 from hinata.interface.styles import STYLE_SHEET
+from hinata.speech.replies import speaking_enabled, spoken_reply
 from hinata.speech.voice_pipeline import VoiceResult
 
 
@@ -65,10 +67,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"HINATA is now in {selected.label} mode", 4000)
 
     def _load_ui_settings(self) -> None:
-        speak = self.assistant.database.get_setting("ui.speak_responses")
-        self.speak_responses = (
-            speak == "true" if speak is not None else self.assistant.config.interface.speak_responses
-        )
+        self.speak_responses = speaking_enabled(self.assistant.config.interface, self.assistant.database)
         llm = self.assistant.database.get_setting("ui.llm_enabled")
         if llm is not None:
             self.assistant.orchestrator.llm_enabled = llm == "true"
@@ -117,10 +116,14 @@ class MainWindow(QMainWindow):
         self.reconnect_button.setToolTip("Start the local Ollama service and check the local model")
         self.reconnect_button.clicked.connect(self.reconnect_ollama)
         header_layout.addWidget(self.reconnect_button)
+        control_button = QPushButton("Agent center")
+        control_button.setToolTip("Inspect tasks, plan graphs, specialist agents, workspaces, RAG, and security")
+        control_button.clicked.connect(self.open_control_center)
         status_button = QPushButton("System status")
         status_button.clicked.connect(self.open_status)
         settings_button = QPushButton("Settings")
         settings_button.clicked.connect(self.open_settings)
+        header_layout.addWidget(control_button)
         header_layout.addWidget(status_button)
         header_layout.addWidget(settings_button)
         outer.addWidget(header)
@@ -162,17 +165,29 @@ class MainWindow(QMainWindow):
         outer.addLayout(input_row)
 
         tools = QHBoxLayout()
+        briefing_button = QPushButton("Tactical briefing")
+        briefing_button.setToolTip("Synthesize live hardware, queue, daemon, and security briefing")
+        briefing_button.clicked.connect(lambda: self.submit_text("executive briefing"))
         speak_button = QPushButton("Speak last response")
         speak_button.clicked.connect(lambda: self.speak_text(self.last_response_text))
+        voice_check = QPushButton("Test speaker")
+        voice_check.setToolTip("Play a short offline test and show any audio error")
+        voice_check.clicked.connect(lambda: self.speak_text("HINATA voice check. Systems online."))
         self.stop_button = QPushButton("Emergency stop")
         self.stop_button.setToolTip("Stop speech, microphone capture, wake listening, and request task cancellation")
         self.stop_button.clicked.connect(self.emergency_stop)
+        lockdown_button = QPushButton("Red Alert Lockdown")
+        lockdown_button.setToolTip("Immediately freeze all mutating and autonomous tools until PIN unlock")
+        lockdown_button.clicked.connect(self.quick_lockdown)
         enroll_button = QPushButton("Voice enrollment")
         enroll_button.clicked.connect(self.open_enrollment)
         memory_button = QPushButton("Memory")
         memory_button.clicked.connect(self.open_memory)
+        tools.addWidget(briefing_button)
         tools.addWidget(speak_button)
+        tools.addWidget(voice_check)
         tools.addWidget(self.stop_button)
+        tools.addWidget(lockdown_button)
         tools.addStretch()
         tools.addWidget(enroll_button)
         tools.addWidget(memory_button)
@@ -251,6 +266,8 @@ class MainWindow(QMainWindow):
     def show_task_error(self, message: str) -> None:
         self.conversation.add_message("System", f"Error: {message}")
         self.statusBar().showMessage("Task failed; no success was assumed", 7000)
+        if self.speak_responses:
+            self.speak_text("I could not complete that request. Please check the error on screen.")
 
     def submit_text(self, text: str | None = None) -> None:
         if self.pending_tasks:
@@ -269,6 +286,8 @@ class MainWindow(QMainWindow):
 
     def handle_response(self, response: AssistantResponse, voice: VoiceResult | None = None) -> None:
         self.conversation.add_message("HINATA", response.text)
+        if self.speak_responses:
+            self.speak_text(spoken_reply(response))
         self.statusBar().showMessage(response.status.replace("_", " "), 5000)
         if response.status == "model_unavailable":
             text = response.text.lower()
@@ -328,6 +347,8 @@ class MainWindow(QMainWindow):
                 if response.data.get("task_id"):
                     self.assistant.tasks.cancel_pending(response.data["task_id"])
                 self.conversation.add_message("System", "Plan cancelled; no steps were executed.")
+                if self.speak_responses:
+                    self.speak_text("Plan cancelled. No steps were executed.")
                 return
             self.run_task(
                 lambda: self.assistant.execute_plan(
@@ -354,6 +375,8 @@ class MainWindow(QMainWindow):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 self.conversation.add_message("System", "Action cancelled; nothing was executed.")
+                if self.speak_responses:
+                    self.speak_text("Action cancelled. Nothing was executed.")
                 return
             self.run_task(
                 lambda: self.assistant.resume(
@@ -376,6 +399,8 @@ class MainWindow(QMainWindow):
             )
             if not accepted:
                 self.conversation.add_message("System", "Action cancelled; nothing was executed.")
+                if self.speak_responses:
+                    self.speak_text("Action cancelled. Nothing was executed.")
                 return
             # The worker consumes and removes the only task-held PIN copy.
             secret = [pin]
@@ -397,10 +422,11 @@ class MainWindow(QMainWindow):
             )
             return
         self.last_response_text = response.text
-        if self.speak_responses:
-            self.speak_text(response.text)
 
     def toggle_microphone(self) -> None:
+        if not self.assistant.microphone.recording:
+            # Prevent HINATA's own answer from being transcribed as a new command.
+            self.assistant.tts.stop()
         if self.assistant.microphone.recording:
             try:
                 self.listening_pill.set_active(False)
@@ -454,7 +480,10 @@ class MainWindow(QMainWindow):
 
     def speak_text(self, text: str) -> None:
         if text:
-            self.assistant.tts.speak(text, self.speech_signals.state.emit)
+            try:
+                self.assistant.tts.speak(text, self.speech_signals.state.emit)
+            except (RuntimeError, OSError) as exc:
+                self.statusBar().showMessage(f"Speech output error: {exc}", 8000)
 
     def update_speech_state(self, state: str, error: object) -> None:
         self.speaking_pill.set_active(state == "speaking", "#78bcef")
@@ -582,6 +611,30 @@ class MainWindow(QMainWindow):
         dialog = MemoryDialog(self.assistant, self)
         dialog.actionRequested.connect(self.submit_text)
         dialog.exec()
+
+    def open_control_center(self) -> None:
+        AgentControlCenterDialog(self.assistant, self).exec()
+
+    def quick_lockdown(self) -> None:
+        if not self.assistant.override_controller.is_lockdown:
+            self.assistant.engage_lockdown("Main Window Red Alert Lockdown")
+            self.conversation.add_message(
+                "System",
+                "RED ALERT LOCKDOWN ENGAGED. All mutating, UI, and autonomous tools are frozen until unlocked with your Owner PIN.",
+            )
+            self.statusBar().showMessage("RED ALERT LOCKDOWN ACTIVE", 6000)
+            return
+        pin, ok = QInputDialog.getText(
+            self, "Lift Red Alert Lockdown", "Enter HINATA Owner PIN:", QLineEdit.EchoMode.Password
+        )
+        if not ok or not pin:
+            return
+        try:
+            self.assistant.release_lockdown(pin)
+            self.conversation.add_message("System", "Red Alert Lockdown lifted. Normal guarded operations restored.")
+            self.statusBar().showMessage("Lockdown lifted", 4000)
+        except PermissionError as exc:
+            QMessageBox.critical(self, "PIN Verification Failed", str(exc))
 
     def open_enrollment(self) -> None:
         if self.pending_tasks or self.assistant.microphone.recording:

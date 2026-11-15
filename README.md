@@ -162,6 +162,7 @@ To check that the actual launcher parses the script without installing anything 
 .\hinata.cmd                     :: interactive terminal
 .\hinata.cmd ask "system info"   :: one typed request
 .\hinata.cmd listen              :: one 5-second voice request
+.\hinata.cmd --no-speak ask "system info" :: mute this request
 .\hinata.cmd doctor              :: local diagnostics
 .\hinata.cmd status              :: JSON feature/model status
 ```
@@ -232,7 +233,7 @@ See [architecture assessment](docs/ARCHITECTURE_ASSESSMENT.md).
 | Profile | Command | Intended use |
 |---|---|---|
 | Recommended, 4 GB RAM | `.\setup.cmd -Run` | GUI, tiny Whisper, Windows SAPI, exact volume support, 0.5B Q4 LLM |
-| Core only | `.\setup.cmd -Lite -SkipOllama -SkipSpeechDownload -Run` | Text tools and SQLite; no heavy runtime downloads |
+| Lite + offline voice | `.\setup.cmd -Lite -SkipOllama -SkipSpeechDownload -Run` | Text tools, SQLite, and lightweight offline speech replies; no large model downloads |
 | Everything experimental | `.\setup.cmd -Full -Run` | Adds PyTorch speaker recognition and openWakeWord; **not recommended for 4 GB RAM** |
 | Setup without launching | `.\setup.cmd` | Install and test only |
 
@@ -244,12 +245,12 @@ Useful setup switches: `-SkipOllama`, `-SkipModelDownload`, `-SkipSpeechDownload
 - **Offline voice input:** configurable microphone, explicit start/stop controls, faster-whisper `tiny` with INT8 CPU inference, or Vosk. Normal transcription uses cached Whisper files only; `setup-speech` explicitly permits the initial download. The STT model is released after each voice request to reduce RAM overlap.
 - **Owner speaker profile:** 3–8 in-memory enrollment samples, local embeddings, conservative accept/reject/uncertain states, DPAPI-protected profile on Windows, no raw recordings saved.
 - **Typed input:** same parser/planner/tool pipeline as voice, persistent command/conversation history.
-- **Offline speech output:** interruptible Windows SAPI through `pyttsx3`; optional Piper executable support with configured local voice.
+- **Offline speech output:** typed requests, microphone requests, and wake-word replies now speak by default using interruptible Windows SAPI through `pyttsx3` (or a configured local Piper voice). Approval/PIN prompts use generic spoken cues and do not read sensitive arguments or PINs aloud. The full response remains visible; errors in the speaker are reported instead of silently claiming speech succeeded. Mute with `--no-speak` on the CLI, `/speak` during an interactive session, or the desktop Settings checkbox. `--speak` explicitly requires audio and reports failure if the device is unavailable. Existing muted settings remain private until you choose to enable speech: setup offers a `[y/N]` prompt, or use `hinata voice-output enable` (no config editing) or the desktop Settings checkbox. Use `hinata voice-output status` to check dependencies and `hinata voice-output test` to play a short offline sample. `hinata voice-output disable` saves an explicit mute choice for both desktop and terminal.
 - **Controlled PC automation:** allow-listed apps, root-confined files/folders/search/read, active-window Unicode typing, hardware volume keys, optional exact volume through `pycaw`, basic system information.
 - **Owner stop control:** the desktop emergency-stop button stops speech, recording, and wake listening, closes a pending local Ollama response, discards late desktop results and prevents pending approvals or a not-yet-started action while stop is active. A fresh request starts a new operation. A Windows action already executing may finish; HINATA reports that limitation rather than promising forcible rollback.
 - **SQLite memory:** conversations, approved preferences, commands, task results, UI settings, and selected personality mode; inspect/search/export/delete controls.
 - **Desktop UI:** microphone and text input, conversation view, listening/processing/speaking indicators, settings, enrollment, status, memory controls, and personality-mode selector. The dark-glass interface adds a softly animated perspective-grid scene, floating light orbs, a glossy HINATA sphere, translucent panels, and gradient controls with tactile press/focus states; it is painted locally without remote assets.
-- **Five personality modes:** Friend, Advisor, Technical, Strategist, and Professional. Choose a mode in the desktop UI or say/type `switch to technical mode`. Modes adjust response style only and never modify permissions.
+- **Six personality modes:** Friend, Advisor, Technical, Strategist, Professional, and Jarvis. Choose a mode in the desktop UI or say/type `switch to jarvis mode`. Modes adjust response style only and never modify permissions.
 - **Controlled multi-step planning:** a local model may propose up to five schema-validated low-impact tool steps. HINATA shows the complete plan and waits for one explicit owner approval before execution. Higher-impact actions (such as typing into an app, clearing memory, or closing apps) are excluded from batch plans and remain separately gated.
 - **Wake word:** explicit `hinata wake` mode with bounded 80 ms streaming and cooldown for a user-supplied custom **Hey HINATA** ONNX model; disabled by default and never started automatically.
 
@@ -421,37 +422,64 @@ setup.ps1 / setup.cmd       one-command Windows bootstrap
 
 The core uses only the Python standard library. Optional AI/GUI packages are lazy-loaded so `hinata --no-llm` stays lightweight. HINATA is released under [MIT](LICENSE); third-party code/model notices are in [THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).
 
-### Specialist workers
+### Specialist agents & coding workspaces
 
-The orchestrator routes validated, authorized tool actions through fixed research,
-read-only coding, memory, and execution workers; each has an explicit tool allowlist
-and records a local activity event. Use `inspect code Documents/script.py` to parse
-an approved-root Python file without executing it. It reports syntax, imports,
-definitions and a few heuristic warnings—not a security audit. A proposal-only
-replanner and a read-only reviewer are separate components. These deterministic
-workers are not independent autonomous AI personas: coding does not yet write code
-or run tests, and specialist scheduling and open-ended agent communication are not
-implemented. `hinata agents` lists the permitted tools and recent events.
+The orchestrator coordinates 10 specialized local agents (`orchestrator`,
+`planner`, `research`, `coding`, `reviewer`, `memory`, `execution`, `document`,
+`system_monitor`, and `voice`) via `hinata.agents.registry`.
+Every agent has an explicit tool allowlist, typed `AgentMessage` provenance,
+bounded delegation depth, cycle detection, resource locks, and independent
+reviewer dispute resolution:
 
-### Inspecting approved plans
+- Use `inspect code Documents/script.py` for read-only AST inspection.
+- Use `register workspace Documents/myrepo` to register a local coding workspace,
+  index Python AST symbols (`hinata workspaces --symbols`), propose single-file or
+  multi-file diffs, apply/revert patches atomically, and run unit tests inside a
+  bounded, network-disabled subprocess sandbox (`hinata workspaces`, `hinata workspaces --patches`,
+  backed by Linux `unshare -rn` + `RLIMIT`s, Windows `CreateJobObjectW` memory/process-tree
+  limits, and a Python `sitecustomize` socket guard).
+- Promote verified `COMPLETED` tasks into reusable parameterized offline workflow
+  templates with `hinata playbooks --promote TASK_ID --name my-flow` and instantiate
+  fresh approval-gated plans via `hinata playbooks --instantiate my-flow --param key=val`.
+- Use `hinata agents` to view all 10 specialist manifests, permitted tools, and
+  recent coordination activity.
 
-Plans proposed by the local model are saved before approval. Their exact steps
-must match the preview and are claimed once when approved. Inspect recent plans
-or a specific task without starting or resuming anything:
+### Inspecting plans, checkpoints, offline assets, and audit logs
+
+Plans proposed by the local model use a cycle-checked DAG (`ExecutionPlan` /
+`PlanNode`) that groups independent read-only steps into parallel waves while
+binding interactive approval to the canonical SHA-256 `plan_hash`. Inspect tasks,
+hardware profiles, offline asset SHA-256 bundles, and redacted trace timelines:
 
 ```text
 hinata tasks
 hinata tasks TASK_ID
+hinata tasks TASK_ID --timeline
+hinata tasks TASK_ID --pause
+hinata tasks TASK_ID --resume-paused
+hinata tasks TASK_ID --reconcile
 hinata tasks TASK_ID --cancel
 hinata tasks TASK_ID --verify
 hinata tasks TASK_ID --reject
-hinata agents
+hinata model hardware
+hinata model benchmark
+hinata briefing
+hinata override --status
+hinata override --lockdown
+hinata override --commander 10
+hinata override --stand-down
+hinata schedule --add "Morning Status" --request "executive briefing" --interval 3600
+hinata playbooks
+hinata workspaces --symbols
+hinata assets --verify
+hinata audit --verify-chain
+hinata audit
 ```
 
-`--cancel` only cancels a plan still awaiting approval. An interrupted `RUNNING`
-step has an **unknown outcome**: it might already have changed the system. It is
-never replayed automatically. Inspect the target manually and start a new plan
-if appropriate. Emergency stop remains cooperative and an in-flight action may
+`--cancel` only cancels a plan still awaiting approval. `--pause` pauses an
+active task at a safe boundary (never mid-RUNNING step). An interrupted `RUNNING`
+step has an **unknown outcome**: `--reconcile` inspects lease liveness and flags
+uncertain checkpoints without ever replaying side effects automatically. Emergency stop remains cooperative and an in-flight action may
 finish. Successful tool returns normally leave the task in `VERIFYING`, not
 `COMPLETED`. A narrow exception is an exact request `ensure folder PATH exists`
 (with a whitespace-free path) and a single approved create-folder step targeting
@@ -476,3 +504,46 @@ For Linux network namespaces and the separately configured Windows Sandbox
 approach, including prerequisites, commands and security limitations, see
 [offline isolation](docs/OFFLINE_ISOLATION.md). These launch paths are optional;
 the normal launchers do not enforce operating-system network isolation.
+
+### Lenovo LOQ i5 multi-AI fleet and local image creation (optional)
+
+Run `setup.ps1` on Windows 11. Setup detects RAM, NVIDIA VRAM, and battery state,
+shows the recommended Qwen + DeepSeek + reviewer + embedding model list, and asks
+**`[y/N]` before downloading**. If you answer `y`, it pulls each model and then
+updates only `[ollama]` in `config.toml` (backing up the previous config as
+`config.toml.bak`). If any pull fails, the profile is **not** applied. Declining
+keeps your current config; setup separately asks whether to download a baseline
+chat model. `-SkipModelDownload` prevents the optional model and image downloads;
+`-Lite` skips the large fleet and image backend. Non-interactive setup treats
+unanswered prompts as **no**. Ollama 0.6.2+ is required for the multi-model fleet.
+
+For **real offline PNGs**, setup separately asks permission to install optional
+PyTorch/diffusers dependencies and download `stabilityai/sd-turbo` weights to the
+private HINATA data directory (several GB of packages + model; check its model
+license before opting in). On an RTX GPU with a compatible PyTorch CUDA build and
+NVIDIA driver, generation runs locally; CPU is supported but substantially slower.
+The one-shot image process uses only cached files and blocks Python network
+connections. Qwen handles prompt direction; **SD-Turbo** renders the image. You
+can alternatively use an existing A1111/Forge-compatible server on
+`http://127.0.0.1:7860`. If neither renderer is available, HINATA saves a clearly
+labeled `.svg` vector fallback rather than claiming it generated a photo. Output
+is capped at 768px per side with the local model. `python -m hinata image status`
+shows whether its weights are cached.
+
+Without setup, `python -m hinata model fleet` prints a recommendation only; manual
+`python -m hinata model pull --fleet` is an explicit connected download, and
+`python -m hinata model apply-fleet --pack <pack_id>` applies a chosen installed
+pack. Never use `apply-fleet` before the models are actually available. You can
+also choose specific role models in `config.toml`. Roles are loaded one at a time
+(`keep_alive=0`); the fleet does not run six models in VRAM concurrently.
+
+`generate image <idea> to <path.png>` and
+`build project <specification> in <empty-directory>` require owner approval,
+write only to configured allowed roots, and run project checks in the offline
+sandbox. Generated code remains untrusted and requires your review; a fallback
+project is an explicitly labeled scaffold, **not** a completed custom project.
+
+**Autonomy boundary:** HINATA can plan, generate, execute approved local tools, and
+run sandboxed project checks, but it does not take unlimited control of the PC or
+guarantee that every task is finished correctly. Confirmation, PIN, and human
+review remain in place even when voice replies are enabled.

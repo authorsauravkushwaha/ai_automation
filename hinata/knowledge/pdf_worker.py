@@ -29,12 +29,14 @@ def main() -> int:
             return 4
         texts = []
         count = 0
-        for page in reader.pages:
+        for page_num, page in enumerate(reader.pages, 1):
             text = page.extract_text() or ""
-            count += len(text) + 1
-            if count > MAX_CHARS:
-                return 5
-            texts.append(text)
+            tagged = f"[[PAGE:{page_num}]]\n{text}" if text.strip() else ""
+            if tagged:
+                count += len(tagged) + 1
+                if count > MAX_CHARS:
+                    return 5
+                texts.append(tagged)
         sys.stdout.buffer.write("\n".join(texts).encode("utf-8"))
         return 0
     except Exception:

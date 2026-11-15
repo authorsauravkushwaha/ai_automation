@@ -12,6 +12,7 @@ dist/
 
 # Local configuration and private data
 config.toml
+config.toml.bak*
 .hinata/
 data/
 *.db

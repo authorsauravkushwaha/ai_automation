@@ -50,7 +50,7 @@ class SettingsDialog(QDialog):
 
         general = QWidget()
         form = QFormLayout(general)
-        self.speak_checkbox = QCheckBox("Speak final responses using the offline engine")
+        self.speak_checkbox = QCheckBox("Speak replies to typed and voice requests (offline)")
         self.speak_checkbox.setChecked(speak_responses)
         self.llm_checkbox = QCheckBox("Use local Ollama for requests outside structured commands")
         self.llm_checkbox.setChecked(llm_enabled)
@@ -82,6 +82,12 @@ class SettingsDialog(QDialog):
         voice_form.addRow(refresh)
         voice_form.addRow("Speech-to-text", QLabel(assistant.config.speech.stt_backend))
         voice_form.addRow("Text-to-speech", QLabel(assistant.config.speech.tts_backend))
+        from hinata.speech.text_to_speech import output_readiness
+
+        speech_state = output_readiness(assistant.config.speech)
+        speech_hint = QLabel(str(speech_state["guidance"]))
+        speech_hint.setWordWrap(True)
+        voice_form.addRow("Speech output readiness", speech_hint)
         voice_form.addRow(
             "Speaker profile",
             QLabel("Enrolled" if assistant.speaker.is_enrolled else "Not enrolled"),

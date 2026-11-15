@@ -21,9 +21,130 @@ class IntentParser:
 
     def parse(self, text: str) -> ActionRequest | None:
         stripped = text.strip()
+        # J.A.R.V.I.S. tactical & desktop cockpit natural commands
+        if re.fullmatch(
+            r"(?:executive|tactical|morning|jarvis|status)\s+(?:briefing|report)|brief\s+me",
+            stripped,
+            re.IGNORECASE,
+        ):
+            return self._action("executive_briefing", {}, text)
+        match = re.fullmatch(
+            r"list\s+(?:open\s+)?windows(?:\s+matching\s+(.+))?", stripped, re.IGNORECASE
+        )
+        if match:
+            w_args: dict[str, Any] = {}
+            if match.group(1):
+                w_args["filter"] = match.group(1).strip()
+            return self._action("list_windows", w_args, text)
+        match = re.fullmatch(r"focus\s+window\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("focus_window", {"title": match.group(1).strip()}, text)
+        match = re.fullmatch(
+            r"(?:snap|arrange)\s+window\s+(.+?)\s+(left|right|maximize|minimize|restore)",
+            stripped,
+            re.IGNORECASE,
+        )
+        if match:
+            return self._action(
+                "snap_window",
+                {"title": match.group(1).strip(), "layout": match.group(2).lower()},
+                text,
+            )
+        match = re.fullmatch(
+            r"(?:maximize|minimize|restore)\s+window\s+(.+)", stripped, re.IGNORECASE
+        )
+        if match:
+            verb = stripped.split()[0].lower()
+            return self._action(
+                "snap_window", {"title": match.group(1).strip(), "layout": verb}, text
+            )
+        match = re.fullmatch(
+            r"send\s+(?:hotkey|shortcut)\s+(\w+)(?:\s+to\s+(.+))?", stripped, re.IGNORECASE
+        )
+        if match:
+            hk_args: dict[str, Any] = {"shortcut": match.group(1).lower()}
+            if match.group(2):
+                hk_args["target_window"] = match.group(2).strip()
+            return self._action("send_hotkey", hk_args, text)
+        if re.fullmatch(r"read\s+clipboard", stripped, re.IGNORECASE):
+            return self._action("read_clipboard", {}, text)
+        match = re.fullmatch(r"(?:copy\s+to|write)\s+clipboard\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action(
+                "write_clipboard",
+                {"text": self._strip_matching_quotes(match.group(1).strip())},
+                text,
+            )
+        match = re.fullmatch(
+            r"(?:capture|screenshot)\s+screen\s+(?:to\s+)?(\S+)(?:\s+and\s+analyze\s+(.+))?",
+            stripped,
+            re.IGNORECASE,
+        )
+        if match:
+            sc_args: dict[str, Any] = {"path": match.group(1).strip()}
+            if match.group(2):
+                sc_args["analyze_prompt"] = match.group(2).strip()
+            return self._action("capture_screen", sc_args, text)
+        match = re.fullmatch(
+            r"list\s+(?:running\s+|top\s+)?processes(?:\s+for\s+(.+))?", stripped, re.IGNORECASE
+        )
+        if match:
+            p_args: dict[str, Any] = {}
+            if match.group(1):
+                p_args["filter"] = match.group(1).strip()
+            return self._action("list_processes", p_args, text)
+        match = re.fullmatch(
+            r"(lock|sleep|hibernate)\s+(?:workstation|pc|computer)", stripped, re.IGNORECASE
+        )
+        if match:
+            return self._action("power_control", {"action": match.group(1).lower()}, text)
+
         match = re.fullmatch(r"(?:inspect|analyze) (?:python|code)(?: file)?\s+(.+)", stripped, re.IGNORECASE)
         if match:
             return self._action("code_inspect", {"path": match.group(1)}, text)
+        if re.fullmatch(r"inspect (?:repository|workspace) imports", stripped, re.IGNORECASE):
+            return self._action("inspect_repository_imports", {}, text)
+        if re.fullmatch(r"(?:ai|model|jarvis|lenovo|loq)\s+fleet(?:\s+profile)?", stripped, re.IGNORECASE):
+            return self._action("ai_fleet_profile", {}, text)
+        match = re.fullmatch(r"(?:generate|create|make)\s+image\s+(.+?)\s+(?:to|at)\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("generate_image", {"prompt": match.group(1), "output_path": match.group(2)}, text)
+        match = re.fullmatch(r"(?:build|create)\s+project\s+(.+?)\s+(?:in|at)\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("build_project", {"specification": match.group(1), "project_dir": match.group(2)}, text)
+        if re.fullmatch(r"(?:hardware|gpu|device)\s+profile", stripped, re.IGNORECASE):
+            return self._action("hardware_profile", {}, text)
+        match = re.fullmatch(r"hybrid search(?: knowledge)?(?: for)?\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("knowledge_hybrid_search", {"query": match.group(1)}, text)
+        match = re.fullmatch(r"list (?:directory|folder)\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("list_directory", {"path": match.group(1)}, text)
+        match = re.fullmatch(r"search file content(?: for)?\s+(.+?)(?:\s+in\s+(.+))?", stripped, re.IGNORECASE)
+        if match:
+            c_args: dict[str, Any] = {"query": match.group(1).strip()}
+            if match.group(2):
+                c_args["root"] = match.group(2).strip()
+            return self._action("search_file_content", c_args, text)
+        match = re.fullmatch(r"compare files\s+(\S+)\s+(?:and|with)\s+(\S+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("compare_files", {"first": match.group(1), "second": match.group(2)}, text)
+        if re.fullmatch(r"workspace (?:list|inventory)", stripped, re.IGNORECASE):
+            return self._action("workspace_list", {}, text)
+        match = re.fullmatch(r"workspace read\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("workspace_read", {"path": match.group(1)}, text)
+        match = re.fullmatch(r"workspace search\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("workspace_search", {"query": match.group(1)}, text)
+        if re.fullmatch(r"workspace diff", stripped, re.IGNORECASE):
+            return self._action("workspace_diff", {}, text)
+        if re.fullmatch(r"run workspace linter", stripped, re.IGNORECASE):
+            return self._action("run_linter", {}, text)
+        if re.fullmatch(r"run workspace type checker", stripped, re.IGNORECASE):
+            return self._action("run_type_checker", {}, text)
+        if re.fullmatch(r"run workspace tests", stripped, re.IGNORECASE):
+            return self._action("run_project_tests", {}, text)
         if re.fullmatch(r"(?:list|show) knowledge(?: documents)?", stripped, re.IGNORECASE):
             return self._action("knowledge_list", {}, text)
         match = re.fullmatch(r"(?:index folder|sync knowledge folder)\s+(.+)", stripped, re.IGNORECASE)
@@ -49,7 +170,7 @@ class IntentParser:
             return self._action("knowledge_search", {"query": match.group(1)}, text)
         mode_match = re.fullmatch(
             r"(?:(?:switch|change|set)(?:\s+to)?\s+)?"
-            r"(friend|advisor|technical|strategist|professional)(?:\s+mode)?",
+            r"(friend|advisor|technical|strategist|professional|jarvis)(?:\s+mode)?",
             stripped,
             flags=re.IGNORECASE,
         )

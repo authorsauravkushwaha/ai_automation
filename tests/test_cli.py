@@ -20,7 +20,7 @@ class CliTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["HINATA_DATA_DIR"] = str(Path(temporary.name) / "data")
         return subprocess.run(
-            [sys.executable, "-m", "hinata", "--no-llm", *arguments],
+            [sys.executable, "-m", "hinata", "--no-llm", "--no-speak", *arguments],
             input=input_text,
             text=True,
             capture_output=True,
@@ -90,6 +90,83 @@ class CliTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as error:
             self.assertEqual(emit_with_approvals(assistant, response, speak=True, wait_for_speech=True), 1)
         self.assertIn("device unavailable", error.getvalue())
+
+    def test_agentic_cli_subcommands_run_offline(self) -> None:
+        hw = self.run_cli("model", "hardware")
+        self.assertEqual(hw.returncode, 0, hw.stderr)
+        self.assertIn("recommended_profile", hw.stdout)
+
+        agents = self.run_cli("agents")
+        self.assertEqual(agents.returncode, 0, agents.stderr)
+        self.assertIn("Planner Agent", agents.stdout)
+        self.assertIn("Reviewer & QA Agent", agents.stdout)
+
+        ws = self.run_cli("workspaces")
+        self.assertEqual(ws.returncode, 0, ws.stderr)
+        self.assertEqual(ws.stdout.strip(), "[]")
+
+        assets = self.run_cli("assets")
+        self.assertEqual(assets.returncode, 0, assets.stderr)
+        self.assertIn("registered_assets", assets.stdout)
+
+        audit = self.run_cli("audit")
+        self.assertEqual(audit.returncode, 0, audit.stderr)
+        self.assertIn("recent_trace_events", audit.stdout)
+
+        verify_chain = self.run_cli("audit", "--verify-chain")
+        self.assertEqual(verify_chain.returncode, 0, verify_chain.stderr)
+        self.assertIn('"intact": true', verify_chain.stdout)
+
+        playbooks = self.run_cli("playbooks")
+        self.assertEqual(playbooks.returncode, 0, playbooks.stderr)
+        self.assertEqual(playbooks.stdout.strip(), "[]")
+
+        briefing = self.run_cli("briefing")
+        self.assertEqual(briefing.returncode, 0, briefing.stderr)
+        self.assertIn("TACTICAL BRIEFING", briefing.stdout)
+
+        override = self.run_cli("override", "--status")
+        self.assertEqual(override.returncode, 0, override.stderr)
+        self.assertIn("lockdown_active", override.stdout)
+
+        sched = self.run_cli("schedule")
+        self.assertEqual(sched.returncode, 0, sched.stderr)
+        self.assertEqual(sched.stdout.strip(), "[]")
+
+    def test_voice_diagnostics_barge_in_and_vision_capability_gating(self) -> None:
+        from hinata.automation.app_control import AutomationError
+        from hinata.automation.file_manager import FileManager
+        from hinata.config import SecurityConfig, SpeechConfig
+        from hinata.speech.multimodal import LocalVisionAdapter, VoiceDiagnostics
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+
+        mic = Mock()
+        mic.list_devices.return_value = [{"index": 0, "name": "Local Mic"}]
+        stt = Mock()
+        tts = Mock()
+        speaker = Mock()
+        speaker.is_enrolled = False
+
+        diag = VoiceDiagnostics(SpeechConfig(), mic, stt, tts, speaker)
+        status = diag.status()
+        self.assertIn("Probabilistic convenience check only", status["speaker_note"])
+        self.assertEqual(status["input_devices"][0]["name"], "Local Mic")
+        diag.barge_in_stop()
+        tts.stop.assert_called_once()
+
+        # Vision capability gating fails closed honestly when no offline OCR or vision model exists
+        files = FileManager(SecurityConfig(allowed_roots=(root,)))
+        img = root / "sample.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        vision = LocalVisionAdapter(files, llm=None)
+        with patch("hinata.speech.multimodal.importlib.util.find_spec", return_value=None):
+            caps = vision.capabilities()
+            self.assertFalse(caps["multimodal_ready"])
+            with self.assertRaises(AutomationError):
+                vision.inspect_image(str(img))
 
 
 if __name__ == "__main__":

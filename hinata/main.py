@@ -15,13 +15,15 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from hinata import __version__
 from hinata.automation.system_info import SystemInfo
-from hinata.config import ConfigError, load_config
+from hinata.config import ConfigError, OllamaConfig, load_config
 from hinata.core.assistant import HinataAssistant
 from hinata.core.ollama_service import OllamaService
 from hinata.core.types import AssistantResponse
+from hinata.speech.replies import speaking_enabled, spoken_reply
 
 EXAMPLES = """Structured commands (work without an LLM):
   open notepad                         close notepad
@@ -47,7 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", help="Path to config.toml")
     parser.add_argument("--no-llm", action="store_true", help="Use deterministic tools only")
-    parser.add_argument("--speak", action="store_true", help="Speak final responses offline")
+    speech = parser.add_mutually_exclusive_group()
+    speech.add_argument("--speak", action="store_true", help="Require offline speech output (fail if unavailable)")
+    speech.add_argument("--no-speak", action="store_true", help="Mute replies for this session")
     parser.add_argument("--version", action="version", version=f"HINATA {__version__}")
     commands = parser.add_subparsers(dest="command")
 
@@ -65,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("setup-pin", help="Set or change the PIN for sensitive actions")
     commands.add_parser("devices", help="List available input microphones")
     commands.add_parser("setup-speech", help="Prepare the configured offline STT model")
+    voice_output = commands.add_parser("voice-output", help="Inspect, test, enable, or mute spoken replies")
+    voice_output.add_argument("operation", choices=["status", "test", "enable", "disable"])
     commands.add_parser("gui", help="Start the PySide6 desktop interface")
     wake = commands.add_parser("wake", help="Explicitly listen for a custom Hey HINATA wake model")
     wake.add_argument("--duration", type=float, default=5.0, help="Seconds to record after detection")
@@ -73,16 +79,76 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--no-model-check", action="store_true")
     commands.add_parser("doctor", help="Diagnose resources, local runtime, and optional dependencies")
 
-    model = commands.add_parser("model", help="Inspect or download the configured Ollama model")
-    model.add_argument("operation", choices=["status", "pull"])
+    model = commands.add_parser("model", help="Inspect, profile, or download configured Ollama models")
+    model.add_argument("operation", choices=["status", "pull", "hardware", "benchmark", "fleet", "apply-fleet"])
+    model.add_argument("--fleet", action="store_true", help="Pull all models in the detected Lenovo LOQ i5 fleet (large setup download)")
+    model.add_argument("--pack", choices=["lenovo_loq_i5_rtx_8gb", "lenovo_loq_i5_rtx_4gb", "lenovo_loq_i5_cpu_fast"], help="Explicitly select a fleet pack when applying configuration")
+    image = commands.add_parser("image", help="Inspect or explicitly download the optional local SD-Turbo image model")
+    image.add_argument("operation", choices=["status", "setup"])
 
-    commands.add_parser("agents", help="Show registered specialist workers and recent activity")
-    tasks = commands.add_parser("tasks", help="Inspect saved plan checkpoints (never resumes execution)")
+    commands.add_parser("agents", help="Show registered specialist agents, manifests, and recent activity")
+    tasks = commands.add_parser("tasks", help="Inspect saved plan checkpoints (never auto-replays execution)")
     tasks.add_argument("id", nargs="?", help="Task ID; omit to list recent tasks")
     task_action = tasks.add_mutually_exclusive_group()
     task_action.add_argument("--cancel", action="store_true", help="Cancel an unapproved plan by ID")
     task_action.add_argument("--verify", action="store_true", help="Review an executed task and record observed evidence")
     task_action.add_argument("--reject", action="store_true", help="Record that an executed task did not meet its objective")
+    task_action.add_argument("--pause", action="store_true", help="Pause a task at a safe non-RUNNING boundary")
+    task_action.add_argument("--resume-paused", action="store_true", help="Resume a PAUSED task if all prior outcomes are known")
+    task_action.add_argument("--reconcile", action="store_true", help="Run read-only crash reconciliation without replaying actions")
+    task_action.add_argument("--timeline", action="store_true", help="Inspect durable trace timeline for a task")
+
+    workspaces = commands.add_parser("workspaces", help="Manage approved coding workspaces and inspect patches")
+    ws_op = workspaces.add_mutually_exclusive_group()
+    ws_op.add_argument("--register", metavar="PATH", help="Approve and register a local coding workspace directory")
+    ws_op.add_argument("--patches", action="store_true", help="List proposed, applied, and reverted coding patches")
+    ws_op.add_argument("--symbols", action="store_true", help="Build Python AST symbol & call-reference map")
+    ws_op.add_argument("--probe-sandbox", action="store_true", help="Verify sandbox network-disabled isolation")
+    workspaces.add_argument("--workspace", default="", help="Workspace ID or name filter")
+    workspaces.add_argument("--query", default="", help="Optional symbol search filter")
+
+    assets = commands.add_parser("assets", help="Inspect, verify, export, or import air-gapped offline bundles")
+    asset_op = assets.add_mutually_exclusive_group()
+    asset_op.add_argument("--verify", action="store_true", help="Verify SHA-256 digests of registered local assets")
+    asset_op.add_argument("--export-bundle", metavar="TAR_GZ", help="Export registered local assets to an offline bundle")
+    asset_op.add_argument("--import-bundle", metavar="TAR_GZ", help="Import and SHA-256 verify an offline bundle")
+
+    audit = commands.add_parser("audit", help="Inspect, cryptographically verify, or export audit traces")
+    audit_op = audit.add_mutually_exclusive_group()
+    audit_op.add_argument("--export", metavar="PATH", help="Write redacted audit JSON to file")
+    audit_op.add_argument("--verify-chain", action="store_true", help="Verify SHA-256 tamper-evident hash chain")
+
+    playbooks = commands.add_parser("playbooks", help="Manage reusable procedural workflow playbooks")
+    pb_op = playbooks.add_mutually_exclusive_group()
+    pb_op.add_argument("--promote", metavar="TASK_ID", help="Promote a verified COMPLETED task into a playbook")
+    pb_op.add_argument("--instantiate", metavar="NAME_OR_ID", help="Stage an AWAITING_APPROVAL task from a playbook")
+    pb_op.add_argument("--delete", metavar="NAME_OR_ID", help="Delete a saved playbook")
+    playbooks.add_argument("--name", default="", help="Playbook name when using --promote")
+    playbooks.add_argument("--description", default="", help="Optional playbook description")
+    playbooks.add_argument("--param", action="append", default=[], metavar="KEY=VALUE", help="Parameter binding")
+
+    commands.add_parser("briefing", help="J.A.R.V.I.S. tactical situational awareness briefing")
+
+    override = commands.add_parser(
+        "override",
+        help="Owner tactical protocols: Red Alert Lockdown & PIN-unlocked Commander Lease",
+    )
+    ov_op = override.add_mutually_exclusive_group()
+    ov_op.add_argument("--status", action="store_true", help="Show current tactical posture")
+    ov_op.add_argument("--lockdown", action="store_true", help="Immediately freeze all non-status tools")
+    ov_op.add_argument("--unlock", action="store_true", help="Lift Red Alert Lockdown (requires PIN)")
+    ov_op.add_argument("--commander", type=int, metavar="MINUTES", help="Activate timed Commander Lease (1..30 min, requires PIN)")
+    ov_op.add_argument("--stand-down", action="store_true", help="Revoke active Commander Lease immediately")
+    override.add_argument("--reason", default="Owner engaged Red Alert Lockdown", help="Lockdown reason note")
+
+    schedule = commands.add_parser("schedule", help="Manage bounded offline-only autonomous background jobs")
+    sc_op = schedule.add_mutually_exclusive_group()
+    sc_op.add_argument("--add", metavar="NAME", help="Schedule a recurring bounded offline job")
+    sc_op.add_argument("--tick", action="store_true", help="Execute one bounded scheduler tick now")
+    sc_op.add_argument("--disable", metavar="JOB_ID", help="Disable a scheduled job")
+    schedule.add_argument("--request", default="executive briefing", help="Command/request for --add")
+    schedule.add_argument("--interval", type=int, default=300, help="Interval in seconds for --add")
+    schedule.add_argument("--max-runs", type=int, default=10, help="Bounded run cap for --add")
 
     memory = commands.add_parser("memory", help="Inspect, export, or delete local memory")
     operation = memory.add_mutually_exclusive_group(required=True)
@@ -99,16 +165,76 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         if args.command == "model" and args.operation == "pull":
-            return pull_model(config.ollama.model)
+            if args.fleet:
+                from hinata.core.jarvis_models import select_optimal_fleet_pack
+                from hinata.core.providers import HardwareCapabilityService
+                pack = select_optimal_fleet_pack(HardwareCapabilityService().detect())
+                for name in pack.all_ollama_models():
+                    if pull_model(name, config.ollama) != 0:
+                        return 1
+                return 0
+            return pull_model(config.ollama.model, config.ollama)
+        if args.command == "model" and args.operation == "apply-fleet":
+            # Config is written only by an explicit CLI action after setup pulls succeed.
+            from hinata.core.fleet_setup import apply_fleet_pack
+            from hinata.core.jarvis_models import FLEET_CATALOG
+            if not args.pack:
+                print("--pack is required to apply a fleet", file=sys.stderr)
+                return 2
+            config_path = Path(args.config or os.environ.get("HINATA_CONFIG", os.environ.get("FRIDAY_CONFIG", str(Path(__file__).resolve().parent.parent / "config.toml"))))
+            backup = apply_fleet_pack(config_path, FLEET_CATALOG[args.pack])
+            print(f"Applied {args.pack} to {config_path}; backup: {backup}")
+            return 0
+        if args.command == "image":
+            from hinata.core.local_image import (
+                download_image_model,
+                is_model_ready,
+                model_directory,
+            )
+            folder = model_directory(config.data_dir)
+            if args.operation == "setup":
+                print("Downloading optional SD-Turbo weights into the local model cache. Internet is needed only now.")
+                print(f"Image model ready: {download_image_model(config.data_dir)}")
+            else:
+                print(json.dumps({"model": "stabilityai/sd-turbo", "ready": is_model_ready(folder), "path": str(folder)}, indent=2))
+            return 0
         assistant = HinataAssistant(config, llm_enabled=False if args.no_llm else None)
+        speak = args.speak or (speaking_enabled(config.interface, assistant.database) and not args.no_speak)
+        if args.command == "voice-output":
+            if args.operation in {"enable", "disable"}:
+                enabled = args.operation == "enable"
+                assistant.database.set_setting("ui.speak_responses", str(enabled).lower())
+                print(f"Spoken replies {'enabled' if enabled else 'muted'} for the desktop and terminal.")
+                return 0
+            from hinata.speech.text_to_speech import output_readiness
+
+            ready = output_readiness(config.speech)
+            ready["replies_enabled"] = speaking_enabled(config.interface, assistant.database)
+            if args.operation == "status":
+                print(json.dumps(ready, indent=2))
+                return 0
+            if not ready["backend_ready"]:
+                print(f"Voice output unavailable: {ready['guidance']}", file=sys.stderr)
+                return 2
+            assistant.tts.speak("HINATA voice check. Systems online.")
+            assistant.tts.wait(timeout=20.0)
+            if assistant.tts.speaking:
+                assistant.tts.stop()
+                print("Voice output timed out; check the playback device.", file=sys.stderr)
+                return 2
+            if assistant.tts.last_error:
+                print(f"Voice output failed: {assistant.tts.last_error}", file=sys.stderr)
+                return 2
+            print("Voice test completed. If you did not hear it, check your speaker and Windows audio device.")
+            return 0
         if args.command == "ask":
             return emit_with_approvals(
-                assistant, assistant.process_text(" ".join(args.request)), speak=args.speak, wait_for_speech=True
+                assistant, assistant.process_text(" ".join(args.request)), speak=speak, wait_for_speech=True, speech_required=args.speak
             )
         if args.command == "listen":
             voice, response = assistant.process_voice(args.duration)
             print(f"You (voice/{voice.speaker_status}): {voice.text}")
-            return emit_with_approvals(assistant, response, voice=voice, speak=args.speak, wait_for_speech=True)
+            return emit_with_approvals(assistant, response, voice=voice, speak=speak, wait_for_speech=True, speech_required=args.speak)
         if args.command == "gui":
             try:
                 from hinata.interface.main_window import run_gui
@@ -117,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             return run_gui(assistant)
         if args.command == "wake":
-            return wake_loop(assistant, args.duration)
+            return wake_loop(assistant, args.duration, speak=speak, speech_required=args.speak)
         if args.command == "status":
             print(json.dumps(assistant.status(check_model=not args.no_model_check), indent=2))
             return 0
@@ -138,18 +264,221 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "delete-voice-profile":
             return delete_voice_profile(assistant)
         if args.command == "model":
+            if args.operation == "fleet":
+                from hinata.core.jarvis_models import (
+                    render_fleet_toml_snippet,
+                    select_optimal_fleet_pack,
+                )
+                pack = select_optimal_fleet_pack(assistant.hardware.detect())
+                print(json.dumps(pack.to_dict(), indent=2))
+                print("\n# Paste these [ollama] values into config.toml (replace existing [ollama] section):")
+                print(render_fleet_toml_snippet(pack))
+                return 0
+            if args.operation == "hardware":
+                print(json.dumps(assistant.hardware.detect(), indent=2))
+                return 0
+            if args.operation == "benchmark":
+                print(json.dumps(assistant.llm.benchmark(), indent=2))
+                return 0
             # status: connect (starting the service if needed) so the report is real.
             report = assistant.llm.ensure_connected()
             print(json.dumps({**report, "tags": assistant.llm.status()}, indent=2))
             return 0
         if args.command == "agents":
             from hinata.agents.workers import WORKERS
-            print(json.dumps({"workers": {name: sorted(worker.allowed_tools) for name, worker in WORKERS.items()},
-                              "planning": "proposal-only bounded replanner",
-                              "review": "read-only postcondition checks and human attestation",
-                              "recent_events": assistant.orchestrator.workers.recent()}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "workers": {name: sorted(worker.allowed_tools) for name, worker in WORKERS.items()},
+                        "specialist_manifests": assistant.agent_registry.list_manifests(),
+                        "agent_health": assistant.agent_registry.health_snapshot(),
+                        "planning": "proposal-only bounded replanner & DAG graph validator",
+                        "review": "read-only postcondition checks and human attestation",
+                        "recent_events": assistant.orchestrator.workers.recent(),
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "workspaces":
+            if args.register:
+                print(json.dumps(assistant.workspaces.register_workspace(args.register), indent=2))
+                return 0
+            if args.probe_sandbox:
+                print(
+                    json.dumps(
+                        assistant.workspaces.sandbox.verify_network_blocked(assistant.config.data_dir),
+                        indent=2,
+                    )
+                )
+                return 0
+            if args.patches:
+                rows = assistant.database.fetch_all(
+                    "SELECT patch_id, workspace_id, title, state, created_at FROM coding_patches ORDER BY created_at DESC LIMIT 50"
+                )
+                print(json.dumps(rows, indent=2))
+                return 0
+            if args.symbols:
+                print(
+                    json.dumps(
+                        assistant.workspaces.ast_symbol_index(args.workspace, query=args.query),
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+                return 0
+            print(json.dumps(assistant.workspaces.list_workspaces(), indent=2))
+            return 0
+        if args.command == "assets":
+            if args.verify:
+                report = assistant.assets.verify_all()
+                print(json.dumps(report, indent=2))
+                return 0 if report["all_valid"] else 1
+            if args.export_bundle:
+                print(json.dumps(assistant.assets.export_bundle(args.export_bundle), indent=2))
+                return 0
+            if args.import_bundle:
+                print(json.dumps(assistant.assets.import_bundle(args.import_bundle), indent=2))
+                return 0
+            print(json.dumps(assistant.assets.readiness_inventory(), indent=2))
+            return 0
+        if args.command == "audit":
+            if args.verify_chain:
+                report = assistant.tracer.verify_integrity()
+                print(json.dumps(report, indent=2, ensure_ascii=False))
+                return 0 if report["intact"] else 1
+            payload = assistant.tracer.export_audit()
+            if args.export:
+                out_p = Path(args.export).expanduser().resolve()
+                out_p.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                print(f"Redacted audit report saved to: {out_p}")
+                return 0
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+        if args.command == "playbooks":
+            kv_params: dict[str, str] = {}
+            for pair in args.param:
+                if "=" not in pair:
+                    print(f"Invalid --param '{pair}'; expected KEY=VALUE.", file=sys.stderr)
+                    return 1
+                k, v = pair.split("=", 1)
+                kv_params[k.strip()] = v
+            if args.promote:
+                if not args.name:
+                    print("--name is required when promoting a task to a playbook.", file=sys.stderr)
+                    return 1
+                created = assistant.playbooks.promote_from_task(
+                    args.promote,
+                    name=args.name,
+                    description=args.description,
+                    parameter_bindings=kv_params or None,
+                )
+                print(json.dumps(created, indent=2, ensure_ascii=False))
+                return 0
+            if args.instantiate:
+                task_id, plan = assistant.playbooks.instantiate(args.instantiate, params=kv_params)
+                print(
+                    json.dumps(
+                        {
+                            "task_id": task_id,
+                            "state": "AWAITING_APPROVAL",
+                            "plan_hash": plan.plan_hash(),
+                            "preview": plan.preview(),
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+                return 0
+            if args.delete:
+                ok = assistant.playbooks.delete_playbook(args.delete)
+                print("Playbook deleted." if ok else "Playbook not found.")
+                return 0 if ok else 1
+            print(json.dumps(assistant.playbooks.list_playbooks(), indent=2, ensure_ascii=False))
+            return 0
+        if args.command == "briefing":
+            return emit_with_approvals(
+                assistant, assistant.process_text("executive briefing"), speak=speak,
+                wait_for_speech=True, speech_required=args.speak,
+            )
+        if args.command == "override":
+            if args.lockdown:
+                print(json.dumps(assistant.engage_lockdown(args.reason), indent=2))
+                return 0
+            if args.stand_down:
+                print(json.dumps(assistant.stand_down_commander_mode(), indent=2))
+                return 0
+            if args.unlock:
+                pin = getpass.getpass("HINATA Owner PIN to lift Red Alert Lockdown: ")
+                print(json.dumps(assistant.release_lockdown(pin), indent=2))
+                return 0
+            if args.commander is not None:
+                pin = getpass.getpass("HINATA Owner PIN to activate Commander Mode: ")
+                print(
+                    json.dumps(
+                        assistant.activate_commander_mode(pin, minutes=args.commander),
+                        indent=2,
+                    )
+                )
+                return 0
+            print(json.dumps(assistant.override_controller.status(), indent=2))
+            return 0
+        if args.command == "schedule":
+            if args.add:
+                sched_id = assistant.scheduler.schedule(
+                    title=args.add,
+                    request_text=args.request,
+                    interval_seconds=args.interval,
+                    max_runs=args.max_runs,
+                    requires_online=False,
+                )
+                print(json.dumps({"schedule_id": sched_id, "title": args.add}, indent=2, ensure_ascii=False))
+                return 0
+            if args.disable:
+                ok = assistant.scheduler.cancel(args.disable)
+                print(f"Scheduled job {args.disable} disabled." if ok else "Schedule ID not found.")
+                return 0 if ok else 1
+            if args.tick:
+                def _run_sched(row: dict[str, Any]) -> dict[str, Any]:
+                    res = assistant.process_text(
+                        str(row["request_text"]),
+                        autonomy_mode=str(row.get("autonomy_mode") or "SUGGEST_ONLY"),
+                    )
+                    return {"status": res.status, "task_id": str(res.data.get("task_id", ""))}
+
+                ran = assistant.scheduler.tick(
+                    _run_sched,
+                    online_mode_enabled=assistant.config.security.online_mode_enabled,
+                )
+                print(json.dumps({"executed_jobs": ran}, indent=2, ensure_ascii=False))
+                return 0
+            print(json.dumps(assistant.scheduler.list_schedules(), indent=2, ensure_ascii=False))
             return 0
         if args.command == "tasks":
+            if args.pause:
+                if not args.id or not assistant.tasks.pause_task(args.id):
+                    print("Task could not be paused (missing, inactive, or step currently RUNNING).", file=sys.stderr)
+                    return 1
+                print(f"Task {args.id} paused at safe boundary.")
+                return 0
+            if args.resume_paused:
+                if not args.id or not assistant.tasks.resume_paused_task(args.id):
+                    print("Task could not be resumed (not PAUSED or contains uncertain step outcomes).", file=sys.stderr)
+                    return 1
+                print(f"Task {args.id} transitioned to RUNNING.")
+                return 0
+            if args.reconcile:
+                if not args.id:
+                    print("A task ID is required.", file=sys.stderr)
+                    return 1
+                print(json.dumps(assistant.reconcile_task(args.id), indent=2, ensure_ascii=False))
+                return 0
+            if args.timeline:
+                if not args.id:
+                    print("A task ID is required.", file=sys.stderr)
+                    return 1
+                print(json.dumps(assistant.tracer.task_timeline(args.id), indent=2, ensure_ascii=False))
+                return 0
             if args.verify or args.reject:
                 if not args.id:
                     print("A task ID is required.", file=sys.stderr)
@@ -184,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "memory":
             return memory_command(assistant, args)
-        return interactive(assistant, speak=args.speak)
+        return interactive(assistant, speak=speak, speech_required=args.speak)
     except KeyboardInterrupt:
         print("\nStopped.")
         return 130
@@ -235,10 +564,35 @@ def emit_with_approvals(
     voice: Any = None,
     speak: bool = False,
     wait_for_speech: bool = False,
+    speech_required: bool = True,
 ) -> int:
+    def say(text: str, *, block: bool = False) -> bool:
+        if not speak or not text.strip():
+            return True
+        try:
+            if block:
+                assistant.tts.speak(text)
+                assistant.tts.wait()
+            else:
+                def on_speech_state(state: str, error: str | None) -> None:
+                    if state == "error" and error:
+                        print(f"HINATA: Speech output unavailable: {error}", file=sys.stderr)
+
+                assistant.tts.speak(text, on_speech_state)
+            if block:
+                if assistant.tts.last_error:
+                    raise RuntimeError(assistant.tts.last_error)
+        except (RuntimeError, OSError) as exc:
+            print(f"HINATA: Speech output unavailable: {exc}", file=sys.stderr)
+            return not speech_required
+        return True
+
     source = "voice" if voice is not None else "text"
     while True:
         print(f"HINATA: {response.text}")
+        if not say(spoken_reply(response), block=wait_for_speech or speech_required or response.needs_plan_confirmation
+                   or response.needs_confirmation or response.needs_pin):
+            return 1
         if response.needs_plan_confirmation:
             try:
                 answer = input("Approve this entire plan? Type yes to confirm [y/N]: ").strip().lower()
@@ -246,11 +600,13 @@ def emit_with_approvals(
                 if response.data.get("task_id"):
                     assistant.tasks.cancel_pending(response.data["task_id"])
                 print("\nHINATA: Plan cancelled; no steps were executed.")
+                say("Plan cancelled; no steps were executed.", block=wait_for_speech)
                 return 1
             if answer not in {"y", "yes"}:
                 if response.data.get("task_id"):
                     assistant.tasks.cancel_pending(response.data["task_id"])
                 print("HINATA: Plan cancelled; no steps were executed.")
+                say("Plan cancelled; no steps were executed.", block=wait_for_speech)
                 return 1
             response = assistant.execute_plan(
                 response.plan_actions,
@@ -267,9 +623,11 @@ def emit_with_approvals(
                 answer = input("Proceed? Type yes to confirm [y/N]: ").strip().lower()
             except EOFError:
                 print("\nHINATA: Action cancelled; no confirmation input was available.")
+                say("Action cancelled; no confirmation was given.", block=wait_for_speech)
                 return 1
             if answer not in {"y", "yes"}:
                 print("HINATA: Action cancelled; nothing was executed.")
+                say("Action cancelled; nothing was executed.", block=wait_for_speech)
                 return 1
             response = assistant.resume(
                 response.action,
@@ -283,6 +641,7 @@ def emit_with_approvals(
                 pin = getpass.getpass("HINATA PIN: ")
             except EOFError:
                 print("\nHINATA: Action cancelled; no PIN input was available.")
+                say("Action cancelled; no PIN was entered.", block=wait_for_speech)
                 return 1
             response = assistant.resume(
                 response.action,
@@ -293,13 +652,6 @@ def emit_with_approvals(
             )
             pin = ""  # Do not retain the PIN in local variables longer than necessary.
             continue
-        if speak:
-            assistant.tts.speak(response.text)
-            if wait_for_speech:
-                assistant.tts.wait()
-                if assistant.tts.last_error:
-                    print(f"HINATA: Speech output failed: {assistant.tts.last_error}", file=sys.stderr)
-                    return 1
         return 0 if response.success else 1
 
 
@@ -324,7 +676,7 @@ def connect_local_model(assistant: HinataAssistant) -> None:
         print("Ollama is not responding; structured commands still work. Run 'hinata doctor'.")
 
 
-def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
+def interactive(assistant: HinataAssistant, *, speak: bool = False, speech_required: bool = False) -> int:
     print(f"HINATA {__version__} — local assistant. Type /help for commands, /quit to exit.")
     connect_local_model(assistant)
     if not assistant.authentication.is_configured:
@@ -341,7 +693,34 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
             return 0
         if text == "/help":
             print(EXAMPLES)
-            print("\nShell: /voice /speak /stop /reconnect /status /memory /pin /forget /quit")
+            print(
+                "\nShell: /briefing /lockdown /unlock /commander /standdown /voice /speak /stop /reconnect /status /memory /pin /forget /quit"
+            )
+            continue
+        if text == "/briefing":
+            emit_with_approvals(assistant, assistant.process_text("executive briefing"), speak=speak, speech_required=speech_required)
+            continue
+        if text == "/lockdown":
+            print(json.dumps(assistant.engage_lockdown("Interactive shell Red Alert Lockdown"), indent=2))
+            continue
+        if text == "/unlock":
+            try:
+                pin = getpass.getpass("HINATA Owner PIN: ")
+                print(json.dumps(assistant.release_lockdown(pin), indent=2))
+            except (EOFError, PermissionError) as exc:
+                print(f"HINATA: {exc}")
+            continue
+        if text.startswith("/commander"):
+            parts = text.split()
+            mins = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
+            try:
+                pin = getpass.getpass("HINATA Owner PIN: ")
+                print(json.dumps(assistant.activate_commander_mode(pin, minutes=mins), indent=2))
+            except (EOFError, PermissionError) as exc:
+                print(f"HINATA: {exc}")
+            continue
+        if text == "/standdown":
+            print(json.dumps(assistant.stand_down_commander_mode(), indent=2))
             continue
         if text == "/reconnect":
             report = assistant.orchestrator.recheck_model(
@@ -360,13 +739,14 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
             setup_pin(assistant)
             continue
         if text == "/forget":
-            emit_with_approvals(assistant, assistant.process_text("clear memory"))
+            emit_with_approvals(assistant, assistant.process_text("clear memory"), speak=speak, speech_required=speech_required)
             continue
         if text == "/voice":
             try:
+                assistant.tts.stop()
                 voice, response = assistant.process_voice()
                 print(f"You (voice/{voice.speaker_status}): {voice.text}")
-                emit_with_approvals(assistant, response, voice=voice, speak=speak)
+                emit_with_approvals(assistant, response, voice=voice, speak=speak, wait_for_speech=True, speech_required=speech_required)
             except (RuntimeError, OSError, ValueError) as exc:
                 print(f"HINATA: Voice request failed safely: {exc}")
             continue
@@ -380,10 +760,10 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
                 assistant.microphone.cancel()
             print("Listening and speech stopped.")
             continue
-        emit_with_approvals(assistant, assistant.process_text(text), speak=speak)
+        emit_with_approvals(assistant, assistant.process_text(text), speak=speak, speech_required=speech_required)
 
 
-def wake_loop(assistant: HinataAssistant, duration: float) -> int:
+def wake_loop(assistant: HinataAssistant, duration: float, *, speak: bool = True, speech_required: bool = False) -> int:
     if not assistant.config.wake_word.enabled:
         print("Enable [wake_word] and configure a custom Hey HINATA ONNX model first.", file=sys.stderr)
         return 1
@@ -405,9 +785,11 @@ def wake_loop(assistant: HinataAssistant, duration: float) -> int:
             detected.clear()
             service.stop()  # Release the microphone before recording/transcribing the command.
             detected.clear()
+            assistant.tts.stop()  # Never listen while HINATA is still speaking.
             voice, response = assistant.process_voice(duration)
             print(f"You (voice/{voice.speaker_status}): {voice.text}")
-            emit_with_approvals(assistant, response, voice=voice)
+            emit_with_approvals(assistant, response, voice=voice, speak=speak,
+                                wait_for_speech=True, speech_required=speech_required)
             print("Listening for Hey HINATA again…")
             service.start(on_detection)
     except KeyboardInterrupt:
@@ -491,18 +873,22 @@ def memory_command(assistant: HinataAssistant, args: argparse.Namespace) -> int:
     return emit_with_approvals(assistant, assistant.process_text(command))
 
 
-def pull_model(model: str) -> int:
+def pull_model(model: str, ollama_config: OllamaConfig | None = None) -> int:
     executable = shutil.which("ollama")
     if executable is None:
         print("Ollama is not installed. See https://ollama.com/download/windows", file=sys.stderr)
         return 1
     print(f"Downloading {model} through local Ollama. Internet is required for this setup step only.")
     # Start the local service first so a fresh install can pull immediately.
-    config = load_config()
-    config.ollama.model = model
-    OllamaService(config.ollama).ensure_running()
+    cfg = ollama_config or load_config().ollama
+    cfg.model = model
+    OllamaService(cfg).ensure_running()
+    environment = os.environ.copy()
+    environment["OLLAMA_HOST"] = urlsplit(cfg.host).netloc
     try:
-        result = subprocess.run([executable, "pull", model], shell=False, check=False, timeout=1800)
+        result = subprocess.run(
+            [executable, "pull", model], env=environment, shell=False, check=False, timeout=1800
+        )
     except subprocess.TimeoutExpired:
         print("Model download timed out; run 'hinata model pull' again to resume.", file=sys.stderr)
         return 1

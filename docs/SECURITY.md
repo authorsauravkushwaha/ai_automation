@@ -17,7 +17,7 @@ Only predefined tools can execute. There is no `shell`, `eval`, PowerShell, arbi
 - **Confirmation:** app close, file open, active-window typing, saving preferences.
 - **Sensitive:** memory deletion requires confirmation and a salted-hash-verified PIN.
 - **Enrollment/profile replacement:** requires the PIN; raw samples are discarded after embedding.
-- **Voice:** an enrolled profile must produce an accepted owner score. Rejected and near-threshold uncertain scores do not execute tools. A voice score never satisfies a PIN requirement.
+- **Voice:** an enrolled profile must produce an accepted owner score. Rejected and near-threshold uncertain scores do not execute tools. A voice score never satisfies a PIN requirement. Spoken replies use generic approval/PIN cues, but ordinary responses may still be heard by nearby people. Mute via `hinata voice-output disable`, `--no-speak`, or desktop Settings before discussing private material. Older muted settings are not silently overridden; setup asks before enabling them.
 
 The local typed console is treated as the intended owner interface. It is not proof that the person typing is physically the owner. Lock Windows when away.
 
@@ -35,7 +35,9 @@ Allow-list only applications and roots you intend HINATA to control. Adding a wh
 
 ## Data at rest
 
-- SQLite stores conversations, commands, task results, preferences, and settings locally. It is **not an encrypted database**. Use Windows device encryption/BitLocker and a protected Windows account for stronger at-rest protection.
+- SQLite stores conversations, commands, task results, preferences, and settings locally. By default SQLite rows are plaintext; when `security.encrypt_at_rest = true` is enabled in `config.toml`, structured memory values and encrypted JSON backups are sealed with `LocalVault` authenticated envelopes (`HMAC-SHA256` encrypt-then-MAC over PBKDF2-derived keys wrapped by Windows DPAPI or POSIX `0600` keyfiles). Setting `security.database_encryption_backend = "sqlcipher"` (with optional `pip install -e ".[encrypted-db]"`) additionally enables full-database SQLCipher page encryption (`PRAGMA key` + `PRAGMA cipher_memory_security = ON`), or `"auto"` to use SQLCipher when installed and `LocalVault` envelopes otherwise.
+- Audit trace events (`agent_trace_events`) form an append-only SHA-256 cryptographic hash chain (`prev_hash` -> `event_hash`); run `hinata audit --verify-chain` to detect any modified, deleted, or reordered trace rows.
+- Secret patterns (API keys, private keys, bearer tokens, GitHub/AWS/OpenAI/Slack tokens) are detected by `hinata.security.redaction`: plaintext secrets are blocked from unencrypted persistent memory storage and scrubbed automatically from `TraceRecorder` logs and audit exports.
 - PINs are stored as PBKDF2-HMAC-SHA256 hashes with random salts and constant-time digest comparison. Plain PINs are not written to the database or logs.
 - Memory JSON exports deliberately exclude settings/PIN material, but can contain private conversations and preferences. Protect/delete exports appropriately.
 - Voice embeddings are protected with the current Windows user's DPAPI keys. Owner-only ACLs are applied best-effort to private paths. On non-Windows development systems, protection is owner-only filesystem permissions rather than DPAPI.
@@ -46,7 +48,14 @@ Allow-list only applications and roots you intend HINATA to control. Adding a wh
 
 The only assistant runtime endpoint is the configured Ollama URL, restricted to `127.0.0.1`, `localhost`, or `::1` over plain HTTP. The Ollama client ignores environment proxies and refuses HTTP redirects. HINATA has no analytics, crash reporter, cloud speech, cloud TTS, or remote-AI fallback.
 
-Internet is used by explicit setup/download operations (`pip`, `winget`, `ollama pull`, initial faster-whisper model preparation) and by any separate manual model download. Normal faster-whisper transcription requires cached model files and does not initiate a download; use `hinata setup-speech` explicitly to prepare the model. Once models are cached, normal assistant operations are offline. Disabling Ollama does not disable local deterministic tools.
+In addition, `OfflineGuard` (`hinata.security.offline_guard`) enforces runtime egress policy in Python:
+- When `security.strict_offline = true` (or `online_mode_enabled = false`), non-loopback `socket.socket.connect` / `connect_ex` calls inside the HINATA process fail closed with `OfflinePolicyError`, and child subprocesses receive proxy-stripped offline environment flags (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `PIP_NO_INDEX=1`).
+- Coding workspace tests executed through `IsolatedSandboxRunner` run inside `unshare -rn` on supported Linux kernels and inject a startup `sitecustomize.py` socket guard blocking all outbound network connections inside the Python test runner.
+- Note that external native binaries (such as a separate host `ollama` daemon or launched desktop apps) are outside Python's in-process socket hook unless launched inside the OS namespace / Windows Sandbox wrapper.
+
+Internet is used by explicit setup/download operations (`pip`, `winget`, `ollama pull`, initial faster-whisper model preparation, and optional SD-Turbo weights) and by any separate manual model download. Windows setup asks `[y/N]` separately before Ollama/fleet/chat-model, SD-Turbo, and speech-model downloads; EOF/non-interactive input does not grant consent. Normal faster-whisper transcription requires cached model files and does not initiate a download; use `hinata setup-speech` explicitly to prepare the model. Once models are cached, normal assistant operations are offline. Disabling Ollama does not disable local deterministic tools.
+
+The optional local image model is downloaded only by the explicit `hinata image setup` command (or after consenting in `setup.ps1`). Inference loads local safetensors through diffusers in a one-shot subprocess with Hugging Face offline flags and Python socket connections disabled; this is **not an OS-level firewall against native libraries**. No external image service is contacted by the worker. The alternative A1111/Forge API is loopback-only, proxy-free, and redirect-denied. Model weights and images can contain sensitive material: review the model license, protect the data directory, and review generated images before sharing. `config.toml.bak*` files are ignored by Git but remain private copies of the prior settings.
 
 ## Operational recommendations
 
