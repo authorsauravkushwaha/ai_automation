@@ -149,7 +149,8 @@ Write-Host "[2/7] Installing HINATA and selected optional components..."
 Invoke-Native $VenvPython @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
 $Extras = @("gui", "speech", "tts", "windows-audio")
 if ($Lite) {
-    $Extras = @()
+    # Keep typed replies audible even on the small, no-microphone install.
+    $Extras = @("tts")
 }
 if ($Full) {
     Write-Warning "Full mode installs PyTorch-based speaker recognition and wake-word dependencies. This is not the recommended 4 GB profile."
@@ -296,6 +297,25 @@ if (-not $SkipOllama -and -not $Lite) {
     # Prove the automatic connection end to end before the owner sees the window.
     Write-Host "Checking the local model connection..."
     & $VenvPython -m hinata model status
+}
+
+# Existing settings may have disabled replies in an older release. Ask instead
+# of silently overriding a saved privacy choice or requiring config editing.
+$VoiceStatusJson = & $VenvPython -m hinata voice-output status
+if ($LASTEXITCODE -eq 0) {
+    $VoiceStatus = $VoiceStatusJson | ConvertFrom-Json
+    if (-not $VoiceStatus.replies_enabled) {
+        Write-Host "Existing HINATA settings have spoken replies muted."
+        if (Confirm-OptionalDownload "Enable spoken replies for typed and voice requests?") {
+            Invoke-Native $VenvPython @("-m", "hinata", "voice-output", "enable")
+        }
+    }
+    if (Confirm-OptionalDownload "Play a short offline voice test through your speakers now?") {
+        & $VenvPython -m hinata voice-output test
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Voice test failed. Check the audio device or run: .\hinata.cmd voice-output status"
+        }
+    }
 }
 
 Write-Host "`nHINATA setup completed successfully." -ForegroundColor Green

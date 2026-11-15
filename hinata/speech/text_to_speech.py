@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import tempfile
@@ -17,6 +18,25 @@ StateCallback = Callable[[str, str | None], None]
 
 class SpeechOutputError(RuntimeError):
     pass
+
+
+def output_readiness(config: SpeechConfig) -> dict[str, Any]:
+    """Non-speaking dependency check. A real device can only be verified by test."""
+    if config.tts_backend == "piper":
+        executable = Path(config.piper_executable).expanduser().is_file() if config.piper_executable else False
+        model = Path(config.piper_model).expanduser().is_file() if config.piper_model else False
+        configured = bool(executable and model and os.name == "nt")
+        guidance = (
+            "Piper executable and local voice model are configured; run voice-output test to verify playback."
+            if configured else "Configure existing speech.piper_executable and speech.piper_model paths on Windows."
+        )
+    else:
+        configured = importlib.util.find_spec("pyttsx3") is not None
+        guidance = (
+            "pyttsx3 is installed; run voice-output test to verify the actual audio device."
+            if configured else 'Install offline voice output: python -m pip install -e ".[tts]"'
+        )
+    return {"backend": config.tts_backend, "backend_ready": configured, "guidance": guidance}
 
 
 class TextToSpeech:
@@ -90,7 +110,21 @@ class TextToSpeech:
                 "Offline SAPI output needs pyttsx3. Run: python -m pip install -e \".[tts]\""
             ) from exc
         engine: Any = None
+        # SAPI runs in this dedicated thread. Initialize its COM apartment here,
+        # not on the GUI/CLI caller thread; leave other platforms unchanged.
+        ole32: Any = None
+        com_initialized = False
         try:
+            if os.name == "nt":  # pragma: no cover - requires Windows SAPI
+                import ctypes
+
+                windll = getattr(ctypes, "windll", None)
+                if windll is not None:
+                    ole32 = windll.ole32
+                    status = int(ole32.CoInitializeEx(None, 2))  # COINIT_APARTMENTTHREADED
+                    if status not in (0, 1):
+                        raise SpeechOutputError(f"Windows SAPI COM initialization failed: {status}")
+                    com_initialized = True
             engine = pyttsx3.init("sapi5") if os.name == "nt" else pyttsx3.init()
             with self._lock:
                 if cancel.is_set() or generation != self._generation:
@@ -132,6 +166,8 @@ class TextToSpeech:
             with self._lock:
                 if self._engine is engine:
                     self._engine = None
+            if com_initialized and ole32 is not None:
+                ole32.CoUninitialize()
 
     def _run_piper(self, text: str, generation: int, cancel: threading.Event) -> None:
         executable = Path(self.config.piper_executable).expanduser()

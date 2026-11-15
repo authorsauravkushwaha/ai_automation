@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
+from hinata.config import InterfaceConfig
 from hinata.core.types import AssistantResponse
+
+
+class SpeechSettingStore(Protocol):
+    def get_setting(self, key: str) -> str | None: ...
+
+
+def speaking_enabled(config: InterfaceConfig, settings: SpeechSettingStore) -> bool:
+    """A saved user choice overrides the shipped default and legacy config."""
+    stored = settings.get_setting("ui.speak_responses")
+    if stored in {"true", "false"}:
+        return stored == "true"
+    return config.speak_responses
 
 
 def spoken_reply(response: AssistantResponse) -> str:

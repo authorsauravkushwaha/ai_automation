@@ -316,6 +316,8 @@ class HinataAssistant:
 
         from hinata.core.jarvis_models import select_optimal_fleet_pack
         from hinata.core.local_image import is_model_ready, model_directory
+        from hinata.speech.replies import speaking_enabled
+        from hinata.speech.text_to_speech import output_readiness
 
         hardware = self.hardware.detect()
         model_status = self.llm.status() if check_model else {"model": self.config.ollama.model}
@@ -338,6 +340,11 @@ class HinataAssistant:
             "personality_mode": self.personality.mode.key,
             "speech_backend": self.config.speech.stt_backend,
             "tts_backend": self.config.speech.tts_backend,
+            "voice_output": {
+                **output_readiness(self.config.speech),
+                "replies_enabled": speaking_enabled(self.config.interface, self.database),
+                "last_error": self.tts.last_error,
+            },
             "optional_packages": {
                 name: importlib.util.find_spec(name) is not None
                 for name in (

@@ -23,7 +23,7 @@ from hinata.config import ConfigError, OllamaConfig, load_config
 from hinata.core.assistant import HinataAssistant
 from hinata.core.ollama_service import OllamaService
 from hinata.core.types import AssistantResponse
-from hinata.speech.replies import spoken_reply
+from hinata.speech.replies import speaking_enabled, spoken_reply
 
 EXAMPLES = """Structured commands (work without an LLM):
   open notepad                         close notepad
@@ -69,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("setup-pin", help="Set or change the PIN for sensitive actions")
     commands.add_parser("devices", help="List available input microphones")
     commands.add_parser("setup-speech", help="Prepare the configured offline STT model")
+    voice_output = commands.add_parser("voice-output", help="Inspect, test, enable, or mute spoken replies")
+    voice_output.add_argument("operation", choices=["status", "test", "enable", "disable"])
     commands.add_parser("gui", help="Start the PySide6 desktop interface")
     wake = commands.add_parser("wake", help="Explicitly listen for a custom Hey HINATA wake model")
     wake.add_argument("--duration", type=float, default=5.0, help="Seconds to record after detection")
@@ -197,7 +199,34 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"model": "stabilityai/sd-turbo", "ready": is_model_ready(folder), "path": str(folder)}, indent=2))
             return 0
         assistant = HinataAssistant(config, llm_enabled=False if args.no_llm else None)
-        speak = args.speak or (config.interface.speak_responses and not args.no_speak)
+        speak = args.speak or (speaking_enabled(config.interface, assistant.database) and not args.no_speak)
+        if args.command == "voice-output":
+            if args.operation in {"enable", "disable"}:
+                enabled = args.operation == "enable"
+                assistant.database.set_setting("ui.speak_responses", str(enabled).lower())
+                print(f"Spoken replies {'enabled' if enabled else 'muted'} for the desktop and terminal.")
+                return 0
+            from hinata.speech.text_to_speech import output_readiness
+
+            ready = output_readiness(config.speech)
+            ready["replies_enabled"] = speaking_enabled(config.interface, assistant.database)
+            if args.operation == "status":
+                print(json.dumps(ready, indent=2))
+                return 0
+            if not ready["backend_ready"]:
+                print(f"Voice output unavailable: {ready['guidance']}", file=sys.stderr)
+                return 2
+            assistant.tts.speak("HINATA voice check. Systems online.")
+            assistant.tts.wait(timeout=20.0)
+            if assistant.tts.speaking:
+                assistant.tts.stop()
+                print("Voice output timed out; check the playback device.", file=sys.stderr)
+                return 2
+            if assistant.tts.last_error:
+                print(f"Voice output failed: {assistant.tts.last_error}", file=sys.stderr)
+                return 2
+            print("Voice test completed. If you did not hear it, check your speaker and Windows audio device.")
+            return 0
         if args.command == "ask":
             return emit_with_approvals(
                 assistant, assistant.process_text(" ".join(args.request)), speak=speak, wait_for_speech=True, speech_required=args.speak

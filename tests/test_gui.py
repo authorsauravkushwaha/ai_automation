@@ -108,6 +108,12 @@ class DesktopTests(unittest.TestCase):
     def test_settings_default_to_local_values(self) -> None:
         self.assertTrue(self.window.speak_responses)
         self.assertFalse(self.assistant.orchestrator.llm_enabled)
+        self.assistant.database.set_setting("ui.speak_responses", "false")
+        self.window._load_ui_settings()
+        self.assertFalse(self.window.speak_responses)
+        self.assistant.database.set_setting("ui.speak_responses", "true")
+        self.window._load_ui_settings()
+        self.assertTrue(self.window.speak_responses)
 
 
 if __name__ == "__main__":

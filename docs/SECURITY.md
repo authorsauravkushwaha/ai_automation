@@ -17,7 +17,7 @@ Only predefined tools can execute. There is no `shell`, `eval`, PowerShell, arbi
 - **Confirmation:** app close, file open, active-window typing, saving preferences.
 - **Sensitive:** memory deletion requires confirmation and a salted-hash-verified PIN.
 - **Enrollment/profile replacement:** requires the PIN; raw samples are discarded after embedding.
-- **Voice:** an enrolled profile must produce an accepted owner score. Rejected and near-threshold uncertain scores do not execute tools. A voice score never satisfies a PIN requirement.
+- **Voice:** an enrolled profile must produce an accepted owner score. Rejected and near-threshold uncertain scores do not execute tools. A voice score never satisfies a PIN requirement. Spoken replies use generic approval/PIN cues, but ordinary responses may still be heard by nearby people. Mute via `hinata voice-output disable`, `--no-speak`, or desktop Settings before discussing private material. Older muted settings are not silently overridden; setup asks before enabling them.
 
 The local typed console is treated as the intended owner interface. It is not proof that the person typing is physically the owner. Lock Windows when away.
 

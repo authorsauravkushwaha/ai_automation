@@ -33,7 +33,7 @@ from hinata.interface.components import ConversationView, StatusPill, Worker
 from hinata.interface.control_center import AgentControlCenterDialog
 from hinata.interface.dialogs import EnrollmentDialog, MemoryDialog, SettingsDialog, StatusDialog
 from hinata.interface.styles import STYLE_SHEET
-from hinata.speech.replies import spoken_reply
+from hinata.speech.replies import speaking_enabled, spoken_reply
 from hinata.speech.voice_pipeline import VoiceResult
 
 
@@ -67,10 +67,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"HINATA is now in {selected.label} mode", 4000)
 
     def _load_ui_settings(self) -> None:
-        speak = self.assistant.database.get_setting("ui.speak_responses")
-        self.speak_responses = (
-            speak == "true" if speak is not None else self.assistant.config.interface.speak_responses
-        )
+        self.speak_responses = speaking_enabled(self.assistant.config.interface, self.assistant.database)
         llm = self.assistant.database.get_setting("ui.llm_enabled")
         if llm is not None:
             self.assistant.orchestrator.llm_enabled = llm == "true"
@@ -173,6 +170,9 @@ class MainWindow(QMainWindow):
         briefing_button.clicked.connect(lambda: self.submit_text("executive briefing"))
         speak_button = QPushButton("Speak last response")
         speak_button.clicked.connect(lambda: self.speak_text(self.last_response_text))
+        voice_check = QPushButton("Test speaker")
+        voice_check.setToolTip("Play a short offline test and show any audio error")
+        voice_check.clicked.connect(lambda: self.speak_text("HINATA voice check. Systems online."))
         self.stop_button = QPushButton("Emergency stop")
         self.stop_button.setToolTip("Stop speech, microphone capture, wake listening, and request task cancellation")
         self.stop_button.clicked.connect(self.emergency_stop)
@@ -185,6 +185,7 @@ class MainWindow(QMainWindow):
         memory_button.clicked.connect(self.open_memory)
         tools.addWidget(briefing_button)
         tools.addWidget(speak_button)
+        tools.addWidget(voice_check)
         tools.addWidget(self.stop_button)
         tools.addWidget(lockdown_button)
         tools.addStretch()
@@ -479,7 +480,10 @@ class MainWindow(QMainWindow):
 
     def speak_text(self, text: str) -> None:
         if text:
-            self.assistant.tts.speak(text, self.speech_signals.state.emit)
+            try:
+                self.assistant.tts.speak(text, self.speech_signals.state.emit)
+            except (RuntimeError, OSError) as exc:
+                self.statusBar().showMessage(f"Speech output error: {exc}", 8000)
 
     def update_speech_state(self, state: str, error: object) -> None:
         self.speaking_pill.set_active(state == "speaking", "#78bcef")
