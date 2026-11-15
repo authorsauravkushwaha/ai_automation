@@ -47,12 +47,14 @@ class ReliabilityAndObservabilityTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_versioned_migrations_apply_idempotently(self) -> None:
+        from hinata.database.migrations import LATEST_SCHEMA_VERSION
+
         db = Database(Path(self.tmp.name) / "mig.db")
         v = db.ensure_migrated()
-        self.assertEqual(v, 4)
-        self.assertEqual(len(db.migrations()), 4)
+        self.assertEqual(v, LATEST_SCHEMA_VERSION)
+        self.assertEqual(len(db.migrations()), LATEST_SCHEMA_VERSION)
         # Second call is a clean no-op
-        self.assertEqual(db.ensure_migrated(), 4)
+        self.assertEqual(db.ensure_migrated(), LATEST_SCHEMA_VERSION)
 
     def test_request_scoped_cancellation_tokens_isolate_requests(self) -> None:
         reg = CancellationRegistry()

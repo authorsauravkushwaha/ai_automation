@@ -61,6 +61,7 @@ POLICY = {
     "run_project_tests": PermissionLevel.CONFIRM,
     "run_linter": PermissionLevel.SAFE,
     "run_type_checker": PermissionLevel.SAFE,
+    "workspace_symbol_index": PermissionLevel.SAFE,
 }
 
 

@@ -432,8 +432,14 @@ reviewer dispute resolution:
 
 - Use `inspect code Documents/script.py` for read-only AST inspection.
 - Use `register workspace Documents/myrepo` to register a local coding workspace,
-  propose diffs, apply/revert patches atomically, and run unit tests inside a
-  bounded, network-disabled subprocess sandbox (`hinata workspaces`, `hinata workspaces --patches`).
+  index Python AST symbols (`hinata workspaces --symbols`), propose single-file or
+  multi-file diffs, apply/revert patches atomically, and run unit tests inside a
+  bounded, network-disabled subprocess sandbox (`hinata workspaces`, `hinata workspaces --patches`,
+  backed by Linux `unshare -rn` + `RLIMIT`s, Windows `CreateJobObjectW` memory/process-tree
+  limits, and a Python `sitecustomize` socket guard).
+- Promote verified `COMPLETED` tasks into reusable parameterized offline workflow
+  templates with `hinata playbooks --promote TASK_ID --name my-flow` and instantiate
+  fresh approval-gated plans via `hinata playbooks --instantiate my-flow --param key=val`.
 - Use `hinata agents` to view all 10 specialist manifests, permitted tools, and
   recent coordination activity.
 
@@ -456,7 +462,10 @@ hinata tasks TASK_ID --verify
 hinata tasks TASK_ID --reject
 hinata model hardware
 hinata model benchmark
+hinata playbooks
+hinata workspaces --symbols
 hinata assets --verify
+hinata audit --verify-chain
 hinata audit
 ```
 

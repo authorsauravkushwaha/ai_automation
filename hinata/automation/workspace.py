@@ -14,6 +14,7 @@ Security rules:
 
 from __future__ import annotations
 
+import ctypes
 import difflib
 import errno
 import hashlib
@@ -23,6 +24,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -71,6 +73,159 @@ def _linux_netns_supported() -> bool:
         return False
 
 
+class _WindowsJobSandbox:
+    """Win32 Job Object enforcing tree kill, memory cap, active-process limit, and UI isolation."""
+
+    JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
+    JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
+    JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
+    JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x00000400
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+    JOB_OBJECT_BASIC_UI_RESTRICTIONS = 4
+    JOB_OBJECT_UILIMIT_ALL = 0x000000FF
+
+    def __init__(self, *, max_memory_mb: int = 1024, max_processes: int = 16, kernel32: Any | None = None) -> None:
+        self.max_memory_mb = max(128, max_memory_mb)
+        self.max_processes = max(2, max_processes)
+        self._kernel32 = kernel32
+        self._job_handle: int = 0
+
+    def _k32(self) -> Any:
+        if self._kernel32 is not None:
+            return self._kernel32
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            raise OSError("ctypes.windll is only available on Windows")
+        return windll.kernel32
+
+    def create_and_configure(self) -> int:
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        class JOBOBJECT_BASIC_UI_RESTRICTIONS_STRUCT(ctypes.Structure):
+            _fields_ = [("UIRestrictionsClass", ctypes.c_uint32)]
+
+        k32 = self._k32()
+        handle = int(k32.CreateJobObjectW(None, None) or 0)
+        if not handle:
+            raise OSError("CreateJobObjectW failed")
+        self._job_handle = handle
+
+        mem_bytes = self.max_memory_mb * 1024 * 1024
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = (
+            self.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | self.JOB_OBJECT_LIMIT_PROCESS_MEMORY
+            | self.JOB_OBJECT_LIMIT_JOB_MEMORY
+            | self.JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+            | self.JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
+        )
+        info.BasicLimitInformation.ActiveProcessLimit = self.max_processes
+        info.ProcessMemoryLimit = mem_bytes
+        info.JobMemoryLimit = mem_bytes
+
+        ok = k32.SetInformationJobObject(
+            ctypes.c_void_p(handle),
+            self.JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+        if not ok:
+            self.close()
+            raise OSError("SetInformationJobObject(EXTENDED_LIMIT) failed")
+
+        ui_info = JOBOBJECT_BASIC_UI_RESTRICTIONS_STRUCT(UIRestrictionsClass=self.JOB_OBJECT_UILIMIT_ALL)
+        k32.SetInformationJobObject(
+            ctypes.c_void_p(handle),
+            self.JOB_OBJECT_BASIC_UI_RESTRICTIONS,
+            ctypes.byref(ui_info),
+            ctypes.sizeof(ui_info),
+        )
+        return handle
+
+    def assign_process(self, process_handle: int) -> None:
+        if not self._job_handle:
+            return
+        k32 = self._k32()
+        if not k32.AssignProcessToJobObject(ctypes.c_void_p(self._job_handle), ctypes.c_void_p(process_handle)):
+            raise OSError("AssignProcessToJobObject failed")
+
+    def terminate(self, exit_code: int = 137) -> None:
+        if not self._job_handle:
+            return
+        try:
+            self._k32().TerminateJobObject(ctypes.c_void_p(self._job_handle), exit_code)
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        if self._job_handle:
+            try:
+                self._k32().CloseHandle(ctypes.c_void_p(self._job_handle))
+            except OSError:
+                pass
+            self._job_handle = 0
+
+
+_SANDBOX_SITECUSTOMIZE = """\
+import errno
+import socket as _socket
+
+_orig_connect = _socket.socket.connect
+_orig_connect_ex = _socket.socket.connect_ex
+
+def _is_loopback(addr):
+    if isinstance(addr, tuple) and addr:
+        host = str(addr[0]).strip().lower()
+        return host in {"127.0.0.1", "localhost", "::1"} or host.startswith("127.")
+    return False
+
+def _blocked_connect(self, address):
+    if _is_loopback(address):
+        return _orig_connect(self, address)
+    raise OSError(errno.ENETUNREACH, "HINATA sandbox blocks outbound network connections")
+
+def _blocked_connect_ex(self, address):
+    if _is_loopback(address):
+        return _orig_connect_ex(self, address)
+    return errno.ENETUNREACH
+
+_socket.socket.connect = _blocked_connect
+_socket.socket.connect_ex = _blocked_connect_ex
+"""
+
+
 class IsolatedSandboxRunner:
     """Runs allow-listed developer verification tools inside an isolated, resource-capped process."""
 
@@ -80,12 +235,12 @@ class IsolatedSandboxRunner:
     @property
     def isolation_backend(self) -> str:
         if self._linux_netns:
-            return "linux_user_net_namespace+rlimit"
+            return "linux_user_net_namespace+rlimit+socket_guard"
         if sys.platform.startswith("linux"):
-            return "posix_rlimit_process_group"
+            return "posix_rlimit_process_group+socket_guard"
         if os.name == "nt":
-            return "windows_restricted_process_group"
-        return "subprocess_process_group"
+            return "windows_job_object+socket_guard"
+        return "subprocess_process_group+socket_guard"
 
     def run_command(
         self,
@@ -99,101 +254,169 @@ class IsolatedSandboxRunner:
         if not argv or any(not part or "\x00" in part for part in argv):
             raise AutomationError("Invalid sandbox command vector")
         cwd = cwd.resolve(strict=True)
-        clean_env = {
-            "PATH": os.environ.get("PATH", ""),
-            "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
-            "TEMP": os.environ.get("TEMP", "/tmp"),
-            "TMP": os.environ.get("TMP", "/tmp"),
-            "HOME": str(cwd),
-            "PYTHONNOUSERSITE": "1",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PIP_NO_INDEX": "1",
-            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
-            "NO_PROXY": "*",
-            "HTTP_PROXY": "http://127.0.0.1:1",
-            "HTTPS_PROXY": "http://127.0.0.1:1",
-        }
-        exec_argv = list(argv)
-        isolation_used = self.isolation_backend
-        if self._linux_netns:
-            unshare = shutil.which("unshare")
-            if unshare:
-                exec_argv = [unshare, "--user", "--map-root-user", "--net", "--fork", *exec_argv]
-
-        def _preexec() -> None:
-            if os.name != "nt":
-                os.setsid()
-                try:
-                    import resource
-
-                    mem_bytes = max(256, max_memory_mb) * 1024 * 1024
-                    cpu_secs = max(5, int(timeout_seconds) + 2)
-                    resource.setrlimit(resource.RLIMIT_CPU, (cpu_secs, cpu_secs))
-                    resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-                    resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
-                except (ImportError, OSError, ValueError):
-                    pass
-
-        started = time.monotonic()
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
-        proc = subprocess.Popen(
-            exec_argv,
-            cwd=str(cwd),
-            env=clean_env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            shell=False,
-            close_fds=True,
-            preexec_fn=_preexec if os.name != "nt" else None,
-            creationflags=creationflags,
-        )
-
-        def _kill_tree() -> None:
-            if proc.poll() is not None:
-                return
-            try:
-                if os.name != "nt":
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                else:
-                    proc.kill()
-            except OSError:
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
-
-        if cancel_token is not None:
-            cancel_token.on_cancel(_kill_tree)
-
-        timed_out = False
+        guard_dir = tempfile.TemporaryDirectory(prefix="hinata_sbx_")
         try:
-            stdout, stderr = proc.communicate(timeout=max(1.0, min(timeout_seconds, 180.0)))
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _kill_tree()
-            stdout, stderr = proc.communicate()
+            (Path(guard_dir.name) / "sitecustomize.py").write_text(_SANDBOX_SITECUSTOMIZE, encoding="utf-8")
+            exec_argv = list(argv)
+            # When Python runs with -I (isolated mode), PYTHONPATH is ignored by design;
+            # replace -I with -E -s so user site & env vars stay ignored while our
+            # temporary sitecustomize.py socket guard still loads reliably across all OSes.
+            if Path(exec_argv[0]).name.lower().startswith("python"):
+                normalized: list[str] = [exec_argv[0]]
+                replaced_i = False
+                for arg in exec_argv[1:]:
+                    if arg == "-I" and not replaced_i:
+                        normalized.extend(["-s"])
+                        replaced_i = True
+                    else:
+                        normalized.append(arg)
+                exec_argv = normalized
 
-        duration_ms = round((time.monotonic() - started) * 1000.0, 2)
-        if cancel_token is not None and cancel_token.is_cancelled:
-            raise AutomationError("Sandbox execution cancelled by request")
-        if timed_out:
-            raise AutomationError(f"Sandbox execution timed out after {timeout_seconds}s")
+            clean_env = {
+                "PATH": os.environ.get("PATH", ""),
+                "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+                "TEMP": os.environ.get("TEMP", "/tmp"),
+                "TMP": os.environ.get("TMP", "/tmp"),
+                "HOME": str(cwd),
+                "PYTHONPATH": f"{guard_dir.name}{os.pathsep}{cwd}",
+                "PYTHONNOUSERSITE": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "HF_HUB_OFFLINE": "1",
+                "TRANSFORMERS_OFFLINE": "1",
+                "PIP_NO_INDEX": "1",
+                "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+                "NO_PROXY": "*",
+                "HTTP_PROXY": "http://127.0.0.1:1",
+                "HTTPS_PROXY": "http://127.0.0.1:1",
+            }
+            isolation_used = self.isolation_backend
+            if self._linux_netns:
+                unshare = shutil.which("unshare")
+                if unshare:
+                    exec_argv = [unshare, "--user", "--map-root-user", "--net", "--fork", *exec_argv]
 
-        safe_out = redact_text(stdout or "")[:MAX_OUTPUT_CHARS]
-        safe_err = redact_text(stderr or "")[:MAX_OUTPUT_CHARS]
-        return {
-            "exit_code": int(proc.returncode or 0),
-            "stdout": safe_out,
-            "stderr": safe_err,
-            "truncated": len(stdout or "") > MAX_OUTPUT_CHARS or len(stderr or "") > MAX_OUTPUT_CHARS,
-            "duration_ms": duration_ms,
-            "isolation_backend": isolation_used,
-            "network_disabled": self._linux_netns or clean_env.get("PIP_NO_INDEX") == "1",
-        }
+            def _preexec() -> None:
+                if os.name != "nt":
+                    os.setsid()
+                    try:
+                        import resource
+
+                        mem_bytes = max(256, max_memory_mb) * 1024 * 1024
+                        cpu_secs = max(5, int(timeout_seconds) + 2)
+                        resource.setrlimit(resource.RLIMIT_CPU, (cpu_secs, cpu_secs))
+                        resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+                        resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+                    except (ImportError, OSError, ValueError):
+                        pass
+
+            started = time.monotonic()
+            win_job: _WindowsJobSandbox | None = None
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+                    subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000
+                )
+                try:
+                    win_job = _WindowsJobSandbox(max_memory_mb=max_memory_mb)
+                    win_job.create_and_configure()
+                except OSError:
+                    win_job = None
+                    isolation_used = "windows_restricted_process_group+socket_guard"
+
+            try:
+                try:
+                    proc = subprocess.Popen(
+                        exec_argv,
+                        cwd=str(cwd),
+                        env=clean_env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        shell=False,
+                        close_fds=True,
+                        preexec_fn=_preexec if os.name != "nt" else None,
+                        creationflags=creationflags,
+                    )
+                except OSError:
+                    # Fallback on Windows hosts nested inside non-breakaway parent jobs.
+                    if os.name != "nt":
+                        raise
+                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    proc = subprocess.Popen(
+                        exec_argv,
+                        cwd=str(cwd),
+                        env=clean_env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        shell=False,
+                        close_fds=True,
+                        creationflags=creationflags,
+                    )
+
+                if win_job is not None:
+                    proc_handle = int(getattr(proc, "_handle", 0) or 0)
+                    if proc_handle:
+                        try:
+                            win_job.assign_process(proc_handle)
+                        except OSError:
+                            isolation_used = "windows_restricted_process_group+socket_guard"
+
+                def _kill_tree() -> None:
+                    if proc.poll() is not None:
+                        return
+                    try:
+                        if win_job is not None:
+                            win_job.terminate()
+                        if os.name != "nt":
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        else:
+                            proc.kill()
+                    except OSError:
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+
+                if cancel_token is not None:
+                    cancel_token.on_cancel(_kill_tree)
+
+                timed_out = False
+                try:
+                    stdout, stderr = proc.communicate(timeout=max(1.0, min(timeout_seconds, 180.0)))
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    _kill_tree()
+                    stdout, stderr = proc.communicate()
+            finally:
+                if win_job is not None:
+                    win_job.close()
+
+            duration_ms = round((time.monotonic() - started) * 1000.0, 2)
+            if cancel_token is not None and cancel_token.is_cancelled:
+                raise AutomationError("Sandbox execution cancelled by request")
+            if timed_out:
+                raise AutomationError(f"Sandbox execution timed out after {timeout_seconds}s")
+
+            safe_out = redact_text(stdout or "")[:MAX_OUTPUT_CHARS]
+            safe_err = redact_text(stderr or "")[:MAX_OUTPUT_CHARS]
+            return {
+                "exit_code": int(proc.returncode or 0),
+                "stdout": safe_out,
+                "stderr": safe_err,
+                "truncated": len(stdout or "") > MAX_OUTPUT_CHARS or len(stderr or "") > MAX_OUTPUT_CHARS,
+                "duration_ms": duration_ms,
+                "isolation_backend": isolation_used,
+                "network_disabled": True,
+            }
+        finally:
+            guard_dir.cleanup()
 
     def verify_network_blocked(self, cwd: Path) -> dict[str, Any]:
         """Probe inside the sandbox runner that external IPv4 sockets cannot connect."""
@@ -597,3 +820,187 @@ class WorkspaceManager:
             raise AutomationError("Type checker (mypy) is not installed in this local environment")
         res = self.sandbox.run_command([mypy, "."], cwd=ws_root, timeout_seconds=timeout_seconds)
         return {"workspace_id": ws_id, "tool": "mypy", "clean": res["exit_code"] == 0, **res}
+
+    def ast_symbol_index(self, workspace: str = "", *, query: str = "", max_symbols: int = 200) -> dict[str, Any]:
+        """Build a zero-execution Python AST symbol & call-reference map across a registered workspace."""
+        import ast
+
+        ws_id, ws_root = self.resolve_workspace(workspace)
+        needle = query.strip().casefold()
+        symbols: list[dict[str, Any]] = []
+        parse_errors: list[dict[str, str]] = []
+        ignored_dirs = {".git", ".venv", "venv", "__pycache__", "node_modules", ".mypy_cache", ".ruff_cache"}
+
+        for dirpath, dirnames, filenames in os.walk(ws_root, followlinks=False):
+            dirnames[:] = [d for d in sorted(dirnames) if d not in ignored_dirs]
+            for fname in sorted(filenames):
+                if not fname.endswith(".py"):
+                    continue
+                fpath = Path(dirpath) / fname
+                if fpath.is_symlink():
+                    continue
+                try:
+                    if fpath.stat().st_size > 400_000:
+                        continue
+                    source = fpath.read_text(encoding="utf-8-sig", errors="replace")
+                    rel = fpath.resolve().relative_to(ws_root).as_posix()
+                except OSError:
+                    continue
+                try:
+                    tree = ast.parse(source, filename=rel)
+                except SyntaxError as exc:
+                    parse_errors.append({"path": rel, "error": f"line {exc.lineno}: {exc.msg}"})
+                    continue
+
+                for node in tree.body:
+                    if isinstance(node, ast.ClassDef):
+                        methods = [
+                            m.name
+                            for m in node.body
+                            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        ]
+                        bases = [ast.unparse(b) for b in node.bases]
+                        if not needle or needle in node.name.casefold() or any(needle in m.casefold() for m in methods):
+                            symbols.append(
+                                {
+                                    "kind": "class",
+                                    "name": node.name,
+                                    "path": rel,
+                                    "line": node.lineno,
+                                    "bases": bases[:6],
+                                    "methods": methods[:30],
+                                    "doc": (ast.get_docstring(node) or "").splitlines()[0][:120]
+                                    if ast.get_docstring(node)
+                                    else "",
+                                }
+                            )
+                    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        args = [a.arg for a in node.args.args]
+                        calls = sorted(
+                            {
+                                c.func.id
+                                for c in ast.walk(node)
+                                if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                            }
+                        )[:15]
+                        if not needle or needle in node.name.casefold():
+                            symbols.append(
+                                {
+                                    "kind": "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function",
+                                    "name": node.name,
+                                    "path": rel,
+                                    "line": node.lineno,
+                                    "args": args[:12],
+                                    "calls": calls,
+                                    "doc": (ast.get_docstring(node) or "").splitlines()[0][:120]
+                                    if ast.get_docstring(node)
+                                    else "",
+                                }
+                            )
+                    if len(symbols) >= max(1, min(max_symbols, 500)):
+                        break
+                if len(symbols) >= max(1, min(max_symbols, 500)):
+                    break
+
+        return {
+            "workspace_id": ws_id,
+            "symbol_count": len(symbols),
+            "symbols": symbols,
+            "parse_errors": parse_errors[:25],
+        }
+
+    def propose_multifile_patch(
+        self,
+        *,
+        changes: list[dict[str, str]],
+        title: str = "Proposed multi-file code change",
+        workspace: str = "",
+        task_id: str = "",
+    ) -> dict[str, Any]:
+        """Stage an atomic multi-file patch proposal with pre-image SHA-256 verification and full rollback."""
+        if not changes or len(changes) > 20:
+            raise AutomationError("Multi-file patch must contain between 1 and 20 file changes")
+        ws_id, ws_root = self.resolve_workspace(workspace)
+        seen_paths: set[str] = set()
+        files_spec: list[dict[str, Any]] = []
+        backup_spec: dict[str, dict[str, Any]] = {}
+        combined_diff_parts: list[str] = []
+        total_lines_changed = 0
+
+        for item in changes:
+            rel_input = str(item.get("path", "")).strip()
+            new_content = str(item.get("new_content", ""))
+            if not rel_input:
+                raise AutomationError("Each file change must specify a relative 'path'")
+            target = self._resolve_in_workspace(ws_root, rel_input, must_exist=False)
+            if target.suffix.lower() in BLOCKED_PATCH_SUFFIXES or target.suffix.lower() not in ALLOWED_SOURCE_SUFFIXES:
+                raise AutomationError(f"Patching '{target.suffix}' files is not permitted")
+            rel = target.relative_to(ws_root).as_posix()
+            if rel in BLOCKED_WORKSPACE_PATTERNS or any(rel.endswith(f"/{p}") for p in BLOCKED_WORKSPACE_PATTERNS):
+                raise AutomationError(f"Refusing to patch protected file '{rel}'")
+            if rel in seen_paths:
+                raise AutomationError(f"Duplicate file path '{rel}' in multi-file patch")
+            seen_paths.add(rel)
+
+            encoded_new = new_content.encode("utf-8")
+            if len(encoded_new) > MAX_PATCH_BYTES:
+                raise AutomationError(f"New content for '{rel}' exceeds size limit")
+
+            existed = target.is_file()
+            old_content = target.read_text(encoding="utf-8") if existed else ""
+            old_sha = hashlib.sha256(old_content.encode("utf-8")).hexdigest() if existed else ""
+            diff_lines = list(
+                difflib.unified_diff(
+                    old_content.splitlines(keepends=True),
+                    new_content.splitlines(keepends=True),
+                    fromfile=f"a/{rel}",
+                    tofile=f"b/{rel}",
+                )
+            )
+            diff_piece = "".join(diff_lines)
+            if not diff_piece.strip():
+                continue
+            combined_diff_parts.append(diff_piece)
+            total_lines_changed += sum(
+                1 for ln in diff_lines if ln.startswith(("+", "-")) and not ln.startswith(("+++", "---"))
+            )
+            files_spec.append(
+                {
+                    "path": rel,
+                    "existed": existed,
+                    "old_sha256": old_sha,
+                    "new_content": new_content,
+                    "new_sha256": hashlib.sha256(encoded_new).hexdigest(),
+                }
+            )
+            backup_spec[rel] = {"existed": existed, "content": old_content, "sha256": old_sha}
+
+        if not files_spec:
+            raise AutomationError("Proposed multi-file patch makes no changes")
+        full_diff = "\n".join(combined_diff_parts)
+        if len(full_diff.encode("utf-8")) > MAX_PATCH_BYTES:
+            raise AutomationError("Combined multi-file diff exceeds maximum patch size")
+
+        patch_id = uuid.uuid4().hex[:12]
+        self.database.execute(
+            """INSERT INTO coding_patches(patch_id, workspace_id, task_id, title, diff_text, files_json, backup_json, state)
+               VALUES(?, ?, ?, ?, ?, ?, ?, 'PROPOSED')""",
+            (
+                patch_id,
+                ws_id,
+                task_id,
+                title[:200],
+                full_diff,
+                json.dumps(files_spec, ensure_ascii=False),
+                json.dumps(backup_spec, ensure_ascii=False),
+            ),
+        )
+        return {
+            "patch_id": patch_id,
+            "workspace_id": ws_id,
+            "paths": [f["path"] for f in files_spec],
+            "file_count": len(files_spec),
+            "state": "PROPOSED",
+            "diff": full_diff[:8000],
+            "lines_changed": total_lines_changed,
+        }

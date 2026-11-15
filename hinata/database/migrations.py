@@ -416,11 +416,40 @@ def _m004_memory_rag_and_workspaces(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE knowledge_documents ADD COLUMN {col} {spec}")
 
 
+def _m005_tamper_evident_traces_and_playbooks(conn: sqlite3.Connection) -> None:
+    """Migration 5: Hash-chained trace ledger and reusable procedural playbooks."""
+    trace_cols = _columns(conn, "agent_trace_events")
+    for col, spec in (
+        ("prev_hash", "TEXT NOT NULL DEFAULT ''"),
+        ("event_hash", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if col not in trace_cols:
+            conn.execute(f"ALTER TABLE agent_trace_events ADD COLUMN {col} {spec}")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS procedural_playbooks (
+            playbook_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            steps_json TEXT NOT NULL,
+            source_task_id TEXT NOT NULL DEFAULT '',
+            plan_hash TEXT NOT NULL DEFAULT '',
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            use_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "001_baseline_core", _m001_baseline_core),
     Migration(2, "002_tasks_and_knowledge", _m002_tasks_and_knowledge),
     Migration(3, "003_agentic_runtime_and_observability", _m003_agentic_runtime_and_observability),
     Migration(4, "004_memory_rag_and_workspaces", _m004_memory_rag_and_workspaces),
+    Migration(5, "005_tamper_evident_traces_and_playbooks", _m005_tamper_evident_traces_and_playbooks),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from hinata.database.migrations import LATEST_SCHEMA_VERSION, apply_migrations
-from hinata.security.local_protection import LocalVault
+from hinata.security.local_protection import LocalVault, ProtectionError
 from hinata.security.redaction import redact_value
 
 SCHEMA = """
@@ -58,17 +59,79 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 
+def _detect_sqlcipher_driver() -> Any | None:
+    for mod_name in ("sqlcipher3.dbapi2", "sqlcipher3", "pysqlcipher3.dbapi2"):
+        try:
+            return importlib.import_module(mod_name)
+        except ImportError:
+            continue
+    return None
+
+
 class Database:
-    def __init__(self, path: str | Path, *, vault: LocalVault | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        vault: LocalVault | None = None,
+        encryption_backend: str = "envelope",
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.vault = vault
+        self._requested_backend = encryption_backend
+        self._sqlcipher_driver: Any | None = None
+        if encryption_backend in {"sqlcipher", "auto"} and vault is not None and vault.enabled:
+            driver = _detect_sqlcipher_driver()
+            if driver is None and encryption_backend == "sqlcipher":
+                raise ProtectionError(
+                    "SQLCipher full-database page encryption was requested "
+                    "(security.database_encryption_backend = 'sqlcipher'), "
+                    "but sqlcipher3 is not installed. Run: python -m pip install -e '.[encrypted-db]'"
+                )
+            if driver is not None:
+                # Avoid applying SQLCipher PRAGMA key to an already-existing plaintext SQLite header.
+                existing_plain = (
+                    self.path.is_file()
+                    and self.path.stat().st_size >= 16
+                    and self.path.read_bytes()[:16] == b"SQLite format 3\x00"
+                )
+                if existing_plain and encryption_backend == "sqlcipher":
+                    raise ProtectionError(
+                        f"Database {self.path} is already an unencrypted SQLite file; "
+                        "export or migrate before enabling strict sqlcipher page encryption."
+                    )
+                if not existing_plain:
+                    self._sqlcipher_driver = driver
         self.schema_version = LATEST_SCHEMA_VERSION
         self.initialize()
 
+    @property
+    def active_encryption_backend(self) -> str:
+        if self._sqlcipher_driver is not None:
+            return "sqlcipher_page_and_envelope"
+        if self.vault is not None and self.vault.enabled:
+            return "local_vault_envelope"
+        return "plaintext_sqlite"
+
+    def encryption_status(self) -> dict[str, Any]:
+        return {
+            "requested_backend": self._requested_backend,
+            "active_backend": self.active_encryption_backend,
+            "sqlcipher_driver_installed": _detect_sqlcipher_driver() is not None,
+            "vault_enabled": bool(self.vault and self.vault.enabled),
+            "wal_mode": True,
+        }
+
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=5.0)
+        if self._sqlcipher_driver is not None and self.vault is not None:
+            connection = self._sqlcipher_driver.connect(str(self.path), timeout=5.0)
+            raw_hex = self.vault.ensure_key()[:32].hex()
+            connection.execute(f"PRAGMA key = \"x'{raw_hex}'\"")
+            connection.execute("PRAGMA cipher_memory_security = ON")
+        else:
+            connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")

@@ -113,6 +113,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual(audit.returncode, 0, audit.stderr)
         self.assertIn("recent_trace_events", audit.stdout)
 
+        verify_chain = self.run_cli("audit", "--verify-chain")
+        self.assertEqual(verify_chain.returncode, 0, verify_chain.stderr)
+        self.assertIn('"intact": true', verify_chain.stdout)
+
+        playbooks = self.run_cli("playbooks")
+        self.assertEqual(playbooks.returncode, 0, playbooks.stderr)
+        self.assertEqual(playbooks.stdout.strip(), "[]")
+
     def test_voice_diagnostics_barge_in_and_vision_capability_gating(self) -> None:
         from hinata.automation.app_control import AutomationError
         from hinata.automation.file_manager import FileManager

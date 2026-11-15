@@ -1196,4 +1196,19 @@ class Orchestrator:
                 f"Type checker ({data['tool']}) {'clean' if data['clean'] else 'reported issues'}:\n{data['stdout']}\n{data['stderr']}".strip(),
                 data,
             )
+        if tool == "workspace_symbol_index":
+            data = self.workspace_manager.ast_symbol_index(
+                args.get("workspace", ""),
+                query=args.get("query", ""),
+                max_symbols=args.get("max_symbols", 200),
+            )
+            preview = "\n".join(
+                f"[{s['kind']}] {s['name']} ({s['path']}:{s['line']})" for s in data["symbols"][:25]
+            )
+            return ActionResult(
+                tool,
+                True,
+                preview or "No Python symbols matched in workspace.",
+                data,
+            )
         raise AutomationError(f"No executor is registered for {tool}")

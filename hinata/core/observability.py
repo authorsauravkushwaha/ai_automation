@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -12,13 +13,45 @@ from hinata.database.database import Database
 from hinata.security.redaction import redact_value
 
 
+def _compute_trace_hash(
+    prev_hash: str,
+    *,
+    run_id: str,
+    task_id: str,
+    step_id: str,
+    seq: int,
+    agent_id: str,
+    tool_id: str,
+    event_type: str,
+    status: str,
+    payload_json: str,
+) -> str:
+    material = "|".join(
+        [
+            prev_hash,
+            run_id,
+            task_id,
+            step_id,
+            str(seq),
+            agent_id,
+            tool_id,
+            event_type,
+            status,
+            payload_json,
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 class TraceRecorder:
-    """Records structured, secret-redacted agent run and trace events in SQLite."""
+    """Records structured, secret-redacted, SHA-256 hash-chained audit trace events in SQLite."""
 
     def __init__(self, database: Database) -> None:
         self.database = database
+        self.database.ensure_migrated()
         self._lock = threading.Lock()
         self._sequences: dict[str, int] = {}
+        self._last_hash: str | None = None
         self._metrics = {
             "model_calls": 0,
             "model_failures": 0,
@@ -150,28 +183,51 @@ class TraceRecorder:
     ) -> int:
         seq = self._next_sequence(run_id) if run_id else 0
         sanitized_payload = json.dumps(redact_value(payload or {}), ensure_ascii=False, default=str)[:4000]
-        return self.database.execute(
-            """INSERT INTO agent_trace_events(
-                run_id, task_id, step_id, sequence, agent_id, tool_id,
-                correlation_id, event_type, status, model_identity,
-                duration_ms, retry_count, payload_json
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                run_id,
-                task_id,
-                step_id,
-                seq,
-                agent_id,
-                tool_id,
-                correlation_id,
-                event_type,
-                status,
-                model_identity[:200],
-                round(float(duration_ms), 3),
-                int(retry_count),
-                sanitized_payload,
-            ),
-        )
+        with self._lock:
+            if self._last_hash is None:
+                last_row = self.database.fetch_one(
+                    "SELECT event_hash FROM agent_trace_events ORDER BY id DESC LIMIT 1"
+                )
+                self._last_hash = str(last_row["event_hash"]) if last_row and last_row.get("event_hash") else "GENESIS"
+            prev_hash = self._last_hash
+            event_hash = _compute_trace_hash(
+                prev_hash,
+                run_id=run_id,
+                task_id=task_id,
+                step_id=step_id,
+                seq=seq,
+                agent_id=agent_id,
+                tool_id=tool_id,
+                event_type=event_type,
+                status=status,
+                payload_json=sanitized_payload,
+            )
+            row_id = self.database.execute(
+                """INSERT INTO agent_trace_events(
+                    run_id, task_id, step_id, sequence, agent_id, tool_id,
+                    correlation_id, event_type, status, model_identity,
+                    duration_ms, retry_count, payload_json, prev_hash, event_hash
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    task_id,
+                    step_id,
+                    seq,
+                    agent_id,
+                    tool_id,
+                    correlation_id,
+                    event_type,
+                    status,
+                    model_identity[:200],
+                    round(float(duration_ms), 3),
+                    int(retry_count),
+                    sanitized_payload,
+                    prev_hash,
+                    event_hash,
+                ),
+            )
+            self._last_hash = event_hash
+            return row_id
 
     def record_model_metric(self, *, latency_ms: float, tokens: int = 0, success: bool = True) -> None:
         with self._lock:
@@ -235,9 +291,60 @@ class TraceRecorder:
             "timestamp_epoch": round(time.time(), 3),
         }
 
+    def verify_integrity(self) -> dict[str, Any]:
+        """Verify the cryptographic SHA-256 hash chain across all stored trace events."""
+        rows = self.database.fetch_all(
+            """SELECT id, run_id, task_id, step_id, sequence, agent_id, tool_id,
+                      event_type, status, payload_json, prev_hash, event_hash
+               FROM agent_trace_events ORDER BY id ASC"""
+        )
+        expected_prev: str | None = None
+        checked = 0
+        for row in rows:
+            ev_hash = str(row.get("event_hash") or "")
+            prev_h = str(row.get("prev_hash") or "")
+            if not ev_hash:
+                # Pre-v5 legacy rows without hashes do not break chain start.
+                expected_prev = None
+                continue
+            if expected_prev is not None and prev_h != expected_prev:
+                return {
+                    "intact": False,
+                    "checked_events": checked,
+                    "broken_at_id": int(row["id"]),
+                    "reason": "prev_hash link mismatch (deleted or reordered audit row)",
+                }
+            recomputed = _compute_trace_hash(
+                prev_h,
+                run_id=str(row["run_id"]),
+                task_id=str(row["task_id"]),
+                step_id=str(row["step_id"]),
+                seq=int(row["sequence"]),
+                agent_id=str(row["agent_id"]),
+                tool_id=str(row["tool_id"]),
+                event_type=str(row["event_type"]),
+                status=str(row["status"]),
+                payload_json=str(row["payload_json"]),
+            )
+            if recomputed != ev_hash:
+                return {
+                    "intact": False,
+                    "checked_events": checked,
+                    "broken_at_id": int(row["id"]),
+                    "reason": "event_hash digest mismatch (modified audit payload)",
+                }
+            expected_prev = ev_hash
+            checked += 1
+        return {
+            "intact": True,
+            "checked_events": checked,
+            "head_hash": expected_prev or "GENESIS",
+        }
+
     def export_audit(self, limit: int = 200) -> dict[str, Any]:
         return redact_value(
             {
+                "integrity": self.verify_integrity(),
                 "metrics": self.metrics_snapshot(),
                 "runs": self.recent_runs(limit),
                 "recent_trace_events": self.database.fetch_all(
@@ -248,15 +355,17 @@ class TraceRecorder:
         )
 
     def clear_audit_with_policy(self, *, actor: str = "owner_pin") -> int:
-        """Delete historical terminal audit traces only under explicit policy, and log the deletion."""
-        with self.database.connect() as conn:
-            c1 = conn.execute(
-                "DELETE FROM agent_trace_events WHERE run_id IN (SELECT run_id FROM agent_runs WHERE state IN ('SUCCEEDED', 'COMPLETED', 'FAILED', 'CANCELLED'))"
-            )
-            c2 = conn.execute(
-                "DELETE FROM agent_runs WHERE state IN ('SUCCEEDED', 'COMPLETED', 'FAILED', 'CANCELLED')"
-            )
-            deleted = (c1.rowcount or 0) + (c2.rowcount or 0)
+        """Delete historical terminal audit traces only under explicit policy, and re-anchor the chain."""
+        with self._lock:
+            with self.database.connect() as conn:
+                c1 = conn.execute(
+                    "DELETE FROM agent_trace_events WHERE run_id IN (SELECT run_id FROM agent_runs WHERE state IN ('SUCCEEDED', 'COMPLETED', 'FAILED', 'CANCELLED'))"
+                )
+                c2 = conn.execute(
+                    "DELETE FROM agent_runs WHERE state IN ('SUCCEEDED', 'COMPLETED', 'FAILED', 'CANCELLED')"
+                )
+                deleted = (c1.rowcount or 0) + (c2.rowcount or 0)
+            self._last_hash = None
         audit_run = f"audit-clear-{uuid.uuid4().hex[:12]}"
         self.record_event(
             run_id=audit_run,

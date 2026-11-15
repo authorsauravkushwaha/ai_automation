@@ -185,6 +185,14 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "required": [],
         "properties": {"workspace": ("string", 0, 512)},
     },
+    "workspace_symbol_index": {
+        "required": [],
+        "properties": {
+            "workspace": ("string", 0, 512),
+            "query": ("string", 0, 128),
+            "max_symbols": ("integer", 1, 500),
+        },
+    },
 }
 
 

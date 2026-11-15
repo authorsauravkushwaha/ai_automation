@@ -46,6 +46,7 @@ PLAN_SAFE_TOOLS = frozenset(
         "workspace_search",
         "workspace_diff",
         "workspace_propose_patch",
+        "workspace_symbol_index",
         "run_linter",
         "run_type_checker",
     }

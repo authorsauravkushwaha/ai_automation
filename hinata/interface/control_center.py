@@ -148,7 +148,14 @@ class AgentControlCenterDialog(QDialog):
         }
         self.dashboard_view.setPlainText(json.dumps(dash, indent=2, ensure_ascii=False))
         self.tasks_view.setPlainText(
-            json.dumps(self.assistant.tasks.dashboard_summary(), indent=2, ensure_ascii=False)
+            json.dumps(
+                {
+                    "tasks": self.assistant.tasks.dashboard_summary(),
+                    "playbooks": self.assistant.playbooks.list_playbooks(),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
         )
         self.agents_view.setPlainText(
             json.dumps(
@@ -186,6 +193,7 @@ class AgentControlCenterDialog(QDialog):
         self.knowledge_view.setPlainText(
             json.dumps(
                 {
+                    "index_stats": self.assistant.knowledge.index_stats(),
                     "documents": self.assistant.knowledge.list_documents(),
                     "reembed_queue": self.assistant.knowledge.reembed_queue(),
                     "watched_folders": self.assistant.knowledge_watcher.watched_folders(),
@@ -213,6 +221,8 @@ class AgentControlCenterDialog(QDialog):
                 {
                     "offline_policy": self.assistant.offline_guard.status(),
                     "encryption_at_rest": self.assistant.vault is not None,
+                    "database_encryption": self.assistant.database.encryption_status(),
+                    "audit_chain_integrity": self.assistant.tracer.verify_integrity(),
                     "pin_configured": self.assistant.authentication.is_configured,
                     "allowed_roots": [str(r) for r in self.assistant.config.security.allowed_roots],
                     "revoked_tools": self.assistant.permissions.status_snapshot(),

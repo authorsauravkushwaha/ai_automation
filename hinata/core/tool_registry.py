@@ -82,6 +82,7 @@ DEFAULT_MANIFESTS: tuple[ToolManifest, ...] = (
     ToolManifest("run_project_tests", "1.0", "Run project unit tests in network-disabled sandbox", "read_only", "medium", "idempotent", True, 60.0),
     ToolManifest("run_linter", "1.0", "Run static linter/compile check in isolated sandbox", "read_only", "low", "idempotent", True, 35.0),
     ToolManifest("run_type_checker", "1.0", "Run static type checker in isolated sandbox", "read_only", "low", "idempotent", True, 45.0),
+    ToolManifest("workspace_symbol_index", "1.0", "Zero-execution Python AST class/function symbol & call graph index", "read_only", "low", "idempotent", True, 20.0),
 )
 
 

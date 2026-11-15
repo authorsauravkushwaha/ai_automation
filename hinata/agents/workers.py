@@ -68,6 +68,7 @@ WORKERS = MappingProxyType({
                 "workspace_propose_patch",
                 "workspace_apply_patch",
                 "workspace_revert_patch",
+                "workspace_symbol_index",
                 "run_project_tests",
                 "run_linter",
                 "run_type_checker",

@@ -120,6 +120,7 @@ class SecurityConfig:
     search_timeout_seconds: float = 5.0
     search_max_directories: int = 10_000
     encrypt_at_rest: bool = False
+    database_encryption_backend: str = "envelope"  # envelope, sqlcipher, auto
     strict_offline: bool = False
     online_mode_enabled: bool = False
     allowed_online_domains: list[str] = field(default_factory=list)
@@ -137,6 +138,10 @@ class SecurityConfig:
             raise ConfigError("security.max_read_bytes must be between 1 and 10000000")
         if not 0.1 <= self.search_timeout_seconds <= 30:
             raise ConfigError("security.search_timeout_seconds must be between 0.1 and 30")
+        if self.database_encryption_backend not in {"envelope", "sqlcipher", "auto"}:
+            raise ConfigError(
+                "security.database_encryption_backend must be 'envelope', 'sqlcipher', or 'auto'"
+            )
         if self.strict_offline and self.online_mode_enabled:
             raise ConfigError("security.strict_offline and security.online_mode_enabled cannot both be true")
 

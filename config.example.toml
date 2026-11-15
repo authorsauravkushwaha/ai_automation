@@ -52,6 +52,7 @@ max_read_bytes = 1000000
 search_timeout_seconds = 5.0
 search_max_directories = 10000
 encrypt_at_rest = false  # Set true to encrypt sensitive records with a local vault key.
+database_encryption_backend = "envelope"  # "envelope", "sqlcipher" (requires .[encrypted-db]), or "auto".
 strict_offline = false   # Set true to install process-wide non-loopback socket blocking.
 online_mode_enabled = false  # Explicit Online Mode remains off by default.
 allowed_online_domains = []

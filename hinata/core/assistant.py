@@ -43,6 +43,7 @@ from hinata.speech.speech_to_text import SpeechToText
 from hinata.speech.text_to_speech import TextToSpeech
 from hinata.speech.voice_pipeline import VoicePipeline, VoiceResult
 from hinata.speech.wake_word import WakeWordDetector, WakeWordService
+from hinata.tasks.playbooks import PlaybookManager
 from hinata.tasks.scheduler import TaskScheduler
 from hinata.tasks.store import TaskStore
 
@@ -66,7 +67,11 @@ class HinataAssistant:
         if self.config.security.strict_offline:
             self.offline_guard.install_socket_guard()
 
-        self.database = Database(self.config.database_path, vault=self.vault)
+        self.database = Database(
+            self.config.database_path,
+            vault=self.vault,
+            encryption_backend=self.config.security.database_encryption_backend,
+        )
         self.embeddings = OllamaEmbeddings(
             LLMManager(self.config.ollama, OllamaService(self.config.ollama)),
             self.config.ollama.embedding_model,
@@ -89,6 +94,7 @@ class HinataAssistant:
         self.knowledge = KnowledgeIndex(self.database, self.files, self.embeddings)
         self.knowledge_watcher = ThrottledKnowledgeWatcher(self.knowledge)
         self.tasks = TaskStore(self.database, max_revisions=max(1, self.config.agentic.max_replans))
+        self.playbooks = PlaybookManager(self.database, self.planner, self.tasks)
         self.scheduler = TaskScheduler(self.database)
         self.workspaces = WorkspaceManager(self.database, self.config.security.allowed_roots)
         self.tool_registry = ToolRegistry(self.database)
@@ -263,6 +269,9 @@ class HinataAssistant:
             "autonomy_mode": self.orchestrator.autonomy_mode,
             "offline_policy": self.offline_guard.status(),
             "encryption_at_rest": self.vault is not None,
+            "database_encryption": self.database.encryption_status(),
+            "knowledge_index": self.knowledge.index_stats(),
+            "audit_chain_intact": self.tracer.verify_integrity()["intact"],
             "pin_configured": self.authentication.is_configured,
             "speaker_enrolled": self.speaker.is_enrolled,
             "personality_mode": self.personality.mode.key,
@@ -280,6 +289,8 @@ class HinataAssistant:
                     "pyttsx3",
                     "resemblyzer",
                     "openwakeword",
+                    "sqlcipher3",
+                    "hnswlib",
                 )
             },
             "model": model_status,

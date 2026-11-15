@@ -92,7 +92,10 @@ def build_parser() -> argparse.ArgumentParser:
     ws_op = workspaces.add_mutually_exclusive_group()
     ws_op.add_argument("--register", metavar="PATH", help="Approve and register a local coding workspace directory")
     ws_op.add_argument("--patches", action="store_true", help="List proposed, applied, and reverted coding patches")
+    ws_op.add_argument("--symbols", action="store_true", help="Build Python AST symbol & call-reference map")
     ws_op.add_argument("--probe-sandbox", action="store_true", help="Verify sandbox network-disabled isolation")
+    workspaces.add_argument("--workspace", default="", help="Workspace ID or name filter")
+    workspaces.add_argument("--query", default="", help="Optional symbol search filter")
 
     assets = commands.add_parser("assets", help="Inspect, verify, export, or import air-gapped offline bundles")
     asset_op = assets.add_mutually_exclusive_group()
@@ -100,8 +103,19 @@ def build_parser() -> argparse.ArgumentParser:
     asset_op.add_argument("--export-bundle", metavar="TAR_GZ", help="Export registered local assets to an offline bundle")
     asset_op.add_argument("--import-bundle", metavar="TAR_GZ", help="Import and SHA-256 verify an offline bundle")
 
-    audit = commands.add_parser("audit", help="Inspect or export secret-redacted runtime telemetry and traces")
-    audit.add_argument("--export", metavar="PATH", help="Write redacted audit JSON to file")
+    audit = commands.add_parser("audit", help="Inspect, cryptographically verify, or export audit traces")
+    audit_op = audit.add_mutually_exclusive_group()
+    audit_op.add_argument("--export", metavar="PATH", help="Write redacted audit JSON to file")
+    audit_op.add_argument("--verify-chain", action="store_true", help="Verify SHA-256 tamper-evident hash chain")
+
+    playbooks = commands.add_parser("playbooks", help="Manage reusable procedural workflow playbooks")
+    pb_op = playbooks.add_mutually_exclusive_group()
+    pb_op.add_argument("--promote", metavar="TASK_ID", help="Promote a verified COMPLETED task into a playbook")
+    pb_op.add_argument("--instantiate", metavar="NAME_OR_ID", help="Stage an AWAITING_APPROVAL task from a playbook")
+    pb_op.add_argument("--delete", metavar="NAME_OR_ID", help="Delete a saved playbook")
+    playbooks.add_argument("--name", default="", help="Playbook name when using --promote")
+    playbooks.add_argument("--description", default="", help="Optional playbook description")
+    playbooks.add_argument("--param", action="append", default=[], metavar="KEY=VALUE", help="Parameter binding")
 
     memory = commands.add_parser("memory", help="Inspect, export, or delete local memory")
     operation = memory.add_mutually_exclusive_group(required=True)
@@ -201,6 +215,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(json.dumps(rows, indent=2))
                 return 0
+            if args.symbols:
+                print(
+                    json.dumps(
+                        assistant.workspaces.ast_symbol_index(args.workspace, query=args.query),
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+                return 0
             print(json.dumps(assistant.workspaces.list_workspaces(), indent=2))
             return 0
         if args.command == "assets":
@@ -217,6 +240,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(assistant.assets.readiness_inventory(), indent=2))
             return 0
         if args.command == "audit":
+            if args.verify_chain:
+                report = assistant.tracer.verify_integrity()
+                print(json.dumps(report, indent=2, ensure_ascii=False))
+                return 0 if report["intact"] else 1
             payload = assistant.tracer.export_audit()
             if args.export:
                 out_p = Path(args.export).expanduser().resolve()
@@ -224,6 +251,47 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Redacted audit report saved to: {out_p}")
                 return 0
             print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+        if args.command == "playbooks":
+            kv_params: dict[str, str] = {}
+            for pair in args.param:
+                if "=" not in pair:
+                    print(f"Invalid --param '{pair}'; expected KEY=VALUE.", file=sys.stderr)
+                    return 1
+                k, v = pair.split("=", 1)
+                kv_params[k.strip()] = v
+            if args.promote:
+                if not args.name:
+                    print("--name is required when promoting a task to a playbook.", file=sys.stderr)
+                    return 1
+                created = assistant.playbooks.promote_from_task(
+                    args.promote,
+                    name=args.name,
+                    description=args.description,
+                    parameter_bindings=kv_params or None,
+                )
+                print(json.dumps(created, indent=2, ensure_ascii=False))
+                return 0
+            if args.instantiate:
+                task_id, plan = assistant.playbooks.instantiate(args.instantiate, params=kv_params)
+                print(
+                    json.dumps(
+                        {
+                            "task_id": task_id,
+                            "state": "AWAITING_APPROVAL",
+                            "plan_hash": plan.plan_hash(),
+                            "preview": plan.preview(),
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+                return 0
+            if args.delete:
+                ok = assistant.playbooks.delete_playbook(args.delete)
+                print("Playbook deleted." if ok else "Playbook not found.")
+                return 0 if ok else 1
+            print(json.dumps(assistant.playbooks.list_playbooks(), indent=2, ensure_ascii=False))
             return 0
         if args.command == "tasks":
             if args.pause:
