@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from hinata.agents.registry import AgentMessage, AgentRegistry, SubtaskReport
+from hinata.agents.runtime import AgentExecutor
 from hinata.config import OllamaConfig
 from hinata.core.errors import (
     BudgetTracker,
@@ -367,6 +368,69 @@ class ModelRouterPlannerAndMultiAgentTests(unittest.TestCase):
         )
         self.assertFalse(verdict["accepted"])
         self.assertEqual(verdict["resolution"], "rejected_by_reviewer_evidence")
+
+    def test_model_driven_specialist_report_is_strict_and_side_effects_stay_central(self) -> None:
+        class FakeLocalModel:
+            last_model_identity = "fake-coder@sha256:test"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def chat(self, messages, system, **kwargs):
+                self.calls += 1
+                assignment = json.loads(messages[0]["content"])
+                action = assignment["actions"][0]
+                return json.dumps(
+                    {
+                        "status": "ready",
+                        "summary": "The assigned inspection is ready for the central executor.",
+                        "outputs": {"intent": "inspect only"},
+                        "proposed_actions": [action],
+                        "evidence": [{"kind": "assignment", "detail": "Matched the declared assignment", "source": "local_model"}],
+                        "limitations": ["The model did not execute the tool."],
+                    }
+                )
+
+        model = FakeLocalModel()
+        executor = AgentExecutor(model)
+        invoked = []
+        report = self.assistant.agent_registry.delegate_subtask(
+            agent_id="coding",
+            root_task_id="runtime-report-1",
+            objective="Inspect a bounded source file",
+            actions=[ActionRequest("code_inspect", {"path": "Documents/example.py"})],
+            authorized_runner=lambda action, agent: invoked.append((action.tool, agent)) or ActionResult(
+                action.tool, True, "central result", {"verified": True}
+            ),
+            specialist_executor=executor.prepare,
+        )
+        self.assertTrue(report.success)
+        self.assertEqual(report.model_identity, "fake-coder@sha256:test")
+        self.assertEqual(model.calls, 1)
+        self.assertEqual(invoked, [("code_inspect", "coding")])
+        persisted = self.assistant.agent_registry.reports_for_task("runtime-report-1")
+        self.assertEqual(len(persisted), 1)
+        self.assertEqual(persisted[0]["status"], "SUCCEEDED")
+
+        class MalformedModel(FakeLocalModel):
+            def chat(self, messages, system, **kwargs):
+                self.calls += 1
+                return json.dumps({"status": "ready", "summary": "missing required fields"})
+
+        malformed_invoked = []
+        blocked = self.assistant.agent_registry.delegate_subtask(
+            agent_id="coding",
+            root_task_id="runtime-report-2",
+            objective="Reject malformed report",
+            actions=[ActionRequest("code_inspect", {"path": "Documents/example.py"})],
+            authorized_runner=lambda action, agent: malformed_invoked.append(action.tool) or ActionResult(
+                action.tool, True, "must not run"
+            ),
+            specialist_executor=AgentExecutor(MalformedModel()).prepare,
+        )
+        self.assertFalse(blocked.success)
+        self.assertEqual(malformed_invoked, [])
+        self.assertEqual(blocked.status, "BLOCKED")
 
     def test_tool_registry_idempotency_and_timeout(self) -> None:
         treg = ToolRegistry(self.assistant.database)

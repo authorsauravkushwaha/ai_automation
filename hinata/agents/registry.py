@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from hinata.core.errors import CancellationToken, ClassifiedError, ErrorCategory
+from hinata.core.tool_registry import DEFAULT_MANIFESTS
 from hinata.core.types import ActionRequest, ActionResult
 from hinata.database.database import Database
 from hinata.security.redaction import redact_value
@@ -40,6 +41,8 @@ MESSAGE_TYPES = frozenset(
 )
 
 TRUST_LABELS = frozenset({"trusted_runtime_metadata", "untrusted_content"})
+_TOOL_RISK = {manifest.name: manifest.risk_tier for manifest in DEFAULT_MANIFESTS}
+_RISK_ORDER = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +64,11 @@ class AgentManifest:
     max_concurrency: int = 1
     can_propose_side_effects: bool = False
     requires_independent_review: bool = False
+    # Schemas and side-effect declarations are immutable policy metadata.  They
+    # are deliberately data-only so a model can never mutate its own manifest.
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    output_schema: dict[str, Any] = field(default_factory=dict)
+    permitted_side_effects: frozenset[str] = frozenset()
 
     def validate(self) -> None:
         if not self.agent_id or not self.display_name or not self.version:
@@ -69,14 +77,22 @@ class AgentManifest:
             raise ValueError(f"Invalid max_risk_tier '{self.max_risk_tier}' on {self.agent_id}")
         if self.model_role not in {"chat", "planner", "coder", "reviewer", "embedding", "vision", "none"}:
             raise ValueError(f"Invalid model_role '{self.model_role}' on {self.agent_id}")
-        if self.timeout_seconds <= 0 or self.max_concurrency < 1:
+        if (
+            self.timeout_seconds <= 0
+            or self.max_concurrency < 1
+            or self.max_model_calls < 0
+            or self.max_tool_calls < 0
+        ):
             raise ValueError(f"Invalid resource bounds on {self.agent_id}")
+        if not isinstance(self.input_schema, dict) or not isinstance(self.output_schema, dict):
+            raise ValueError(f"Agent schemas must be objects on {self.agent_id}")
 
     def to_dict(self) -> dict[str, Any]:
         raw = asdict(self)
         raw["allowed_tools"] = sorted(self.allowed_tools)
         raw["readable_memory_namespaces"] = sorted(self.readable_memory_namespaces)
         raw["writable_memory_namespaces"] = sorted(self.writable_memory_namespaces)
+        raw["permitted_side_effects"] = sorted(self.permitted_side_effects)
         return raw
 
 
@@ -153,6 +169,11 @@ class SubtaskReport:
     model_identity: str = ""
     duration_ms: float = 0.0
     error_code: str = ""
+    status: str = "SUCCEEDED"
+    limitations: list[str] = field(default_factory=list)
+    usage: dict[str, Any] = field(default_factory=dict)
+    tool_usage: dict[str, Any] = field(default_factory=dict)
+    review_required: bool = False
 
 
 class ResourceLockManager:
@@ -428,6 +449,12 @@ class AgentRegistry:
         max_parallel_readonly: int = 2,
     ) -> None:
         self.database = database
+        # Agent reports are a durable runtime contract.  Upgrade an existing
+        # database in place; never assume the composition root was the first
+        # component to open this store.
+        ensure_migrated = getattr(database, "ensure_migrated", None)
+        if callable(ensure_migrated):
+            ensure_migrated()
         self.max_delegation_depth = max(1, min(max_delegation_depth, 5))
         self.max_parallel_readonly = max(1, min(max_parallel_readonly, 4))
         self.locks = ResourceLockManager()
@@ -492,6 +519,42 @@ class AgentRegistry:
             (root_task_id,),
         )
 
+    def record_report(self, root_task_id: str, report: SubtaskReport) -> None:
+        """Persist the evidence-bearing specialist report without storing secrets."""
+        self.database.execute(
+            """INSERT INTO agent_subtask_reports(
+                report_id, root_task_id, child_task_id, agent_id, status, success,
+                summary, structured_data_json, evidence_json, proposed_actions_json,
+                limitations_json, model_identity, usage_json, error_code
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                uuid.uuid4().hex[:16],
+                root_task_id,
+                report.child_task_id,
+                report.agent_id,
+                report.status[:32],
+                int(report.success),
+                str(redact_value(report.summary))[:1000],
+                json.dumps(redact_value(report.structured_data), ensure_ascii=False, default=str)[:8000],
+                json.dumps(redact_value(report.evidence), ensure_ascii=False, default=str)[:8000],
+                json.dumps(
+                    redact_value([asdict(action) for action in report.proposed_actions]),
+                    ensure_ascii=False,
+                    default=str,
+                )[:4000],
+                json.dumps(redact_value(report.limitations), ensure_ascii=False, default=str)[:2000],
+                str(redact_value(report.model_identity))[:200],
+                json.dumps(redact_value(report.usage), ensure_ascii=False, default=str)[:2000],
+                report.error_code[:80],
+            ),
+        )
+
+    def reports_for_task(self, root_task_id: str) -> list[dict[str, Any]]:
+        return self.database.fetch_all(
+            "SELECT * FROM agent_subtask_reports WHERE root_task_id = ? ORDER BY created_at ASC",
+            (root_task_id,),
+        )
+
     def delegate_subtask(
         self,
         *,
@@ -504,6 +567,9 @@ class AgentRegistry:
         delegation_chain: tuple[str, ...] = ("orchestrator",),
         resource_key: str = "",
         cancel_token: CancellationToken | None = None,
+        # Optional model-driven preflight.  The callback may only return a
+        # report; side effects still occur below through authorized_runner.
+        specialist_executor: Callable[..., SubtaskReport] | None = None,
     ) -> SubtaskReport:
         """Delegate a bounded subtask to a specialist agent with cycle, scope, and lock checks."""
         if len(delegation_chain) > self.max_delegation_depth:
@@ -525,6 +591,13 @@ class AgentRegistry:
                     ErrorCategory.PERMISSION,
                     "ERR_AGENT_TOOL_SCOPE",
                     f"Specialist '{agent_id}' is not permitted to invoke tool '{act.tool}'",
+                )
+            tool_risk = _TOOL_RISK.get(act.tool, "high")
+            if _RISK_ORDER.get(tool_risk, 3) > _RISK_ORDER.get(manifest.max_risk_tier, 0):
+                raise ClassifiedError(
+                    ErrorCategory.PERMISSION,
+                    "ERR_AGENT_RISK_CEILING",
+                    f"Specialist '{agent_id}' risk ceiling '{manifest.max_risk_tier}' cannot invoke '{act.tool}' ({tool_risk})",
                 )
 
         child_id = uuid.uuid4().hex[:12]
@@ -556,12 +629,21 @@ class AgentRegistry:
         started = time.monotonic()
         with self._health_lock:
             h = self._health[agent_id]
+            if int(h["active_tasks"]) >= manifest.max_concurrency:
+                if resource_key:
+                    self.locks.release(resource_key, child_id)
+                raise ClassifiedError(
+                    ErrorCategory.RESOURCE,
+                    "ERR_AGENT_CONCURRENCY",
+                    f"Specialist '{agent_id}' reached its concurrency limit ({manifest.max_concurrency})",
+                )
             h["state"] = "running"
             h["active_tasks"] += 1
             h["last_heartbeat_epoch"] = round(time.time(), 3)
 
         evidence_items: list[dict[str, Any]] = []
         outputs: list[dict[str, Any]] = []
+        model_report: SubtaskReport | None = None
         try:
             if len(actions) > manifest.max_tool_calls:
                 raise ClassifiedError(
@@ -569,6 +651,28 @@ class AgentRegistry:
                     "ERR_AGENT_TOOL_BUDGET",
                     f"Subtask exceeds {agent_id} max_tool_calls ({manifest.max_tool_calls})",
                 )
+            if specialist_executor is not None and manifest.model_role != "none":
+                model_report = specialist_executor(
+                    manifest,
+                    objective,
+                    list(actions),
+                    child_id,
+                    cancel_token,
+                )
+                if not isinstance(model_report, SubtaskReport):
+                    raise ClassifiedError(
+                        ErrorCategory.VALIDATION,
+                        "ERR_AGENT_REPORT_SCHEMA",
+                        "Specialist executor returned a non-SubtaskReport value",
+                    )
+                if not model_report.success:
+                    model_report.agent_id = agent_id
+                    model_report.child_task_id = child_id
+                    self.record_report(root_task_id, model_report)
+                    with self._health_lock:
+                        self._health[agent_id]["failed_tasks"] += 1
+                        self._health[agent_id]["last_error"] = str(redact_value(model_report.summary))[:200]
+                    return model_report
             for idx, act in enumerate(actions, 1):
                 if cancel_token is not None:
                     cancel_token.check()
@@ -587,7 +691,15 @@ class AgentRegistry:
                         "status": res.status,
                     }
                 )
-                outputs.append({"tool": act.tool, "success": res.success, "data": redact_value(res.data)})
+                outputs.append(
+                    {
+                        "tool": act.tool,
+                        "success": res.success,
+                        "status": res.status,
+                        "message": str(redact_value(res.message))[:500],
+                        "data": redact_value(res.data),
+                    }
+                )
                 if not res.success:
                     dur = round((time.monotonic() - started) * 1000.0, 2)
                     fail_msg = AgentMessage.build(
@@ -604,17 +716,28 @@ class AgentRegistry:
                     self.record_message(fail_msg)
                     with self._health_lock:
                         self._health[agent_id]["failed_tasks"] += 1
-                        self._health[agent_id]["last_error"] = res.message[:200]
-                    return SubtaskReport(
+                        self._health[agent_id]["last_error"] = str(redact_value(res.message))[:200]
+                    report = SubtaskReport(
                         agent_id=agent_id,
                         child_task_id=child_id,
                         success=False,
                         summary=f"{manifest.display_name} failed on {act.tool}: {res.message[:240]}",
-                        structured_data={"outputs": outputs},
-                        evidence=evidence_items,
+                        structured_data={
+                            "outputs": outputs,
+                            "model_report": model_report.structured_data if model_report else {},
+                        },
+                        evidence=evidence_items + (model_report.evidence if model_report else []),
+                        model_identity=model_report.model_identity if model_report else "",
                         duration_ms=dur,
                         error_code="ERR_SUBTASK_TOOL_FAILED",
+                        status="FAILED",
+                        limitations=model_report.limitations if model_report else [],
+                        usage=model_report.usage if model_report else {},
+                        tool_usage={"requested": len(actions), "executed": idx},
+                        review_required=manifest.requires_independent_review,
                     )
+                    self.record_report(root_task_id, report)
+                    return report
 
             dur = round((time.monotonic() - started) * 1000.0, 2)
             done_msg = AgentMessage.build(
@@ -631,16 +754,48 @@ class AgentRegistry:
             self.record_message(done_msg)
             with self._health_lock:
                 self._health[agent_id]["completed_tasks"] += 1
-            return SubtaskReport(
+            report = SubtaskReport(
                 agent_id=agent_id,
                 child_task_id=child_id,
                 success=True,
                 summary=f"{manifest.display_name} completed {len(actions)} bounded action(s).",
+                structured_data={
+                    "outputs": outputs,
+                    "model_report": model_report.structured_data if model_report else {},
+                },
+                evidence=evidence_items + (model_report.evidence if model_report else []),
+                model_identity=model_report.model_identity if model_report else "",
+                duration_ms=dur,
+                status="SUCCEEDED",
+                limitations=model_report.limitations if model_report else [],
+                usage=model_report.usage if model_report else {},
+                tool_usage={"requested": len(actions), "executed": len(actions)},
+                review_required=manifest.requires_independent_review,
+            )
+            self.record_report(root_task_id, report)
+            return report
+        except Exception as exc:
+            failure = SubtaskReport(
+                agent_id=agent_id,
+                child_task_id=child_id,
+                success=False,
+                summary=f"{manifest.display_name} failed before a complete report: {str(exc)[:240]}",
                 structured_data={"outputs": outputs},
                 evidence=evidence_items,
-                duration_ms=dur,
+                model_identity=model_report.model_identity if model_report else "",
+                duration_ms=round((time.monotonic() - started) * 1000.0, 2),
+                error_code=getattr(exc, "code", "ERR_SUBTASK_RUNTIME")[:80],
+                status="FAILED",
+                limitations=["The specialist did not produce a complete report."],
+                usage=model_report.usage if model_report else {},
+                tool_usage={"requested": len(actions), "executed": len(outputs)},
+                review_required=manifest.requires_independent_review,
             )
-        except Exception as exc:
+            try:
+                self.record_report(root_task_id, failure)
+            except Exception:
+                # Reporting must never mask the original runtime failure.
+                pass
             with self._health_lock:
                 self._health[agent_id]["failed_tasks"] += 1
                 self._health[agent_id]["last_error"] = str(exc)[:200]

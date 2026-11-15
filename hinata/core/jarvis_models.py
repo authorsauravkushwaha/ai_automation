@@ -27,6 +27,7 @@ import keyword
 import re
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from hinata.automation.app_control import AutomationError
 from hinata.automation.file_manager import FileManager
 from hinata.automation.workspace import WorkspaceManager
 from hinata.core.llm_manager import LLMManager
+from hinata.security.redaction import redact_text
 
 RECOMMENDED_OLLAMA_VERSION = "0.6.2"
 
@@ -701,34 +703,177 @@ class ProjectArchitectEngine:
                 raise AutomationError(f"Generated file already exists: {clean_rel}")
             destinations.append((dest, clean_rel, content))
         target_root.mkdir(parents=True, exist_ok=True)
-        for dest, clean_rel, content in destinations:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(content, encoding="utf-8")
-            written_paths.append(clean_rel)
+        try:
+            for dest, clean_rel, content in destinations:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                # Stage each file and atomically replace it.  The destination was
+                # empty before validation, so an interrupted batch cannot overwrite
+                # unrelated owner work.
+                staged = dest.with_name(f".{dest.name}.hinata-stage-{uuid.uuid4().hex[:8]}")
+                staged.write_text(content, encoding="utf-8")
+                staged.replace(dest)
+                written_paths.append(clean_rel)
+        except OSError as exc:
+            # Do not guess whether a failed filesystem call had an effect. Keep
+            # the files for inspection and report the outcome as uncertain.
+            write_verification: dict[str, Any] = {
+                "executed": False,
+                "tests_passed": None,
+                "status": "UNKNOWN_OUTCOME",
+                "checks": [{"name": "file_write", "status": "UNKNOWN_OUTCOME", "detail": str(exc)[:500]}],
+            }
+            result = {
+                "project_root": str(target_root),
+                "workspace_id": "",
+                "generator": generator_id,
+                "template": template,
+                "files_created": written_paths,
+                "python_ast_verified": syntax_checked,
+                "status": "UNKNOWN_OUTCOME",
+                "sandbox_verification": write_verification,
+            }
+            self._persist_project_record(target_root, spec, template, result)
+            return result
 
         ws_info = self.workspaces.register_workspace(str(target_root))
-        verification: dict[str, Any] = {"executed": False, "tests_passed": None}
-        if run_verification and any(p.startswith("tests/") and p.endswith(".py") for p in written_paths):
-            test_res = self.workspaces.run_tests(ws_info["workspace_id"])
-            transcript = str(test_res.get("stdout", "")) + str(test_res.get("stderr", ""))
-            ran_tests = re.search(r"\bRan (\d+) tests?\b", transcript)
-            verification = {
-                "executed": True,
-                "tests_passed": bool(test_res.get("tests_passed")) and bool(ran_tests and int(ran_tests.group(1)) > 0),
-                "isolation_backend": test_res.get("isolation_backend", ""),
-                "stdout": str(test_res.get("stdout", ""))[:2000],
-                "stderr": str(test_res.get("stderr", ""))[:2000],
-            }
+        test_files = [p for p in written_paths if p.startswith("tests/") and p.endswith(".py")]
+        verification: dict[str, Any] = {
+            "executed": False,
+            "tests_passed": None,
+            "status": "PARTIAL",
+            "test_count": 0,
+            "checks": [
+                {"name": "generated_paths", "status": "PASSED", "detail": f"{len(written_paths)} file(s) stayed in the workspace"},
+                {"name": "python_syntax", "status": "PASSED", "detail": f"AST checked {len(syntax_checked)} Python file(s)"},
+            ],
+        }
+        if not run_verification:
+            verification["checks"].append({"name": "tests", "status": "NOT_RUN", "detail": "Verification was disabled by the caller"})
+        elif not test_files:
+            # A missing test suite is evidence of incomplete verification, never
+            # an empty passing suite.
+            verification["checks"].append({"name": "tests", "status": "NOT_RUN", "detail": "No test files were generated"})
+        else:
+            try:
+                test_res = self.workspaces.run_tests(ws_info["workspace_id"])
+                transcript = str(test_res.get("stdout", "")) + str(test_res.get("stderr", ""))
+                ran_tests = re.search(r"\bRan (\d+) tests?\b", transcript)
+                test_count = int(ran_tests.group(1)) if ran_tests else 0
+                verification.update(
+                    {
+                        "executed": True,
+                        "test_count": test_count,
+                        "exit_code": test_res.get("exit_code"),
+                        "isolation_backend": test_res.get("isolation_backend", ""),
+                        "stdout": str(test_res.get("stdout", ""))[:4000],
+                        "stderr": str(test_res.get("stderr", ""))[:4000],
+                    }
+                )
+                if int(test_res.get("exit_code", 1)) == 0 and test_count > 0:
+                    verification["status"] = "SUCCESS"
+                    verification["tests_passed"] = True
+                    verification["checks"].append({"name": "tests", "status": "PASSED", "detail": f"{test_count} test(s) executed and passed"})
+                elif int(test_res.get("exit_code", 1)) == 0:
+                    verification["checks"].append({"name": "tests", "status": "NOT_RUN", "detail": "Zero tests were discovered"})
+                else:
+                    verification["status"] = "FAILED"
+                    verification["tests_passed"] = False
+                    verification["checks"].append({"name": "tests", "status": "FAILED", "detail": f"Test command exited {test_res.get('exit_code')}"})
+            except (AutomationError, OSError) as exc:
+                verification["status"] = "BLOCKED"
+                verification["checks"].append({"name": "tests", "status": "BLOCKED", "detail": str(exc)[:500]})
 
-        return {
+        if verification["status"] == "SUCCESS" and generator_id == "hinata_clean_scaffold":
+            # Passing scaffold self-tests proves the scaffold is runnable, not
+            # that the user's product requirements were implemented.
+            verification["status"] = "PARTIAL"
+            verification["checks"].append(
+                {
+                    "name": "product_scope",
+                    "status": "NOT_RUN",
+                    "detail": "Deterministic offline scaffold generated; owner acceptance and product requirements remain unverified",
+                }
+            )
+
+        result = {
             "project_root": str(target_root),
             "workspace_id": ws_info["workspace_id"],
             "generator": generator_id,
             "template": template,
             "files_created": written_paths,
             "python_ast_verified": syntax_checked,
+            "status": verification["status"],
             "sandbox_verification": verification,
         }
+        self._persist_project_record(target_root, spec, template, result)
+        return result
+
+    def _persist_project_record(
+        self, target_root: Path, specification: str, template: str, result: dict[str, Any]
+    ) -> None:
+        """Persist project status and iteration evidence without changing the outcome."""
+        database = getattr(self.workspaces, "database", None)
+        if database is None or not hasattr(database, "fetch_one") or not hasattr(database, "execute"):
+            return
+        try:
+            ensure_migrated = getattr(database, "ensure_migrated", None)
+            if callable(ensure_migrated):
+                ensure_migrated()
+            existing = database.fetch_one(
+                "SELECT project_id FROM project_records WHERE root_path = ?", (str(target_root),)
+            )
+            project_id = str(existing["project_id"]) if existing else uuid.uuid4().hex[:16]
+            safe_description = redact_text(specification)[:4000]
+            verification = result.get("sandbox_verification", {})
+            database.execute(
+                """INSERT INTO project_records(
+                    project_id, name, description, root_path, project_type, stack_json,
+                    requirements_json, status, verification_json, file_inventory_json, known_issues_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(root_path) DO UPDATE SET
+                    name=excluded.name, description=excluded.description, project_type=excluded.project_type,
+                    stack_json=excluded.stack_json, requirements_json=excluded.requirements_json,
+                    status=excluded.status, verification_json=excluded.verification_json,
+                    file_inventory_json=excluded.file_inventory_json, known_issues_json=excluded.known_issues_json,
+                    updated_at=datetime('now')""",
+                (
+                    project_id,
+                    target_root.name[:160],
+                    safe_description,
+                    str(target_root),
+                    template,
+                    json.dumps({"template": template}),
+                    json.dumps({"specification": safe_description}),
+                    result.get("status", "UNKNOWN_OUTCOME"),
+                    json.dumps(verification, ensure_ascii=False)[:12000],
+                    json.dumps(result.get("files_created", []), ensure_ascii=False),
+                    json.dumps(
+                        [
+                            check for check in verification.get("checks", [])
+                            if check.get("status") not in {"PASSED", "SUCCESS"}
+                        ],
+                        ensure_ascii=False,
+                    )[:4000],
+                ),
+            )
+            database.execute(
+                """INSERT INTO project_iterations(
+                    iteration_id, project_id, phase, status, changed_files_json,
+                    checks_json, diagnostics_json
+                ) VALUES(?, ?, 'IMPLEMENT_VERIFY', ?, ?, ?, ?)""",
+                (
+                    uuid.uuid4().hex[:16],
+                    project_id,
+                    result.get("status", "UNKNOWN_OUTCOME"),
+                    json.dumps(result.get("files_created", []), ensure_ascii=False),
+                    json.dumps(verification.get("checks", []), ensure_ascii=False)[:8000],
+                    json.dumps({"generator": result.get("generator", "")}, ensure_ascii=False),
+                ),
+            )
+        except Exception:
+            # Evidence persistence is supplemental; it must not turn a real
+            # build result into an invented success or hide the filesystem result.
+            return
 
     def _synthesize_files(
         self,
@@ -780,7 +925,7 @@ class ProjectArchitectEngine:
                         '"files" mapping relative file paths (e.g. "README.md", "pyproject.toml", '
                         f'"{slug}/__init__.py", "{slug}/core.py", "tests/test_core.py") to their full UTF-8 string '
                         "contents. Every Python file MUST be syntactically valid stdlib-compatible Python 3.11+ "
-                        "with real passing unittest tests in tests/test_core.py. Maximum 8 files."
+                        "with real passing unittest tests in tests/test_core.py. Keep this response bounded to at most 12 files; larger projects require later iterations."
                     ),
                     connect=True,
                     pull_missing=False,

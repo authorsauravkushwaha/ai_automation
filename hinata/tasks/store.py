@@ -46,16 +46,23 @@ STEP_STATES = frozenset(
 TASK_STATES = frozenset(
     {
         "CREATED",
+        "DISCOVERING",
         "CLARIFYING",
         "PLANNING",
         "AWAITING_APPROVAL",
+        "READY",
         "RUNNING",
+        "WAITING_FOR_DEPENDENCY",
+        "WAITING_FOR_USER",
         "PAUSED",
         "REPLANNING",
         "VERIFYING",
+        "REPAIRING",
         "SUCCEEDED",
+        "PARTIAL",
         "COMPLETED",  # Retained alias for backward compatibility with existing tests
         "FAILED",
+        "BLOCKED",
         "UNKNOWN_OUTCOME",
         "CANCELLED",
     }
@@ -341,6 +348,60 @@ class TaskStore:
             (json.dumps(current, ensure_ascii=False)[:8000], task_id),
         )
 
+    def transition(self, task_id: str, state: str, *, reason: str = "", error_code: str = "") -> bool:
+        """Atomically move a durable task through the public lifecycle states.
+
+        This is intentionally explicit rather than a permissive string update so
+        UI/scheduler integrations cannot accidentally turn an uncertain effect
+        into success.  The legacy ``COMPLETED`` alias remains readable, but new
+        code should use ``SUCCEEDED`` or ``PARTIAL`` after verification.
+        """
+        if state not in TASK_STATES:
+            raise TaskStateError(f"Unsupported task state '{state}'")
+        transitions = {
+            "CREATED": {"DISCOVERING", "PLANNING", "AWAITING_APPROVAL", "CANCELLED"},
+            "DISCOVERING": {"PLANNING", "WAITING_FOR_USER", "BLOCKED", "CANCELLED"},
+            "CLARIFYING": {"PLANNING", "WAITING_FOR_USER", "CANCELLED"},
+            "PLANNING": {"AWAITING_APPROVAL", "READY", "WAITING_FOR_USER", "BLOCKED", "FAILED", "CANCELLED"},
+            "AWAITING_APPROVAL": {"READY", "WAITING_FOR_USER", "CANCELLED"},
+            "READY": {"RUNNING", "WAITING_FOR_DEPENDENCY", "CANCELLED"},
+            "WAITING_FOR_DEPENDENCY": {"READY", "BLOCKED", "CANCELLED"},
+            "WAITING_FOR_USER": {"READY", "PLANNING", "CANCELLED"},
+            "PAUSED": {"READY", "CANCELLED", "UNKNOWN_OUTCOME"},
+            "RUNNING": {"VERIFYING", "REPAIRING", "PAUSED", "PARTIAL", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED", "UNKNOWN_OUTCOME"},
+            "VERIFYING": {"REPAIRING", "SUCCEEDED", "PARTIAL", "FAILED", "WAITING_FOR_USER", "UNKNOWN_OUTCOME"},
+            "REPAIRING": {"READY", "RUNNING", "VERIFYING", "PARTIAL", "FAILED", "BLOCKED", "CANCELLED"},
+            "REPLANNING": {"AWAITING_APPROVAL", "READY", "BLOCKED", "FAILED", "CANCELLED"},
+            "PARTIAL": {"REPAIRING", "VERIFYING", "SUCCEEDED", "CANCELLED"},
+            "SUCCEEDED": set(),
+            "COMPLETED": set(),
+            "FAILED": {"REPAIRING", "REPLANNING"},
+            "BLOCKED": {"PLANNING", "READY", "CANCELLED"},
+            "UNKNOWN_OUTCOME": {"WAITING_FOR_USER", "VERIFYING", "CANCELLED"},
+            "CANCELLED": set(),
+        }
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT state, version FROM agent_tasks WHERE id=?", (task_id,)).fetchone()
+            if row is None:
+                raise TaskStateError("Task not found")
+            current = str(row["state"])
+            if state != current and state not in transitions.get(current, set()):
+                raise TaskStateError(f"Cannot transition task from {current} to {state}")
+            result = connection.execute(
+                """UPDATE agent_tasks SET state=?, paused_reason=?, error_code=?, version=version+1,
+                   updated_at=datetime('now') WHERE id=? AND version=?""",
+                (state, reason[:500], error_code[:80], task_id, row["version"]),
+            )
+            if result.rowcount != 1:
+                raise TaskStateError("Concurrent task transition conflict")
+            connection.execute(
+                """INSERT INTO agent_events(worker, tool, status, task_id, event_type, details_json)
+                   VALUES('task_store', '', ?, ?, 'task_state_transition', ?)""",
+                (state, task_id, json.dumps(redact_value({"from": current, "to": state, "reason": reason[:500]}), ensure_ascii=False)),
+            )
+            return True
+
     def record_step_observation(self, task_id: str, ordinal: int, observation: dict[str, Any], *, effect_state: str = "SUCCEEDED", retry_count: int = 0) -> None:
         self.database.execute(
             """UPDATE agent_task_steps SET observation_json = ?, effect_state = ?, retry_count = ?
@@ -395,7 +456,7 @@ class TaskStore:
                 raise TaskStateError("Cannot checkpoint task result; outcome may be uncertain")
 
     def finish(self, task_id: str, state: str) -> None:
-        if state not in {"FAILED", "CANCELLED", "UNKNOWN_OUTCOME"}:
+        if state not in {"FAILED", "BLOCKED", "PARTIAL", "CANCELLED", "UNKNOWN_OUTCOME"}:
             raise ValueError("Invalid final task state")
         with self.database.connect() as connection:
             result = connection.execute("""UPDATE agent_tasks SET state=?, updated_at=datetime('now')

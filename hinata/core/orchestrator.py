@@ -28,6 +28,7 @@ from hinata.agents.coder import CodeInspector
 from hinata.agents.registry import AgentRegistry
 from hinata.agents.replanner import Replanner
 from hinata.agents.reviewer import ReviewAgent
+from hinata.agents.runtime import AgentExecutor
 from hinata.agents.workers import WorkerCoordinator
 from hinata.automation.app_control import AppControl, AutomationError
 from hinata.automation.file_manager import FileManager
@@ -62,6 +63,7 @@ from hinata.core.tool_registry import ToolRegistry
 from hinata.core.types import ActionRequest, ActionResult, AssistantResponse
 from hinata.knowledge.index import KnowledgeIndex, verify_claim_citations
 from hinata.security.action_validator import ActionValidator, ValidationError
+from hinata.security.redaction import redact_value
 from hinata.tasks.store import TaskStateError, TaskStore
 
 LOGGER = logging.getLogger(__name__)
@@ -114,6 +116,7 @@ class Orchestrator:
         )
         self.tool_registry = tool_registry or ToolRegistry(memory.database)
         self.agent_registry = agent_registry or AgentRegistry(memory.database)
+        self.agent_executor = AgentExecutor(llm, enabled=llm_enabled)
         self.tracer = tracer or TraceRecorder(memory.database)
         self.cockpit = cockpit or DesktopCockpit(files)
         self.hardware_profiler = HardwareCapabilityService()
@@ -474,7 +477,11 @@ class Orchestrator:
                     continue
 
                 # Parallelize only if wave has >1 read-only nodes AND default _run_tool wasn't monkeypatched for sequential test locking
-                if len(runnable_wave) > 1 and all(n.side_effect == "read_only" for n in runnable_wave):
+                if (
+                    len(runnable_wave) > 1
+                    and all(n.side_effect == "read_only" for n in runnable_wave)
+                    and len({n.agent_id for n in runnable_wave}) == len(runnable_wave)
+                ):
                     for node in runnable_wave:
                         if self.tasks and task_id:
                             self.tasks.start_step(task_id, ordinal_by_step_id[node.step_id])
@@ -482,8 +489,8 @@ class Orchestrator:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
                         futs = {
                             node.step_id: pool.submit(
-                                self._execute,
-                                node.action,
+                                self._execute_node,
+                                node,
                                 source=source,
                                 speaker_match=speaker_match,
                                 speaker_required=speaker_required,
@@ -491,7 +498,6 @@ class Orchestrator:
                                 pin=None,
                                 run_id=run_id,
                                 task_id=task_id or "",
-                                step_id=node.step_id,
                                 cancel_token=token,
                             )
                             for node in runnable_wave
@@ -505,8 +511,8 @@ class Orchestrator:
                             break
                         if self.tasks and task_id:
                             self.tasks.start_step(task_id, idx)
-                        res = self._execute(
-                            node.action,
+                        res = self._execute_node(
+                            node,
                             source=source,
                             speaker_match=speaker_match,
                             speaker_required=speaker_required,
@@ -514,7 +520,6 @@ class Orchestrator:
                             pin=None,
                             run_id=run_id,
                             task_id=task_id or "",
-                            step_id=node.step_id,
                             cancel_token=token,
                         )
                         wave_results.append((node, res))
@@ -550,13 +555,16 @@ class Orchestrator:
                         {"step": index, "tool": action.tool, "success": result.success, "message": result.text}
                     )
                     if not result.success:
+                        terminal_state = (
+                            "CANCELLED" if result.status == "cancelled" else
+                            result.status.upper() if result.status.upper() in {"BLOCKED", "PARTIAL", "UNKNOWN_OUTCOME"} else
+                            "FAILED"
+                        )
                         if self.tasks and task_id:
-                            self.tasks.finish(
-                                task_id, "CANCELLED" if result.status == "cancelled" else "FAILED"
-                            )
+                            self.tasks.finish(task_id, terminal_state)
                         self.tracer.update_run(
                             run_id,
-                            state="CANCELLED" if result.status == "cancelled" else "FAILED",
+                            state=terminal_state,
                             summary=f"Stopped at step {index} ({action.tool})",
                         )
                         response = AssistantResponse(
@@ -669,6 +677,128 @@ class Orchestrator:
         finally:
             self.cancellations.release_token(token)
 
+    @staticmethod
+    def _agent_resource_key(action: ActionRequest) -> str:
+        """Derive a conservative lock key from a declared resource, never from model text."""
+        if action.tool.startswith("workspace_"):
+            workspace = str(action.arguments.get("workspace", "")).strip()
+            target = str(
+                action.arguments.get("path")
+                or action.arguments.get("patch_id")
+                or action.arguments.get("workspace", "")
+            ).strip()
+            return f"workspace:{workspace}:{target}" if (workspace or target) else ""
+        if action.tool in {"write_text_file", "copy_file", "move_file", "create_folder", "archive_files"}:
+            target = str(
+                action.arguments.get("path")
+                or action.arguments.get("destination")
+                or action.arguments.get("archive_path")
+                or ""
+            ).strip()
+            return f"filesystem:{target}" if target else ""
+        return ""
+
+    def _execute_node(
+        self,
+        node: PlanNode,
+        *,
+        source: str,
+        speaker_match: bool | None,
+        speaker_required: bool,
+        confirmed: bool,
+        pin: str | None,
+        run_id: str = "",
+        task_id: str = "",
+        cancel_token: CancellationToken | None = None,
+    ) -> AssistantResponse:
+        """Route a plan node through the registered specialist and central executor."""
+        if self._cancelled(cancel_token):
+            return self._cancel_response()
+        agent_id = node.agent_id or "execution"
+        try:
+            manifest = self.agent_registry.get(agent_id)
+        except KeyError:
+            return AssistantResponse(
+                f"Plan rejected: unregistered specialist agent '{agent_id}'.",
+                False,
+                "invalid",
+                data={"error_code": "ERR_UNREGISTERED_AGENT", "agent_id": agent_id},
+            )
+
+        def authorized_runner(action: ActionRequest, delegated_agent: str) -> ActionResult:
+            response = self._execute(
+                action,
+                source=source,
+                speaker_match=speaker_match,
+                speaker_required=speaker_required,
+                confirmed=confirmed,
+                pin=pin,
+                run_id=run_id,
+                task_id=task_id,
+                step_id=node.step_id,
+                agent_id=delegated_agent,
+                cancel_token=cancel_token,
+                delegated=True,
+            )
+            return ActionResult(
+                tool=action.tool,
+                success=response.success,
+                message=response.text,
+                data=response.data,
+                status=response.status,
+            )
+
+        # Model-backed specialists must produce a strict report before the
+        # central callback is allowed to execute.  Deterministic OS/monitor
+        # agents still use the same registry, locks, messages, and evidence path.
+        self.agent_executor.enabled = self.llm_enabled
+        specialist_executor = (
+            self.agent_executor.prepare
+            if self.llm_enabled and manifest.model_role != "none"
+            else None
+        )
+        try:
+            report = self.agent_registry.delegate_subtask(
+                agent_id=agent_id,
+                root_task_id=task_id or run_id or "orchestrator-run",
+                objective=node.explanation or node.action.tool,
+                actions=[node.action],
+                authorized_runner=authorized_runner,
+                run_id=run_id,
+                resource_key=self._agent_resource_key(node.action),
+                cancel_token=cancel_token,
+                specialist_executor=specialist_executor,
+            )
+        except ClassifiedError as exc:
+            return AssistantResponse(str(exc), False, "failed", data={"error_code": exc.code})
+
+        output = {}
+        outputs = report.structured_data.get("outputs") if isinstance(report.structured_data, dict) else None
+        if isinstance(outputs, list) and outputs and isinstance(outputs[0], dict):
+            output = outputs[0]
+        response_data = dict(output.get("data") or {}) if isinstance(output.get("data"), dict) else {}
+        response_data["agent_report"] = {
+            "agent_id": report.agent_id,
+            "child_task_id": report.child_task_id,
+            "status": report.status,
+            "model_identity": report.model_identity,
+            "evidence": report.evidence,
+            "limitations": report.limitations,
+            "usage": report.usage,
+            "review_required": report.review_required,
+        }
+        if output:
+            message = str(redact_value(output.get("message") or report.summary))
+        else:
+            message = str(redact_value(report.summary))
+        if report.success:
+            status = "completed"
+        elif report.status.lower() in {"blocked", "cancelled", "partial", "unknown_outcome"}:
+            status = report.status.lower()
+        else:
+            status = "failed"
+        return AssistantResponse(message, report.success, status, data=response_data)
+
     def _execute(
         self,
         action: ActionRequest,
@@ -683,6 +813,7 @@ class Orchestrator:
         step_id: str = "",
         agent_id: str = "",
         cancel_token: CancellationToken | None = None,
+        delegated: bool = False,
     ) -> AssistantResponse:
         if self._cancelled(cancel_token):
             return self._cancel_response()
@@ -806,10 +937,13 @@ class Orchestrator:
         self.memory.finish_command(
             command_id, action.tool, result.success, stored_message, stored_result
         )
+        response_status = "completed" if result.success else (
+            result.status if result.status in {"partial", "blocked", "cancelled", "unknown_outcome"} else "failed"
+        )
         return AssistantResponse(
             result.message,
             result.success,
-            "completed" if result.success else "failed",
+            response_status,
             data=result.data,
         )
 
@@ -1121,7 +1255,13 @@ class Orchestrator:
                 template=args.get("template", "python_cli"),
                 run_verification=args.get("run_verification", True), llm_enabled=self.llm_enabled,
             )
-            return ActionResult(tool, True, f"Created project in {data['project_root']}; sandbox verification: {data['sandbox_verification']}", data)
+            lifecycle = str(data.get("status", "UNKNOWN_OUTCOME"))
+            success = lifecycle == "SUCCESS"
+            message = (
+                f"Project lifecycle status: {lifecycle}. Root: {data['project_root']}. "
+                f"Verification evidence: {data.get('sandbox_verification', {})}"
+            )
+            return ActionResult(tool, success, message, data, status=lifecycle.lower())
         if tool == "hardware_profile":
             data = self.hardware_profiler.detect()
             return ActionResult(tool, True, json.dumps(data, indent=2), data)
