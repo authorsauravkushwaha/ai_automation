@@ -244,12 +244,22 @@ class AgentControlCenterDialog(QDialog):
                 ensure_ascii=False,
             )
         )
+        from hinata.core.jarvis_models import select_optimal_fleet_pack
+
+        hardware = self.assistant.hardware.detect()
         self.models_view.setPlainText(
             json.dumps(
                 {
-                    "hardware": self.assistant.hardware.detect(),
-                    "configured_chat_model": self.assistant.config.ollama.model,
-                    "configured_embedding_model": self.assistant.config.ollama.embedding_model,
+                    "hardware": hardware,
+                    "recommended_lenovo_loq_fleet": select_optimal_fleet_pack(hardware).to_dict(),
+                    "configured_model_roles": {
+                        "chat": self.assistant.config.ollama.model,
+                        "planner": self.assistant.config.ollama.planner_model,
+                        "coder": self.assistant.config.ollama.coding_model,
+                        "reviewer": self.assistant.config.ollama.reviewer_model,
+                        "vision": self.assistant.config.ollama.vision_model,
+                        "embedding": self.assistant.config.ollama.embedding_model,
+                    },
                     "fallback_events": self.assistant.llm.fallback_events,
                 },
                 indent=2,

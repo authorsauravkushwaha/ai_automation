@@ -15,10 +15,11 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from hinata import __version__
 from hinata.automation.system_info import SystemInfo
-from hinata.config import ConfigError, load_config
+from hinata.config import ConfigError, OllamaConfig, load_config
 from hinata.core.assistant import HinataAssistant
 from hinata.core.ollama_service import OllamaService
 from hinata.core.types import AssistantResponse
@@ -74,7 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor", help="Diagnose resources, local runtime, and optional dependencies")
 
     model = commands.add_parser("model", help="Inspect, profile, or download configured Ollama models")
-    model.add_argument("operation", choices=["status", "pull", "hardware", "benchmark"])
+    model.add_argument("operation", choices=["status", "pull", "hardware", "benchmark", "fleet"])
+    model.add_argument("--fleet", action="store_true", help="Pull all models in the detected Lenovo LOQ i5 fleet (large setup download)")
 
     commands.add_parser("agents", help="Show registered specialist agents, manifests, and recent activity")
     tasks = commands.add_parser("tasks", help="Inspect saved plan checkpoints (never auto-replays execution)")
@@ -155,7 +157,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         if args.command == "model" and args.operation == "pull":
-            return pull_model(config.ollama.model)
+            if args.fleet:
+                from hinata.core.jarvis_models import select_optimal_fleet_pack
+                from hinata.core.providers import HardwareCapabilityService
+                pack = select_optimal_fleet_pack(HardwareCapabilityService().detect())
+                for name in pack.all_ollama_models():
+                    if pull_model(name, config.ollama) != 0:
+                        return 1
+                return 0
+            return pull_model(config.ollama.model, config.ollama)
         assistant = HinataAssistant(config, llm_enabled=False if args.no_llm else None)
         if args.command == "ask":
             return emit_with_approvals(
@@ -194,6 +204,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "delete-voice-profile":
             return delete_voice_profile(assistant)
         if args.command == "model":
+            if args.operation == "fleet":
+                from hinata.core.jarvis_models import (
+                    render_fleet_toml_snippet,
+                    select_optimal_fleet_pack,
+                )
+                pack = select_optimal_fleet_pack(assistant.hardware.detect())
+                print(json.dumps(pack.to_dict(), indent=2))
+                print("\n# Paste these [ollama] values into config.toml (replace existing [ollama] section):")
+                print(render_fleet_toml_snippet(pack))
+                return 0
             if args.operation == "hardware":
                 print(json.dumps(assistant.hardware.detect(), indent=2))
                 return 0
@@ -769,18 +789,22 @@ def memory_command(assistant: HinataAssistant, args: argparse.Namespace) -> int:
     return emit_with_approvals(assistant, assistant.process_text(command))
 
 
-def pull_model(model: str) -> int:
+def pull_model(model: str, ollama_config: OllamaConfig | None = None) -> int:
     executable = shutil.which("ollama")
     if executable is None:
         print("Ollama is not installed. See https://ollama.com/download/windows", file=sys.stderr)
         return 1
     print(f"Downloading {model} through local Ollama. Internet is required for this setup step only.")
     # Start the local service first so a fresh install can pull immediately.
-    config = load_config()
-    config.ollama.model = model
-    OllamaService(config.ollama).ensure_running()
+    cfg = ollama_config or load_config().ollama
+    cfg.model = model
+    OllamaService(cfg).ensure_running()
+    environment = os.environ.copy()
+    environment["OLLAMA_HOST"] = urlsplit(cfg.host).netloc
     try:
-        result = subprocess.run([executable, "pull", model], shell=False, check=False, timeout=1800)
+        result = subprocess.run(
+            [executable, "pull", model], env=environment, shell=False, check=False, timeout=1800
+        )
     except subprocess.TimeoutExpired:
         print("Model download timed out; run 'hinata model pull' again to resume.", file=sys.stderr)
         return 1

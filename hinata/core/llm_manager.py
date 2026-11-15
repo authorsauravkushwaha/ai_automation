@@ -55,6 +55,18 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class LLMManager:
     def __init__(self, config: OllamaConfig, service: OllamaService | None = None) -> None:
         config.validate()
+        if config.hardware_profile == "lenovo_loq_i5":
+            from hinata.core.jarvis_models import select_optimal_fleet_pack
+            from hinata.core.providers import HardwareCapabilityService
+
+            pack = select_optimal_fleet_pack(HardwareCapabilityService().detect())
+            # Respect explicit owner pins; only fill unconfigured role slots.
+            if config.model in {"", "qwen2.5:0.5b-instruct-q4_K_M"}:
+                config.model = pack.chat_model
+            config.planner_model = config.planner_model or pack.planner_model
+            config.coding_model = config.coding_model or pack.coding_model
+            config.reviewer_model = config.reviewer_model or pack.reviewer_model
+            config.vision_model = config.vision_model or pack.vision_model
         self.config = config
         # Ignore environment proxies and refuse every redirect, including loopback redirects.
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
@@ -76,6 +88,7 @@ class LLMManager:
                 "planner": config.planner_model,
                 "coder": config.coding_model,
                 "reviewer": config.reviewer_model,
+                "vision": config.vision_model,
             },
             allow_fallback=bool(config.allow_model_fallback and not config.strict_model_pin),
         )
@@ -555,23 +568,26 @@ Rules:
             retrieved_memories=retrieved_memories,
             observations=observations,
         )
-        # JSON mode keeps a small model from wrapping its answer in prose.  Some
-        # builds ignore the flag, so parse_llm_plan still scans for the object.
+        # Reasoning models (e.g. deepseek-r1, qwq) often fail HTTP 400 or break <think>
+        # chains when forced into strict Ollama `format="json"` grammar; parse_llm_plan
+        # extracts the JSON payload after stripping <think>...</think> blocks.
+        active_role_model = (self.router.model_for_role(role) or "").lower()
+        use_json_format = not any(tag in active_role_model for tag in ("deepseek-r1", "qwq", "r1:"))
         try:
-            return self.chat(
+            raw_reply = self.chat(
                 messages,
                 system,
                 connect=connect,
                 pull_missing=pull_missing,
-                format="json",
+                format="json" if use_json_format else None,
                 role=role,
                 cancel_token=cancel_token,
             )
         except OllamaError as exc:
-            # Older builds reject the "format" field; retry once without it.
+            # Older builds or reasoning models may reject the "format" field; retry once without it.
             if "format" not in str(exc).lower() or isinstance(exc, ModelUnavailableError):
                 raise
-            return self.chat(
+            raw_reply = self.chat(
                 messages,
                 system,
                 connect=connect,
@@ -579,6 +595,11 @@ Rules:
                 role=role,
                 cancel_token=cancel_token,
             )
+        if "<think>" in raw_reply.lower():
+            from hinata.core.jarvis_models import strip_reasoning_traces
+
+            return strip_reasoning_traces(raw_reply)
+        return raw_reply
 
     def benchmark(self, prompt: str = "Reply with JSON: {\"ok\": true}") -> dict[str, Any]:
         """Run a lightweight local latency and token-throughput benchmark against loopback Ollama."""

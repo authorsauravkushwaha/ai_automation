@@ -64,7 +64,7 @@ class JarvisOverrideController:
     """
 
     LOCKDOWN_EXEMPT_TOOLS = frozenset(
-        {"system_info", "hardware_profile", "executive_briefing", "list_preferences"}
+        {"system_info", "hardware_profile", "ai_fleet_profile", "executive_briefing", "list_preferences"}
     )
 
     def __init__(self) -> None:

@@ -44,6 +44,12 @@ from hinata.core.errors import (
     classify_exception,
 )
 from hinata.core.intent_parser import IntentParser, PlanError
+from hinata.core.jarvis_models import (
+    ProjectArchitectEngine,
+    VisualStudioEngine,
+    classify_task_model_role,
+    select_optimal_fleet_pack,
+)
 from hinata.core.llm_manager import LLMManager, OllamaError
 from hinata.core.memory import Memory
 from hinata.core.observability import TraceRecorder
@@ -111,6 +117,8 @@ class Orchestrator:
         self.tracer = tracer or TraceRecorder(memory.database)
         self.cockpit = cockpit or DesktopCockpit(files)
         self.hardware_profiler = HardwareCapabilityService()
+        self.visual_studio = VisualStudioEngine(files, llm, image_backend_url=llm.config.image_backend_url)
+        self.project_architect = ProjectArchitectEngine(files, self.workspace_manager, llm)
         self.replanner = Replanner(llm, parser, planner, validator)
         self.reviewer = ReviewAgent(files, memory.database)
         self.code_inspector = CodeInspector(files, self.workspace_manager)
@@ -810,7 +818,7 @@ class Orchestrator:
             self.personality.mode.instruction,
         )
         try:
-            return self.llm.complete(*arguments, connect=True, pull_missing=self._pull_missing)
+            return self.llm.complete(*arguments, connect=True, pull_missing=self._pull_missing, role=classify_task_model_role(text))
         except TypeError:
             return self.llm.complete(*arguments)
 
@@ -1090,6 +1098,25 @@ class Orchestrator:
         if tool == "system_info":
             data = self.system.snapshot()
             return ActionResult(tool, True, json.dumps(data, indent=2), data)
+        if tool == "ai_fleet_profile":
+            pack = select_optimal_fleet_pack(self.hardware_profiler.detect())
+            data = pack.to_dict()
+            return ActionResult(tool, True, json.dumps(data, indent=2), data)
+        if tool == "generate_image":
+            data = self.visual_studio.generate_image(
+                args["prompt"], args["output_path"],
+                style=args.get("style", "jarvis_hud"),
+                width=args.get("width", 1024), height=args.get("height", 768),
+                llm_enabled=self.llm_enabled,
+            )
+            return ActionResult(tool, True, f"Created {data['format'].upper()} image: {data['path']}", data)
+        if tool == "build_project":
+            data = self.project_architect.build_project(
+                project_dir=args["project_dir"], specification=args["specification"],
+                template=args.get("template", "python_cli"),
+                run_verification=args.get("run_verification", True), llm_enabled=self.llm_enabled,
+            )
+            return ActionResult(tool, True, f"Created project in {data['project_root']}; sandbox verification: {data['sandbox_verification']}", data)
         if tool == "hardware_profile":
             data = self.hardware_profiler.detect()
             return ActionResult(tool, True, json.dumps(data, indent=2), data)

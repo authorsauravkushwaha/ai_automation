@@ -50,7 +50,7 @@ class AgentManifest:
     role: str
     scope_description: str
     system_prompt: str
-    model_role: str  # chat, planner, coder, reviewer, embedding, none
+    model_role: str  # chat, planner, coder, reviewer, vision, embedding, none
     allowed_tools: frozenset[str]
     max_risk_tier: str  # none, low, medium, high
     readable_memory_namespaces: frozenset[str]
@@ -67,7 +67,7 @@ class AgentManifest:
             raise ValueError("AgentManifest requires non-empty agent_id, display_name, and version")
         if self.max_risk_tier not in {"none", "low", "medium", "high"}:
             raise ValueError(f"Invalid max_risk_tier '{self.max_risk_tier}' on {self.agent_id}")
-        if self.model_role not in {"chat", "planner", "coder", "reviewer", "embedding", "none"}:
+        if self.model_role not in {"chat", "planner", "coder", "reviewer", "embedding", "vision", "none"}:
             raise ValueError(f"Invalid model_role '{self.model_role}' on {self.agent_id}")
         if self.timeout_seconds <= 0 or self.max_concurrency < 1:
             raise ValueError(f"Invalid resource bounds on {self.agent_id}")
@@ -270,6 +270,7 @@ def default_agent_manifests() -> tuple[AgentManifest, ...]:
                     "run_project_tests",
                     "run_linter",
                     "run_type_checker",
+                    "build_project",
                 }
             ),
             max_risk_tier="medium",
@@ -346,6 +347,9 @@ def default_agent_manifests() -> tuple[AgentManifest, ...]:
                     "type_text",
                     "volume",
                     "system_info",
+                    "hardware_profile",
+                    "ai_fleet_profile",
+                    "generate_image",
                     "set_personality_mode",
                     "list_windows",
                     "focus_window",

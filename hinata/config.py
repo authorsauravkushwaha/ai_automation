@@ -29,9 +29,11 @@ class OllamaConfig:
     planner_model: str = ""
     coding_model: str = ""
     reviewer_model: str = ""
+    vision_model: str = ""
+    image_backend_url: str = "http://127.0.0.1:7860"
     allow_model_fallback: bool = True
     strict_model_pin: bool = False
-    hardware_profile: str = "auto"  # auto, conservative_cpu, balanced, accelerated
+    hardware_profile: str = "auto"  # auto, conservative_cpu, balanced, accelerated, lenovo_loq_i5
     timeout_seconds: int = 90
     max_tokens: int = 256
     context_tokens: int = 2048
@@ -60,13 +62,26 @@ class OllamaConfig:
             ("ollama.planner_model", self.planner_model),
             ("ollama.coding_model", self.coding_model),
             ("ollama.reviewer_model", self.reviewer_model),
+            ("ollama.vision_model", self.vision_model),
         ):
             if not isinstance(model_val, str) or len(model_val) > 150 or ("\x00" in model_val) or model_val != model_val.strip():
                 raise ConfigError(f"{label} must be a local model name of at most 150 characters")
+        if self.image_backend_url:
+            img_parsed = urlsplit(self.image_backend_url)
+            if (
+                img_parsed.scheme != "http"
+                or img_parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+                or img_parsed.username
+                or img_parsed.password
+                or img_parsed.query
+                or img_parsed.fragment
+                or img_parsed.path not in {"", "/"}
+            ):
+                raise ConfigError("ollama.image_backend_url must be empty or a plain HTTP loopback URL")
         if not isinstance(self.embedding_model, str) or not self.embedding_model or len(self.embedding_model) > 150 or self.embedding_model != self.embedding_model.strip() or "\x00" in self.embedding_model:
             raise ConfigError("ollama.embedding_model must be a local model name of at most 150 characters")
-        if self.hardware_profile not in {"auto", "conservative_cpu", "balanced", "accelerated"}:
-            raise ConfigError("ollama.hardware_profile must be auto, conservative_cpu, balanced, or accelerated")
+        if self.hardware_profile not in {"auto", "conservative_cpu", "balanced", "accelerated", "lenovo_loq_i5"}:
+            raise ConfigError("ollama.hardware_profile must be auto, conservative_cpu, balanced, accelerated, or lenovo_loq_i5")
         if not 1 <= self.timeout_seconds <= 600:
             raise ConfigError("ollama.timeout_seconds must be between 1 and 600")
         if not 16 <= self.max_tokens <= 4096:

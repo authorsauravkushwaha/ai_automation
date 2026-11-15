@@ -93,6 +93,26 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "system_info": {"required": [], "properties": {}},
     "hardware_profile": {"required": [], "properties": {}},
+    "ai_fleet_profile": {"required": [], "properties": {}},
+    "generate_image": {
+        "required": ["prompt", "output_path"],
+        "properties": {
+            "prompt": ("string", 1, 600),
+            "output_path": ("string", 1, 1024),
+            "style": ("enum", ["jarvis_hud", "cyberpunk", "minimal", "blueprint", "sunset"]),
+            "width": ("integer", 256, 2048),
+            "height": ("integer", 256, 2048),
+        },
+    },
+    "build_project": {
+        "required": ["project_dir", "specification"],
+        "properties": {
+            "project_dir": ("string", 1, 1024),
+            "specification": ("string", 1, 2000),
+            "template": ("enum", ["python_cli", "web_dashboard"]),
+            "run_verification": ("boolean",),
+        },
+    },
     "memory_search": {
         "required": ["query"],
         "properties": {"query": ("string", 1, 200), "limit": ("integer", 1, 50)},

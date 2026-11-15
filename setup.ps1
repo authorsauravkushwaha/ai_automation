@@ -12,6 +12,7 @@ param(
     [switch]$Full,
     [switch]$Run,
     [switch]$SkipOllama,
+    [switch]$LenovoLOQFleet,
     [switch]$SkipModelDownload,
     [switch]$SkipSpeechDownload,
     [switch]$Dev,
@@ -76,6 +77,8 @@ function Start-OllamaService {
     if (-not $Executable) { return $false }
     Write-Host "Starting the local Ollama service on 127.0.0.1:11434..."
     $env:OLLAMA_HOST = "127.0.0.1:11434"
+    $env:OLLAMA_MAX_LOADED_MODELS = "1"
+    $env:OLLAMA_FLASH_ATTENTION = "1"
     Start-Process -FilePath $Executable -ArgumentList @("serve") -WindowStyle Hidden
     for ($Attempt = 0; $Attempt -lt ($TimeoutSeconds * 2); $Attempt++) {
         Start-Sleep -Milliseconds 500
@@ -173,6 +176,20 @@ if (-not $SkipOllama) {
         throw "Ollama was installed but ollama.exe was not found in PATH or the default install folders. Install from https://ollama.com/download/windows and rerun setup."
     }
     Write-Host "Ollama executable: $OllamaPath"
+    $OllamaVersionText = (& $OllamaPath --version) -join " "
+    if ($OllamaVersionText -match '(\d+\.\d+\.\d+)') {
+        $OllamaVersion = [version]$Matches[1]
+        if ($OllamaVersion -lt [version]"0.6.2") {
+            if ($LenovoLOQFleet) {
+                throw "Ollama 0.6.2 or newer is required for the Lenovo LOQ model fleet. Update via https://ollama.com/download/windows."
+            }
+            Write-Warning "Ollama 0.6.2 or newer is recommended for the Lenovo LOQ model fleet."
+        }
+        Write-Host "Ollama version: $OllamaVersion (minimum 0.6.2)."
+    }
+    else {
+        Write-Warning "Cannot determine Ollama version. Ensure Ollama 0.6.2 or newer is installed."
+    }
     # Connect automatically: a fresh install leaves the service stopped, which is
     # what made the first HINATA message fail with "not a valid JSON plan".
     if (Start-OllamaService -Executable $OllamaPath) {
@@ -182,6 +199,17 @@ if (-not $SkipOllama) {
         Write-Warning "Ollama is installed but is not answering yet. HINATA also starts it automatically when it opens."
     }
     $env:OLLAMA_HOST = "127.0.0.1:11434"
+    $env:OLLAMA_MAX_LOADED_MODELS = "1"
+    $env:OLLAMA_FLASH_ATTENTION = "1"
+    if ($LenovoLOQFleet -and -not $SkipModelDownload) {
+        Write-Host "Selecting the local Lenovo LOQ i5 pack based on detected RAM, VRAM and power state..."
+        $FleetModels = & $VenvPython -c "from hinata.core.jarvis_models import select_optimal_fleet_pack; from hinata.core.providers import HardwareCapabilityService; print(chr(10).join(select_optimal_fleet_pack(HardwareCapabilityService().detect()).all_ollama_models()))"
+        if ($LASTEXITCODE -ne 0) { throw "Could not detect the Lenovo LOQ fleet" }
+        foreach ($FleetModel in $FleetModels) {
+            if ($FleetModel.Trim()) { Invoke-Native $OllamaPath @("pull", $FleetModel.Trim()) }
+        }
+        Write-Host "Apply the profile printed by: .\.venv\Scripts\python.exe -m hinata model fleet"
+    }
     Write-Host "[5/7] Making sure the local model $Model is present..."
     $InstalledModels = (& $OllamaPath list 2>$null) -join "`n"
     if ($InstalledModels -match [regex]::Escape($Model)) {

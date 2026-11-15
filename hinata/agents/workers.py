@@ -72,6 +72,7 @@ WORKERS = MappingProxyType({
                 "run_project_tests",
                 "run_linter",
                 "run_type_checker",
+                "build_project",
             }
         ),
     ),
@@ -97,6 +98,8 @@ WORKERS = MappingProxyType({
                 "volume",
                 "system_info",
                 "hardware_profile",
+                "ai_fleet_profile",
+                "generate_image",
                 "set_personality_mode",
                 "executive_briefing",
                 "list_windows",

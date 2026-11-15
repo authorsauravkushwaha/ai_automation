@@ -34,6 +34,7 @@ PLAN_SAFE_TOOLS = frozenset(
         "volume",
         "system_info",
         "hardware_profile",
+        "ai_fleet_profile",
         "memory_search",
         "list_preferences",
         "set_personality_mode",

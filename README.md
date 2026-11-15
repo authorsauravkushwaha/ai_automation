@@ -503,3 +503,33 @@ For Linux network namespaces and the separately configured Windows Sandbox
 approach, including prerequisites, commands and security limitations, see
 [offline isolation](docs/OFFLINE_ISOLATION.md). These launch paths are optional;
 the normal launchers do not enforce operating-system network isolation.
+
+### Lenovo LOQ i5 multi-AI fleet (optional)
+
+HINATA stays offline/loopback-only after setup. Install **Ollama 0.6.2 or newer** on
+Windows, then run `python -m hinata model fleet` to inspect the automatically
+selected pack based on detected RAM, RTX VRAM and AC/battery state. **The model
+names are recommendations, not silently installed or activated.** Copy the printed
+`[ollama]` block into `config.toml` (replace the existing `[ollama]` section), then
+run `python -m hinata model pull --fleet` with internet access for the one-time
+multi-GB downloads. Windows bootstrap can instead be run as
+`powershell -ExecutionPolicy Bypass -File .\setup.ps1 -LenovoLOQFleet` to pull
+this pack; you still need to apply the printed config. If GPU detection is
+unavailable, HINATA selects the CPU pack. You can override the selection by
+editing the explicit role names in `config.toml`; keep only models that fit your
+actual RAM/VRAM. Ollama releases VRAM between roles (`keep_alive=0`, at most
+one loaded model) so six models do **not** run simultaneously.
+
+- **Qwen 2.5:** chat/orchestration; Qwen2.5-VL is a vision/prompt-director role.
+  Qwen2.5-VL does **not** itself render photorealistic images: for PNG rendering,
+  run a *separate* local A1111/Forge-compatible Stable Diffusion server on
+  `http://127.0.0.1:7860` with `/sdapi/v1/txt2img`. Otherwise `generate_image`
+  creates a self-contained SVG illustration and reports that fallback honestly.
+- **DeepSeek-R1:** planning/automation (reasoning traces stripped before action
+  parsing); **Qwen2.5-Coder / DeepSeek-Coder:** code/project generation;
+  **Llama 3.2:** reviewer; **Nomic Embed Text:** semantic memory.
+- `ai fleet` shows hardware recommendations. `generate image <idea> to <path.svg>`
+  and `build project <specification> in <new-empty-directory>` require explicit
+  approval, are restricted to configured allowed roots, and project tests run in
+  HINATA's offline sandbox. Generated code is untrusted and must be reviewed.
+  Offline scaffolding is a runnable starter, not a guarantee of a finished project.

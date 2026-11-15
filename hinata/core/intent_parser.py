@@ -104,6 +104,14 @@ class IntentParser:
             return self._action("code_inspect", {"path": match.group(1)}, text)
         if re.fullmatch(r"inspect (?:repository|workspace) imports", stripped, re.IGNORECASE):
             return self._action("inspect_repository_imports", {}, text)
+        if re.fullmatch(r"(?:ai|model|jarvis|lenovo|loq)\s+fleet(?:\s+profile)?", stripped, re.IGNORECASE):
+            return self._action("ai_fleet_profile", {}, text)
+        match = re.fullmatch(r"(?:generate|create|make)\s+image\s+(.+?)\s+(?:to|at)\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("generate_image", {"prompt": match.group(1), "output_path": match.group(2)}, text)
+        match = re.fullmatch(r"(?:build|create)\s+project\s+(.+?)\s+(?:in|at)\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("build_project", {"specification": match.group(1), "project_dir": match.group(2)}, text)
         if re.fullmatch(r"(?:hardware|gpu|device)\s+profile", stripped, re.IGNORECASE):
             return self._action("hardware_profile", {}, text)
         match = re.fullmatch(r"hybrid search(?: knowledge)?(?: for)?\s+(.+)", stripped, re.IGNORECASE)

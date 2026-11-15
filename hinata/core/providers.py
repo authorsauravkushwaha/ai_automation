@@ -141,7 +141,7 @@ class HardwareCapabilityService:
                     ]
 
                 status = SystemPowerStatus()
-                if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):  # type: ignore[attr-defined]
+                if getattr(ctypes, "windll", None) is not None and ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):  # type: ignore[attr-defined]
                     return {
                         "ac_connected": status.ACLineStatus == 1,
                         "on_battery": status.ACLineStatus == 0,
@@ -271,7 +271,7 @@ class ModelRoleSelection:
 class ModelRouter:
     """Deliberate role-based local model routing with explicit fallback policy."""
 
-    ROLES = ("chat", "planner", "coder", "reviewer", "embedding")
+    ROLES = ("chat", "planner", "coder", "reviewer", "vision", "embedding")
 
     def __init__(
         self,

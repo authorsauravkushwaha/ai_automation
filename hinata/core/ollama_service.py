@@ -305,6 +305,8 @@ class OllamaService:
         """Start ``ollama serve`` detached from this process, without a console."""
         environment = os.environ.copy()
         environment["OLLAMA_HOST"] = _loopback_host(self.config.host)
+        environment["OLLAMA_MAX_LOADED_MODELS"] = "1"
+        environment["OLLAMA_FLASH_ATTENTION"] = "1"
         creationflags = 0
         startupinfo = None
         if os.name == "nt":  # pragma: no cover - exercised on Windows only
@@ -341,6 +343,8 @@ class OllamaService:
         self.ensure_running()
         environment = os.environ.copy()
         environment["OLLAMA_HOST"] = _loopback_host(self.config.host)
+        environment["OLLAMA_MAX_LOADED_MODELS"] = "1"
+        environment["OLLAMA_FLASH_ATTENTION"] = "1"
         try:
             result = subprocess.run(
                 [executable, "pull", self.config.model],

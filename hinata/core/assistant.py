@@ -314,6 +314,9 @@ class HinataAssistant:
     def status(self, *, check_model: bool = True) -> dict[str, Any]:
         import importlib.util
 
+        from hinata.core.jarvis_models import select_optimal_fleet_pack
+
+        hardware = self.hardware.detect()
         model_status = self.llm.status() if check_model else {"model": self.config.ollama.model}
         return {
             "version": __import__("hinata").__version__,
@@ -352,7 +355,16 @@ class HinataAssistant:
             },
             "model": model_status,
             "ollama_connection": self.llm.connect_status(),
-            "hardware_profile": self.hardware.detect(),
+            "hardware_profile": hardware,
+            "recommended_ai_fleet": select_optimal_fleet_pack(hardware).to_dict(),
+            "configured_model_roles": {
+                "chat": self.config.ollama.model,
+                "planner": self.config.ollama.planner_model,
+                "coder": self.config.ollama.coding_model,
+                "reviewer": self.config.ollama.reviewer_model,
+                "vision": self.config.ollama.vision_model,
+                "embedding": self.config.ollama.embedding_model,
+            },
             "agents": self.agent_registry.health_snapshot(),
             "metrics": self.tracer.metrics_snapshot(),
             "wake_word_enabled": self.config.wake_word.enabled,

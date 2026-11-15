@@ -73,9 +73,17 @@ def _candidates(text: str):
             yield candidate
 
 
+def _strip_think_blocks(text: str) -> str:
+    if "<think>" not in text.lower():
+        return text
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return "" if "<think>" in cleaned.lower() else cleaned.strip()
+
+
 def extract_reply_object(text: str) -> dict[str, Any] | None:
     """Return the first dict that looks like a HINATA reply, or ``None``."""
-    for candidate in _candidates(text):
+    cleaned = _strip_think_blocks(text)
+    for candidate in _candidates(cleaned):
         if candidate.get("type") in {"tool", "plan", "chat", "clarify"}:
             return candidate
     return None
@@ -127,7 +135,7 @@ def _without_code_fence(text: str) -> str:
 
 def plain_text_reply(text: str) -> str | None:
     """Use prose or a readable non-action JSON reply as display-only chat."""
-    stripped = _without_code_fence(text)
+    stripped = _without_code_fence(_strip_think_blocks(text))
     if len(stripped) < 2:
         return None
 
