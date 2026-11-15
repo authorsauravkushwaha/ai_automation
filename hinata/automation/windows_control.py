@@ -45,7 +45,22 @@ class WindowsControl:
                 raise AutomationError(f"Windows audio endpoint rejected the change: {exc}") from exc
         raise AutomationError("Unsupported volume action")
 
-    def type_text(self, text: str) -> dict[str, Any]:
+    def active_window_title(self) -> str:
+        self._require_windows()
+        import ctypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        return str(buf.value or "")
+
+    def type_text(self, text: str, *, target_window: str = "") -> dict[str, Any]:
         self._require_windows()
         import ctypes
         import time
@@ -75,15 +90,30 @@ class WindowsControl:
             _anonymous_ = ("union",)
             _fields_ = [("type", wintypes.DWORD), ("union", INPUTUNION)]
 
+        def _check_focus(initial_hwnd: int) -> None:
+            current_hwnd = user32.GetForegroundWindow()
+            if initial_hwnd and current_hwnd != initial_hwnd:
+                raise AutomationError("Active window focus changed during typing; cancelled safely.")
+            if target_window.strip():
+                title = self.active_window_title()
+                if target_window.strip().casefold() not in title.casefold():
+                    raise AutomationError(
+                        f"Foreground window '{title}' does not match required target_window '{target_window}'; typing cancelled."
+                    )
+
         def send(virtual_key: int, scan: int, flags: int) -> None:
             event = INPUT(type=1, ki=KEYBDINPUT(virtual_key, scan, flags, 0, 0))
             if user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(INPUT)) != 1:
                 raise AutomationError("SendInput failed; the active application may have elevated privileges")
 
-        # A short delay lets the user keep focus in the intended application.
+        # A short delay lets the user keep focus in the intended application, then verifies target identity.
         time.sleep(0.15)
+        initial_hwnd = int(user32.GetForegroundWindow() or 0)
+        _check_focus(initial_hwnd)
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-        for character in normalized:
+        for idx, character in enumerate(normalized):
+            if idx % 16 == 0:
+                _check_focus(initial_hwnd)
             if character == "\n":
                 send(0x0D, 0, 0)
                 send(0x0D, 0, 2)
@@ -93,4 +123,4 @@ class WindowsControl:
                     code_unit = int.from_bytes(encoded[offset : offset + 2], "little")
                     send(0, code_unit, 0x0004)
                     send(0, code_unit, 0x0004 | 0x0002)
-        return {"characters": len(text)}
+        return {"characters": len(text), "target_window": target_window or "verified_foreground_hwnd"}

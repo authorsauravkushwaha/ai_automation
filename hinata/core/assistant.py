@@ -9,31 +9,41 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+from hinata.agents.registry import AgentRegistry
 from hinata.automation.app_control import AppControl
 from hinata.automation.file_manager import FileManager
 from hinata.automation.system_info import SystemInfo
 from hinata.automation.windows_control import WindowsControl
+from hinata.automation.workspace import WorkspaceManager
 from hinata.config import HinataConfig, load_config
+from hinata.core.assets import OfflineAssetManager
+from hinata.core.errors import TaskBudget
 from hinata.core.intent_parser import IntentParser
 from hinata.core.llm_manager import LLMManager
 from hinata.core.memory import Memory
+from hinata.core.observability import TraceRecorder
 from hinata.core.ollama_service import OllamaService
 from hinata.core.orchestrator import Orchestrator
 from hinata.core.permissions import PermissionManager
 from hinata.core.personality import PersonalityManager
 from hinata.core.planner import Planner
+from hinata.core.providers import HardwareCapabilityService
+from hinata.core.tool_registry import ToolRegistry
 from hinata.core.types import ActionRequest, AssistantResponse
 from hinata.database.database import Database
 from hinata.knowledge.embeddings import OllamaEmbeddings
-from hinata.knowledge.index import KnowledgeIndex
+from hinata.knowledge.index import KnowledgeIndex, ThrottledKnowledgeWatcher
 from hinata.security.action_validator import ActionValidator
 from hinata.security.authentication import Authentication
+from hinata.security.local_protection import LocalVault
+from hinata.security.offline_guard import OfflineGuard
 from hinata.speech.microphone import Microphone
 from hinata.speech.speaker_recognition import SpeakerRecognition
 from hinata.speech.speech_to_text import SpeechToText
 from hinata.speech.text_to_speech import TextToSpeech
 from hinata.speech.voice_pipeline import VoicePipeline, VoiceResult
 from hinata.speech.wake_word import WakeWordDetector, WakeWordService
+from hinata.tasks.scheduler import TaskScheduler
 from hinata.tasks.store import TaskStore
 
 
@@ -43,19 +53,63 @@ class HinataAssistant:
         self._log_handler: RotatingFileHandler | None = None
         self.config.ensure_private_directories()
         self._configure_logging()
-        self.database = Database(self.config.database_path)
-        self.memory = Memory(self.database, self.config.memory.conversation_limit)
+        self.vault = (
+            LocalVault(self.config.data_dir, enabled=True)
+            if self.config.security.encrypt_at_rest
+            else None
+        )
+        self.offline_guard = OfflineGuard(
+            strict_offline=self.config.security.strict_offline,
+            online_mode_enabled=self.config.security.online_mode_enabled,
+            allowed_online_domains=self.config.security.allowed_online_domains,
+        )
+        if self.config.security.strict_offline:
+            self.offline_guard.install_socket_guard()
+
+        self.database = Database(self.config.database_path, vault=self.vault)
+        self.embeddings = OllamaEmbeddings(
+            LLMManager(self.config.ollama, OllamaService(self.config.ollama)),
+            self.config.ollama.embedding_model,
+        )
+        self.ollama = OllamaService(self.config.ollama)
+        self.llm = LLMManager(self.config.ollama, self.ollama)
+        self.embeddings = OllamaEmbeddings(self.llm, self.config.ollama.embedding_model)
+        self.memory = Memory(
+            self.database,
+            self.config.memory.conversation_limit,
+            embeddings=self.embeddings if self.config.ollama.enabled else None,
+        )
         self.personality = PersonalityManager(self.database, self.config.personality.mode)
         self.authentication = Authentication(self.database)
         self.validator = ActionValidator()
         self.parser = IntentParser(self.validator)
         self.planner = Planner(self.validator)
-        self.ollama = OllamaService(self.config.ollama)
-        self.llm = LLMManager(self.config.ollama, self.ollama)
         self.permissions = PermissionManager(self.authentication)
-        files = FileManager(self.config.security)
-        self.knowledge = KnowledgeIndex(self.database, files, OllamaEmbeddings(self.llm, self.config.ollama.embedding_model))
-        self.tasks = TaskStore(self.database)
+        self.files = FileManager(self.config.security)
+        self.knowledge = KnowledgeIndex(self.database, self.files, self.embeddings)
+        self.knowledge_watcher = ThrottledKnowledgeWatcher(self.knowledge)
+        self.tasks = TaskStore(self.database, max_revisions=max(1, self.config.agentic.max_replans))
+        self.scheduler = TaskScheduler(self.database)
+        self.workspaces = WorkspaceManager(self.database, self.config.security.allowed_roots)
+        self.tool_registry = ToolRegistry(self.database)
+        self.agent_registry = AgentRegistry(
+            self.database,
+            max_delegation_depth=self.config.agentic.max_delegation_depth,
+            max_parallel_readonly=self.config.agentic.max_parallel_readonly,
+        )
+        self.tracer = TraceRecorder(self.database)
+        self.assets = OfflineAssetManager(self.database, self.config)
+        self.hardware = HardwareCapabilityService()
+
+        budget = TaskBudget(
+            max_iterations=self.config.agentic.max_iterations,
+            max_steps=self.config.agentic.max_plan_steps,
+            max_duration_seconds=self.config.agentic.max_duration_seconds,
+            max_model_calls=self.config.agentic.max_model_calls,
+            max_tool_calls=self.config.agentic.max_tool_calls,
+            max_replans=self.config.agentic.max_replans,
+            per_tool_timeout_seconds=self.config.agentic.per_tool_timeout_seconds,
+        )
         self.orchestrator = Orchestrator(
             validator=self.validator,
             parser=self.parser,
@@ -65,9 +119,17 @@ class HinataAssistant:
             personality=self.personality,
             permissions=self.permissions,
             apps=AppControl(self.config.applications),
-            files=files,
+            files=self.files,
             knowledge=self.knowledge,
             tasks=self.tasks,
+            workspace_manager=self.workspaces,
+            tool_registry=self.tool_registry,
+            agent_registry=self.agent_registry,
+            tracer=self.tracer,
+            autonomy_mode=self.config.agentic.autonomy_mode,
+            default_budget=budget,
+            quarantine_dir=self.config.data_dir / "quarantine",
+            online_mode_enabled=self.config.security.online_mode_enabled,
             windows=WindowsControl(),
             system=SystemInfo(),
             llm_enabled=self.config.ollama.enabled if llm_enabled is None else llm_enabled,
@@ -80,11 +142,14 @@ class HinataAssistant:
         self.tts = TextToSpeech(self.config.speech)
         self.wake_word = WakeWordDetector(self.config.wake_word)
         self.wake_service = WakeWordService(self.wake_word, self.config.speech.microphone)
+        from hinata.speech.multimodal import LocalVisionAdapter, VoiceDiagnostics
+        self.voice_diagnostics = VoiceDiagnostics(
+            self.config.speech, self.microphone, self.stt, self.tts, self.speaker
+        )
+        self.vision = LocalVisionAdapter(self.files, self.llm)
 
     def _configure_logging(self) -> None:
         root = logging.getLogger("hinata")
-        # HINATA has one composition root per process. Close a prior instance's
-        # handler so Windows can move/delete its private data directory cleanly.
         for existing in list(root.handlers):
             if isinstance(existing, RotatingFileHandler):
                 root.removeHandler(existing)
@@ -98,8 +163,8 @@ class HinataAssistant:
         root.propagate = False
         self._log_handler = handler
 
-    def process_text(self, text: str) -> AssistantResponse:
-        return self.orchestrator.process(text, source="text")
+    def process_text(self, text: str, *, autonomy_mode: str | None = None) -> AssistantResponse:
+        return self.orchestrator.process(text, source="text", autonomy_mode=autonomy_mode)
 
     def process_voice(self, duration_seconds: float = 5.0) -> tuple[VoiceResult, AssistantResponse]:
         voice = self.voice.listen(duration_seconds)
@@ -128,14 +193,23 @@ class HinataAssistant:
             task_id=task_id,
         )
 
+    def reconcile_task(self, task_id: str) -> dict[str, Any]:
+        return self.tasks.reconcile_interrupted_task(
+            task_id, reconciler=self.orchestrator.reviewer.reconcile_single_effect
+        )
+
     def review_task(self, task_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         task = self.tasks.get(task_id)
         if not task or task["state"] != "VERIFYING":
             raise ValueError("Task is not awaiting verification")
-        candidate = {"type": "plan", "objective": task["objective"], "steps": [
-            {"tool": step["tool"], "arguments": json.loads(step["arguments_json"])}
-            for step in task["steps"]
-        ]}
+        candidate = {
+            "type": "plan",
+            "objective": task["objective"],
+            "steps": [
+                {"tool": step["tool"], "arguments": json.loads(step["arguments_json"])}
+                for step in task["steps"]
+            ],
+        }
         plan = self.planner.validate(candidate)
         return task, [asdict(check) for check in self.orchestrator.reviewer.review(plan.steps)]
 
@@ -178,12 +252,17 @@ class HinataAssistant:
     def status(self, *, check_model: bool = True) -> dict[str, Any]:
         import importlib.util
 
+        model_status = self.llm.status() if check_model else {"model": self.config.ollama.model}
         return {
             "version": __import__("hinata").__version__,
+            "schema_version": self.database.schema_version,
             "data_directory": str(self.config.data_dir),
             "database": str(self.config.database_path),
             "log": str(self.config.log_path),
             "allowed_roots": [str(path) for path in self.config.security.allowed_roots],
+            "autonomy_mode": self.orchestrator.autonomy_mode,
+            "offline_policy": self.offline_guard.status(),
+            "encryption_at_rest": self.vault is not None,
             "pin_configured": self.authentication.is_configured,
             "speaker_enrolled": self.speaker.is_enrolled,
             "personality_mode": self.personality.mode.key,
@@ -191,14 +270,29 @@ class HinataAssistant:
             "tts_backend": self.config.speech.tts_backend,
             "optional_packages": {
                 name: importlib.util.find_spec(name) is not None
-                for name in ("PySide6", "faster_whisper", "vosk", "sounddevice", "pyttsx3", "resemblyzer", "openwakeword")
+                for name in (
+                    "PySide6",
+                    "pypdf",
+                    "numpy",
+                    "faster_whisper",
+                    "vosk",
+                    "sounddevice",
+                    "pyttsx3",
+                    "resemblyzer",
+                    "openwakeword",
+                )
             },
-            "model": self.llm.status() if check_model else {"model": self.config.ollama.model},
+            "model": model_status,
             "ollama_connection": self.llm.connect_status(),
+            "hardware_profile": self.hardware.detect(),
+            "agents": self.agent_registry.health_snapshot(),
+            "metrics": self.tracer.metrics_snapshot(),
             "wake_word_enabled": self.config.wake_word.enabled,
         }
 
     def close(self) -> None:
+        self.knowledge_watcher.stop()
+        self.offline_guard.uninstall_socket_guard()
         if self.microphone.recording:
             self.microphone.cancel()
         self.tts.stop()

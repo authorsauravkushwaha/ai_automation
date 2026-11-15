@@ -24,6 +24,41 @@ class IntentParser:
         match = re.fullmatch(r"(?:inspect|analyze) (?:python|code)(?: file)?\s+(.+)", stripped, re.IGNORECASE)
         if match:
             return self._action("code_inspect", {"path": match.group(1)}, text)
+        if re.fullmatch(r"inspect (?:repository|workspace) imports", stripped, re.IGNORECASE):
+            return self._action("inspect_repository_imports", {}, text)
+        if re.fullmatch(r"(?:hardware|gpu|device)\s+profile", stripped, re.IGNORECASE):
+            return self._action("hardware_profile", {}, text)
+        match = re.fullmatch(r"hybrid search(?: knowledge)?(?: for)?\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("knowledge_hybrid_search", {"query": match.group(1)}, text)
+        match = re.fullmatch(r"list (?:directory|folder)\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("list_directory", {"path": match.group(1)}, text)
+        match = re.fullmatch(r"search file content(?: for)?\s+(.+?)(?:\s+in\s+(.+))?", stripped, re.IGNORECASE)
+        if match:
+            c_args: dict[str, Any] = {"query": match.group(1).strip()}
+            if match.group(2):
+                c_args["root"] = match.group(2).strip()
+            return self._action("search_file_content", c_args, text)
+        match = re.fullmatch(r"compare files\s+(\S+)\s+(?:and|with)\s+(\S+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("compare_files", {"first": match.group(1), "second": match.group(2)}, text)
+        if re.fullmatch(r"workspace (?:list|inventory)", stripped, re.IGNORECASE):
+            return self._action("workspace_list", {}, text)
+        match = re.fullmatch(r"workspace read\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("workspace_read", {"path": match.group(1)}, text)
+        match = re.fullmatch(r"workspace search\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("workspace_search", {"query": match.group(1)}, text)
+        if re.fullmatch(r"workspace diff", stripped, re.IGNORECASE):
+            return self._action("workspace_diff", {}, text)
+        if re.fullmatch(r"run workspace linter", stripped, re.IGNORECASE):
+            return self._action("run_linter", {}, text)
+        if re.fullmatch(r"run workspace type checker", stripped, re.IGNORECASE):
+            return self._action("run_type_checker", {}, text)
+        if re.fullmatch(r"run workspace tests", stripped, re.IGNORECASE):
+            return self._action("run_project_tests", {}, text)
         if re.fullmatch(r"(?:list|show) knowledge(?: documents)?", stripped, re.IGNORECASE):
             return self._action("knowledge_list", {}, text)
         match = re.fullmatch(r"(?:index folder|sync knowledge folder)\s+(.+)", stripped, re.IGNORECASE)

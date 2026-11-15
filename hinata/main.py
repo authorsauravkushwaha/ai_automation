@@ -73,16 +73,35 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--no-model-check", action="store_true")
     commands.add_parser("doctor", help="Diagnose resources, local runtime, and optional dependencies")
 
-    model = commands.add_parser("model", help="Inspect or download the configured Ollama model")
-    model.add_argument("operation", choices=["status", "pull"])
+    model = commands.add_parser("model", help="Inspect, profile, or download configured Ollama models")
+    model.add_argument("operation", choices=["status", "pull", "hardware", "benchmark"])
 
-    commands.add_parser("agents", help="Show registered specialist workers and recent activity")
-    tasks = commands.add_parser("tasks", help="Inspect saved plan checkpoints (never resumes execution)")
+    commands.add_parser("agents", help="Show registered specialist agents, manifests, and recent activity")
+    tasks = commands.add_parser("tasks", help="Inspect saved plan checkpoints (never auto-replays execution)")
     tasks.add_argument("id", nargs="?", help="Task ID; omit to list recent tasks")
     task_action = tasks.add_mutually_exclusive_group()
     task_action.add_argument("--cancel", action="store_true", help="Cancel an unapproved plan by ID")
     task_action.add_argument("--verify", action="store_true", help="Review an executed task and record observed evidence")
     task_action.add_argument("--reject", action="store_true", help="Record that an executed task did not meet its objective")
+    task_action.add_argument("--pause", action="store_true", help="Pause a task at a safe non-RUNNING boundary")
+    task_action.add_argument("--resume-paused", action="store_true", help="Resume a PAUSED task if all prior outcomes are known")
+    task_action.add_argument("--reconcile", action="store_true", help="Run read-only crash reconciliation without replaying actions")
+    task_action.add_argument("--timeline", action="store_true", help="Inspect durable trace timeline for a task")
+
+    workspaces = commands.add_parser("workspaces", help="Manage approved coding workspaces and inspect patches")
+    ws_op = workspaces.add_mutually_exclusive_group()
+    ws_op.add_argument("--register", metavar="PATH", help="Approve and register a local coding workspace directory")
+    ws_op.add_argument("--patches", action="store_true", help="List proposed, applied, and reverted coding patches")
+    ws_op.add_argument("--probe-sandbox", action="store_true", help="Verify sandbox network-disabled isolation")
+
+    assets = commands.add_parser("assets", help="Inspect, verify, export, or import air-gapped offline bundles")
+    asset_op = assets.add_mutually_exclusive_group()
+    asset_op.add_argument("--verify", action="store_true", help="Verify SHA-256 digests of registered local assets")
+    asset_op.add_argument("--export-bundle", metavar="TAR_GZ", help="Export registered local assets to an offline bundle")
+    asset_op.add_argument("--import-bundle", metavar="TAR_GZ", help="Import and SHA-256 verify an offline bundle")
+
+    audit = commands.add_parser("audit", help="Inspect or export secret-redacted runtime telemetry and traces")
+    audit.add_argument("--export", metavar="PATH", help="Write redacted audit JSON to file")
 
     memory = commands.add_parser("memory", help="Inspect, export, or delete local memory")
     operation = memory.add_mutually_exclusive_group(required=True)
@@ -138,18 +157,99 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "delete-voice-profile":
             return delete_voice_profile(assistant)
         if args.command == "model":
+            if args.operation == "hardware":
+                print(json.dumps(assistant.hardware.detect(), indent=2))
+                return 0
+            if args.operation == "benchmark":
+                print(json.dumps(assistant.llm.benchmark(), indent=2))
+                return 0
             # status: connect (starting the service if needed) so the report is real.
             report = assistant.llm.ensure_connected()
             print(json.dumps({**report, "tags": assistant.llm.status()}, indent=2))
             return 0
         if args.command == "agents":
             from hinata.agents.workers import WORKERS
-            print(json.dumps({"workers": {name: sorted(worker.allowed_tools) for name, worker in WORKERS.items()},
-                              "planning": "proposal-only bounded replanner",
-                              "review": "read-only postcondition checks and human attestation",
-                              "recent_events": assistant.orchestrator.workers.recent()}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "workers": {name: sorted(worker.allowed_tools) for name, worker in WORKERS.items()},
+                        "specialist_manifests": assistant.agent_registry.list_manifests(),
+                        "agent_health": assistant.agent_registry.health_snapshot(),
+                        "planning": "proposal-only bounded replanner & DAG graph validator",
+                        "review": "read-only postcondition checks and human attestation",
+                        "recent_events": assistant.orchestrator.workers.recent(),
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "workspaces":
+            if args.register:
+                print(json.dumps(assistant.workspaces.register_workspace(args.register), indent=2))
+                return 0
+            if args.probe_sandbox:
+                print(
+                    json.dumps(
+                        assistant.workspaces.sandbox.verify_network_blocked(assistant.config.data_dir),
+                        indent=2,
+                    )
+                )
+                return 0
+            if args.patches:
+                rows = assistant.database.fetch_all(
+                    "SELECT patch_id, workspace_id, title, state, created_at FROM coding_patches ORDER BY created_at DESC LIMIT 50"
+                )
+                print(json.dumps(rows, indent=2))
+                return 0
+            print(json.dumps(assistant.workspaces.list_workspaces(), indent=2))
+            return 0
+        if args.command == "assets":
+            if args.verify:
+                report = assistant.assets.verify_all()
+                print(json.dumps(report, indent=2))
+                return 0 if report["all_valid"] else 1
+            if args.export_bundle:
+                print(json.dumps(assistant.assets.export_bundle(args.export_bundle), indent=2))
+                return 0
+            if args.import_bundle:
+                print(json.dumps(assistant.assets.import_bundle(args.import_bundle), indent=2))
+                return 0
+            print(json.dumps(assistant.assets.readiness_inventory(), indent=2))
+            return 0
+        if args.command == "audit":
+            payload = assistant.tracer.export_audit()
+            if args.export:
+                out_p = Path(args.export).expanduser().resolve()
+                out_p.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                print(f"Redacted audit report saved to: {out_p}")
+                return 0
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
             return 0
         if args.command == "tasks":
+            if args.pause:
+                if not args.id or not assistant.tasks.pause_task(args.id):
+                    print("Task could not be paused (missing, inactive, or step currently RUNNING).", file=sys.stderr)
+                    return 1
+                print(f"Task {args.id} paused at safe boundary.")
+                return 0
+            if args.resume_paused:
+                if not args.id or not assistant.tasks.resume_paused_task(args.id):
+                    print("Task could not be resumed (not PAUSED or contains uncertain step outcomes).", file=sys.stderr)
+                    return 1
+                print(f"Task {args.id} transitioned to RUNNING.")
+                return 0
+            if args.reconcile:
+                if not args.id:
+                    print("A task ID is required.", file=sys.stderr)
+                    return 1
+                print(json.dumps(assistant.reconcile_task(args.id), indent=2, ensure_ascii=False))
+                return 0
+            if args.timeline:
+                if not args.id:
+                    print("A task ID is required.", file=sys.stderr)
+                    return 1
+                print(json.dumps(assistant.tracer.task_timeline(args.id), indent=2, ensure_ascii=False))
+                return 0
             if args.verify or args.reject:
                 if not args.id:
                     print("A task ID is required.", file=sys.stderr)

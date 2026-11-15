@@ -9,6 +9,13 @@ host = "http://127.0.0.1:11434"  # Loopback only; remote AI hosts are rejected.
 model = "qwen2.5:0.5b-instruct-q4_K_M"  # 494M parameters, Q4_K_M, about 398 MB download.
 # Install explicitly while online: ollama pull nomic-embed-text
 embedding_model = "nomic-embed-text"  # Local semantic search; never downloaded automatically.
+# Optional role-specific local model overrides (leave empty to share `model`):
+planner_model = ""
+coding_model = ""
+reviewer_model = ""
+allow_model_fallback = true  # Set strict_model_pin = true to fail closed if `model` is missing.
+strict_model_pin = false
+hardware_profile = "auto"  # auto, conservative_cpu, balanced, or accelerated
 timeout_seconds = 90
 max_tokens = 256
 context_tokens = 2048
@@ -44,6 +51,23 @@ text_extensions = [".txt", ".md", ".log", ".json", ".csv", ".py"]
 max_read_bytes = 1000000
 search_timeout_seconds = 5.0
 search_max_directories = 10000
+encrypt_at_rest = false  # Set true to encrypt sensitive records with a local vault key.
+strict_offline = false   # Set true to install process-wide non-loopback socket blocking.
+online_mode_enabled = false  # Explicit Online Mode remains off by default.
+allowed_online_domains = []
+
+[agentic]
+# SUGGEST_ONLY, APPROVAL_EACH_STEP, APPROVED_PLAN, LOW_RISK_AUTONOMY, or OFFLINE_AUTONOMY
+autonomy_mode = "APPROVED_PLAN"
+max_plan_steps = 12
+max_iterations = 8
+max_duration_seconds = 180.0
+max_model_calls = 10
+max_tool_calls = 16
+max_replans = 2
+per_tool_timeout_seconds = 30.0
+max_delegation_depth = 3
+max_parallel_readonly = 2
 
 [wake_word]
 # Disabled to avoid continuous CPU/RAM use. Requires your own trained Hey HINATA ONNX model.

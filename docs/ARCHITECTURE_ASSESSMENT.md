@@ -71,25 +71,59 @@ its warnings are heuristic and not a security audit. Plan timeouts, richer speci
 and a task dashboard are not implemented. Checkpoints are unencrypted and may
 contain private paths.
 
-## Remaining implementation roadmap
+## Agentic OS runtime increment (v1–v4 schema & phases 1–8)
 
-1. Validate and strengthen optional OS isolation on target platforms, including
-   IPC, spawned applications, attempted-connection diagnostics, explicit online
-   grants, and a real laptop-level disconnected acceptance test. Remove implicit
-   downloads from normal operation and validate all launch paths.
-2. Add a provider protocol, real streaming, capability checks and controlled
-   local-model switching. Test with installed Ollama and cached models.
-3. Extend the bounded plan checkpoints and one-shot revision with recovery and
-   automatic objective-level evidence-based verification. Never replay an
-   interrupted side effect automatically. Expand the limited specialist workers
-   with controlled scheduling, coding capabilities and meaningful delegation.
-4. Introduce hardened tool isolation, schemas, approvals, audit and subprocess
-   limits, followed by adversarial path-race and prompt-injection testing.
-5. Validate real-model semantic accuracy and retrieval-grounded answers; add
-   approved semantic and episodic memory, PDF OCR/page citations, scalable
-   vector indexing and automatic synchronization.
-6. Add model/voice/task/approval/knowledge controls to the UI, hardware-aware
-   presets and local voice language/asset management; test actual target devices.
-7. Pin and audit dependencies, build reproducible releases, perform independent
-   security review and complete all acceptance tests in the requested offline
-   scenario. The existing mocked suite does not substitute for those tests.
+The platform now includes an offline-first agentic runtime built with zero required
+third-party runtime dependencies on the core path:
+
+1. **Versioned SQLite migrations (`v1`–`v4`)** (`hinata/database/migrations.py`):
+   Ordered schema migrations adding structured 5-tier `memory_records` &
+   `memory_revisions`, `tool_idempotency` ledger, `trace_events` observability,
+   `scheduled_jobs`, `coding_workspaces` & `coding_patches`, `offline_assets`
+   SHA-256 inventory, `knowledge_reembed_queue`, and DAG/lease columns on
+   `agent_tasks` and `agent_task_steps`.
+2. **Offline policy guard & SHA-256 asset manager** (`hinata/security/offline_guard.py`,
+   `hinata/core/assets.py`): Process-level socket interception blocking non-loopback
+   egress in `strict_offline` / `offline_default` modes, domain-allowlisted
+   `consented_online` mode, offline child-process env sanitization, and traversal-safe
+   `.tar.gz` asset bundle import/export with SHA-256 digest verification.
+3. **Provider runtime, hardware profiler & role-based model routing**
+   (`hinata/core/providers.py`, `hinata/core/llm_manager.py`): `ModelProvider`
+   protocol, streaming NDJSON generation, `HardwareCapabilityService` tier sizing,
+   `ModelRouter` (`planner_model`, `coding_model`, `reviewer_model`, `strict_model_pin`),
+   `CircuitBreaker`, `BudgetTracker`, request-scoped `CancellationRegistry`, and
+   `ContextManager` token-budget compaction.
+4. **DAG planner, 5 autonomy modes & bounded offline scheduler**
+   (`hinata/core/planner.py`, `hinata/tasks/store.py`, `hinata/tasks/scheduler.py`):
+   `ExecutionPlan` DAG validation (cycle & write-conflict rejection, parallel
+   read-only `topological_batches`, canonical `plan_hash`), 5 autonomy modes
+   (`manual`, `assisted`, `supervised_agent`, `bounded_autonomous`, `read_only_safe`),
+   safe `pause_task` / `resume_paused_task`, non-replaying `reconcile_interrupted_task`,
+   and `TaskScheduler` offline background jobs.
+5. **10-specialist multi-agent coordination & coding workspaces**
+   (`hinata/agents/registry.py`, `hinata/automation/workspace.py`): Typed
+   `AgentManifest` & `AgentMessage` envelopes, delegation depth & cycle prevention,
+   `ResourceLockManager`, independent reviewer consensus, atomic unified-diff/file
+   patch apply & rollback, and `IsolatedSandboxRunner` (Linux `unshare -rn` when
+   available + startup Python sitecustomize socket block, `python -I -B`, stripped env,
+   CPU/memory `RLIMIT`s).
+6. **5-tier structured memory & hybrid structure-aware RAG**
+   (`hinata/core/memory.py`, `hinata/knowledge/`): Working/episodic/semantic/
+   procedural/archival memory with contradiction supersession, provenance, secret
+   blocking, and optional `LocalVault` authenticated envelope encryption; CSV/JSON
+   ingestion, Markdown/heading section chunking, `ThrottledKnowledgeWatcher`, hybrid
+   exact + lexical + vector scoring, and `verify_claim_citations`.
+7. **Desktop Agent Control Center, voice barge-in & honest vision gating**
+   (`hinata/interface/control_center.py`, `hinata/speech/multimodal.py`): 6-tab
+   PySide6 `AgentControlCenterDialog` accessible from `MainWindow`, `VoiceDiagnostics`
+   barge-in TTS interruption, and `LocalVisionAdapter` failing closed unless local
+   Ollama vision models or local `pytesseract` OCR are installed.
+
+## Remaining target-hardware validation roadmap
+
+1. Run physical Windows 11 laptop validation for hidden `ollama serve`, Windows
+   Sandbox `.wsb` boot, SAPI/Piper audio playback, microphone capture, and speaker
+   thresholds under a real 4 GB–8 GB RAM budget.
+2. Perform external cryptographic and OS-level security review (note: `LocalVault`
+   uses standard-library HMAC-CTR authenticated envelopes + Windows DPAPI / POSIX
+   `0600` keys rather than full SQLCipher page encryption).

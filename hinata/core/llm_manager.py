@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
+import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from hinata.config import OllamaConfig
+from hinata.core.errors import CancellationToken, CircuitBreaker
 from hinata.core.ollama_service import (
     DISABLED,
     MODEL_MISSING,
@@ -22,6 +26,12 @@ from hinata.core.ollama_service import (
     UNREACHABLE,
     OllamaService,
     find_ollama_executable,
+)
+from hinata.core.providers import (
+    ContextManager,
+    ModelCapabilities,
+    ModelRouter,
+    StructuredObservation,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -51,14 +61,38 @@ class LLMManager:
         self.base_url = config.host.rstrip("/")
         self._response_lock = threading.Lock()
         self._active_response: Any = None
+        self._active_responses: dict[str, Any] = {}
+        self._concurrency_semaphore = threading.Semaphore(1)
         self._service = service or OllamaService(config)
         # Model chosen at runtime when config.toml leaves ollama.model empty.
         self._resolved_model: str | None = None
+        self._last_model_identity: str = ""
+        self._fallback_events: list[dict[str, Any]] = []
+        self.circuit_breaker = CircuitBreaker(failure_threshold=4, recovery_seconds=20.0)
+        self.router = ModelRouter(
+            config.model,
+            config.embedding_model,
+            role_overrides={
+                "planner": config.planner_model,
+                "coder": config.coding_model,
+                "reviewer": config.reviewer_model,
+            },
+            allow_fallback=bool(config.allow_model_fallback and not config.strict_model_pin),
+        )
+        self.context_manager = ContextManager(config.context_tokens, config.max_tokens)
 
     # ------------------------------------------------------------- connection
     @property
     def service(self) -> OllamaService:
         return self._service
+
+    @property
+    def last_model_identity(self) -> str:
+        return self._last_model_identity
+
+    @property
+    def fallback_events(self) -> list[dict[str, Any]]:
+        return list(self._fallback_events)
 
     def ensure_connected(self, *, force: bool = False) -> dict[str, Any]:
         """Connect to (or start) loopback Ollama; safe to call before any request."""
@@ -74,15 +108,88 @@ class LLMManager:
         self._service.use_base_url(self.base_url)
         return self._service.quick_status()
 
-    def cancel_active_request(self) -> None:
+    def cancel_active_request(self, generation_id: str | None = None) -> None:
         """Close an in-flight local HTTP response to stop waiting for model output."""
         with self._response_lock:
-            response = self._active_response
-        if response is not None:
-            try:
-                response.close()
-            except OSError:
-                pass
+            if generation_id is not None:
+                targets = [self._active_responses.pop(generation_id, None)]
+            else:
+                targets = [self._active_response, *self._active_responses.values()]
+                self._active_responses.clear()
+        for response in targets:
+            if response is not None:
+                try:
+                    response.close()
+                except OSError:
+                    pass
+
+    def list_models(self, *, timeout: int = 3) -> list[dict[str, Any]]:
+        """Public provider-neutral model listing with digest/metadata."""
+        payload = self._request("/api/tags", timeout=timeout)
+        raw = payload.get("models")
+        if not isinstance(raw, list):
+            return []
+        return [item for item in raw if isinstance(item, dict)]
+
+    def embed_texts(self, model: str, texts: list[str]) -> list[list[float]]:
+        """Public provider-neutral embedding call with vector normalization."""
+        if not 1 <= len(texts) <= 8:
+            raise ValueError("Embedding batch must contain 1..8 texts")
+        result = self._request(
+            "/api/embed",
+            {"model": model, "input": texts, "truncate": False, "keep_alive": 0},
+            timeout=self.config.timeout_seconds,
+        )
+        vectors = result.get("embeddings")
+        if not isinstance(vectors, list) or len(vectors) != len(texts):
+            raise OllamaError("Embedding model returned an invalid number of vectors")
+        validated: list[list[float]] = []
+        for vector in vectors:
+            if not isinstance(vector, list) or not 1 <= len(vector) <= 8192:
+                raise OllamaError("Embedding model returned an invalid vector")
+            if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in vector):
+                raise OllamaError("Embedding model returned a non-finite vector")
+            norm = math.sqrt(sum(v * v for v in vector))
+            if not math.isfinite(norm) or norm == 0:
+                raise OllamaError("Embedding model returned a zero or invalid vector")
+            validated.append([float(v / norm) for v in vector])
+        if len({len(v) for v in validated}) != 1:
+            raise OllamaError("Embedding dimensions do not match")
+        return validated
+
+    def capabilities(self, model: str | None = None) -> ModelCapabilities:
+        target = model or self.config.model or "default"
+        lower = target.lower()
+        is_embed = "embed" in lower
+        is_vision = any(tag in lower for tag in ("vl", "vision", "llava", "moondream"))
+        quant = ""
+        if "q4" in lower:
+            quant = "Q4"
+        elif "q8" in lower:
+            quant = "Q8"
+        return ModelCapabilities(
+            model_name=target,
+            provider="ollama_local",
+            quantization=quant,
+            context_length=self.config.context_tokens,
+            supports_json_mode=not is_embed,
+            supports_native_tools=any(k in lower for k in ("qwen2.5", "llama3.1", "llama3.2", "mistral")),
+            supports_streaming=not is_embed,
+            supports_embeddings=is_embed,
+            supports_vision=is_vision,
+            supports_cancellation=True,
+            max_concurrency=1,
+        )
+
+    def unload_model(self, model: str | None = None) -> bool:
+        target = model or self.config.model
+        if not target:
+            return False
+        try:
+            self._request("/api/generate", {"model": target, "keep_alive": 0}, timeout=5)
+            return True
+        except OllamaError:
+            return False
 
     def _request(self, endpoint: str, payload: dict[str, Any] | None = None, timeout: int = 5) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -168,20 +275,39 @@ class LLMManager:
             "host": self.base_url,
         }
 
-    def _prepare_model(self, *, connect: bool, pull_missing: bool) -> tuple[str, dict[str, Any]]:
-        """Ensure a usable model name, connecting or downloading when requested."""
+    def _prepare_model(
+        self,
+        *,
+        connect: bool,
+        pull_missing: bool,
+        role: str = "chat",
+        explicit_fallback_consent: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        """Ensure a usable model name, connecting or downloading when requested.
+
+        Never silently substitutes another local model when a specific model is
+        configured unless ``allow_model_fallback`` or ``explicit_fallback_consent``
+        is enabled, and records every fallback event with digest identity.
+        """
+        if not self.circuit_breaker.allow("ollama_chat"):
+            raise OllamaError("Local model circuit breaker is open after repeated failures; wait or press Reconnect.")
         self._service.use_base_url(self.base_url)
         report = self.ensure_connected() if connect else self._service.last_report()
         if report.get("state") == DISABLED:
             raise OllamaError("The local model is disabled in config.toml")
 
+        raw_models: list[dict[str, Any]] | None
         models: list[str] | None
         try:
-            models = self._model_names(self._request("/api/tags", timeout=3))
+            tags_payload = self._request("/api/tags", timeout=3)
+            raw_list = tags_payload.get("models")
+            raw_models = [m for m in raw_list if isinstance(m, dict)] if isinstance(raw_list, list) else []
+            models = self._model_names(tags_payload)
         except OllamaError as exc:
             # The chat endpoint is the final authority: a partially implemented or
             # still-starting server may reject /api/tags while serving /api/chat.
             LOGGER.debug("Ollama /api/tags probe failed: %s", exc)
+            raw_models = None
             models = None
 
         if models is not None and not models:
@@ -191,38 +317,55 @@ class LLMManager:
             )
         if models is None:
             # Could not enumerate models; let the chat endpoint decide.
-            model = self.active_model([])
-            if not model:
+            wanted_model = self.router.model_for_role(role) or self.active_model([])
+            if not wanted_model:
                 raise ModelUnavailableError(
                     "No local model is installed. Run 'hinata model pull'."
                 )
-            return model, report
+            self._last_model_identity = wanted_model
+            return wanted_model, report
 
-        model = self.active_model(models)
-        if not model:
-            raise ModelUnavailableError(
-                "No local model is installed. Run 'hinata model pull' "
-                "or set ollama.model in config.toml."
+        selection = self.router.resolve(
+            role,
+            raw_models if raw_models is not None else models,
+            explicit_fallback_consent=explicit_fallback_consent,
+        )
+        if selection.resolved_model:
+            if selection.fallback_used:
+                event = {
+                    "role": role,
+                    "requested": selection.requested_model,
+                    "selected": selection.resolved_model,
+                    "digest": selection.digest,
+                    "note": selection.consent_note,
+                    "timestamp": time.time(),
+                }
+                self._fallback_events.append(event)
+                LOGGER.warning("%s", selection.consent_note)
+            self._last_model_identity = (
+                f"{selection.resolved_model}@{selection.digest}"
+                if selection.digest
+                else selection.resolved_model
             )
-        if not self._model_installed(model, models):
-            if pull_missing and self.config.model:
-                installed = self._service.install_model()
-                if installed.get("state") != "ready" or not installed.get("model_installed"):
-                    raise ModelUnavailableError(
-                        f"Could not download {model}: "
-                        f"{installed.get('error') or installed.get('guidance') or 'unknown error'}"
-                    )
-                report = installed
-            elif self.config.model:
-                # The configured model is absent but the PC already has a local one.
-                # Using it keeps chat working instead of failing on a technicality.
-                LOGGER.warning(
-                    "Configured model %s is not downloaded; using the installed model %s",
-                    self.config.model,
-                    models[0],
+            return selection.resolved_model, report
+
+        wanted = selection.requested_model
+        if pull_missing and wanted:
+            installed = self._service.install_model()
+            if installed.get("state") != "ready" or not installed.get("model_installed"):
+                raise ModelUnavailableError(
+                    f"Could not download {wanted}: "
+                    f"{installed.get('error') or installed.get('guidance') or 'unknown error'}"
                 )
-                model = models[0]
-        return model, report
+            self._last_model_identity = wanted
+            return wanted, installed
+
+        available_hint = ", ".join(models[:5])
+        raise ModelUnavailableError(
+            f"Configured model '{wanted}' is not installed locally (available: {available_hint}). "
+            f"Run 'ollama pull {wanted}' during connected setup, or explicitly opt into "
+            f"ollama.allow_model_fallback = true in config.toml."
+        )
 
     def _explain(self, exc: OllamaError, report: dict[str, Any]) -> OllamaError:
         """Attach installer/startup guidance to a failed local request."""
@@ -242,41 +385,130 @@ class LLMManager:
         format: str | None = None,
         keep_alive: int | str = 0,
         num_predict: int | None = None,
+        role: str = "chat",
+        cancel_token: CancellationToken | None = None,
     ) -> str:
-        model, report = self._prepare_model(connect=connect, pull_missing=pull_missing)
-        payload: dict[str, Any] = {
-            "model": model,
-            "stream": False,
-            "keep_alive": keep_alive,  # Release model RAM when the response is complete.
-            "messages": [{"role": "system", "content": system}, *messages],
-            "options": {
-                "temperature": self.config.temperature,
-                "num_predict": self.config.max_tokens if num_predict is None else num_predict,
-                "num_ctx": self.config.context_tokens,
-                "num_thread": self.config.threads,
-            },
-        }
-        if format:
-            payload["format"] = format
-        try:
-            result = self._request("/api/chat", payload, timeout=self.config.timeout_seconds)
-        except OllamaError as exc:
-            # A service that was just restarted (or a model that was unloaded) can
-            # drop the first request; reconnect once before giving up.
-            if not connect:
-                raise self._explain(exc, report) from exc
-            report = self.ensure_connected(force=True)
+        with self._concurrency_semaphore:
+            if cancel_token is not None:
+                cancel_token.check()
+            model, report = self._prepare_model(connect=connect, pull_missing=pull_missing, role=role)
+            payload: dict[str, Any] = {
+                "model": model,
+                "stream": False,
+                "keep_alive": keep_alive,  # Release model RAM when the response is complete.
+                "messages": [{"role": "system", "content": system}, *messages],
+                "options": {
+                    "temperature": self.config.temperature,
+                    "num_predict": self.config.max_tokens if num_predict is None else num_predict,
+                    "num_ctx": self.config.context_tokens,
+                    "num_thread": self.config.threads,
+                },
+            }
+            if format:
+                payload["format"] = format
             try:
                 result = self._request("/api/chat", payload, timeout=self.config.timeout_seconds)
-            except OllamaError as retry_exc:
-                raise self._explain(retry_exc, report) from retry_exc
-        message = result.get("message")
-        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
-            raise OllamaError("Ollama response did not contain assistant text")
-        content = message["content"].strip()
-        if not content:
-            raise OllamaError("Ollama returned an empty response")
-        return content
+            except OllamaError as exc:
+                if not connect:
+                    self.circuit_breaker.record_failure("ollama_chat", str(exc))
+                    raise self._explain(exc, report) from exc
+                report = self.ensure_connected(force=True)
+                try:
+                    result = self._request("/api/chat", payload, timeout=self.config.timeout_seconds)
+                except OllamaError as retry_exc:
+                    self.circuit_breaker.record_failure("ollama_chat", str(retry_exc))
+                    raise self._explain(retry_exc, report) from retry_exc
+            self.circuit_breaker.record_success("ollama_chat")
+            message = result.get("message")
+            if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+                raise OllamaError("Ollama response did not contain assistant text")
+            content = message["content"].strip()
+            if not content:
+                raise OllamaError("Ollama returned an empty response")
+            return content
+
+    def stream_chat(
+        self,
+        messages: list[dict[str, str]],
+        system: str,
+        *,
+        on_token: Callable[[str], None] | None = None,
+        connect: bool = True,
+        format: str | None = None,
+        num_predict: int | None = None,
+        role: str = "chat",
+        cancel_token: CancellationToken | None = None,
+        generation_id: str | None = None,
+    ) -> Iterator[str]:
+        """End-to-end streaming completion with generation ID and token-level cancellation."""
+        gen_id = generation_id or f"gen-{int(time.monotonic() * 1000)}"
+        with self._concurrency_semaphore:
+            if cancel_token is not None:
+                cancel_token.check()
+                cancel_token.on_cancel(lambda: self.cancel_active_request(gen_id))
+            model, report = self._prepare_model(connect=connect, pull_missing=False, role=role)
+            payload: dict[str, Any] = {
+                "model": model,
+                "stream": True,
+                "keep_alive": 0,
+                "messages": [{"role": "system", "content": system}, *messages],
+                "options": {
+                    "temperature": self.config.temperature,
+                    "num_predict": self.config.max_tokens if num_predict is None else num_predict,
+                    "num_ctx": self.config.context_tokens,
+                    "num_thread": self.config.threads,
+                },
+            }
+            if format:
+                payload["format"] = format
+            data = json.dumps(payload).encode("utf-8")
+            request = urllib.request.Request(
+                self.base_url + "/api/chat",
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                response = self._opener.open(request, timeout=self.config.timeout_seconds)
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+                self.circuit_breaker.record_failure("ollama_chat", str(exc))
+                raise self._explain(
+                    OllamaError(f"Cannot reach local Ollama at {self.base_url}: {exc}"),
+                    report,
+                ) from exc
+            with self._response_lock:
+                self._active_responses[gen_id] = response
+                self._active_response = response
+            try:
+                with response:
+                    for raw_line in response:
+                        if cancel_token is not None and cancel_token.is_cancelled:
+                            break
+                        if not raw_line or not raw_line.strip():
+                            continue
+                        chunk_obj = json.loads(raw_line.decode("utf-8"))
+                        msg = chunk_obj.get("message")
+                        if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                            token = msg["content"]
+                            if token:
+                                if on_token is not None:
+                                    on_token(token)
+                                yield token
+                        if chunk_obj.get("done"):
+                            break
+                self.circuit_breaker.record_success("ollama_chat")
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise OllamaError("Ollama returned an invalid streaming chunk") from exc
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+                if cancel_token is not None and cancel_token.is_cancelled:
+                    return
+                self.circuit_breaker.record_failure("ollama_chat", str(exc))
+                raise OllamaError(f"Streaming connection interrupted: {exc}") from exc
+            finally:
+                with self._response_lock:
+                    self._active_responses.pop(gen_id, None)
+                    if self._active_response is response:
+                        self._active_response = None
 
     def complete(
         self,
@@ -288,21 +520,24 @@ class LLMManager:
         *,
         connect: bool = True,
         pull_missing: bool = False,
+        role: str = "chat",
+        retrieved_memories: list[dict[str, Any]] | None = None,
+        observations: list[StructuredObservation] | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> str:
         preference_text = "; ".join(f"{row['key']}={row['value']}" for row in preferences[:20])
-        system = f"""You are HINATA, a local-first personal assistant running on the owner's Windows laptop.
+        base_system = f"""You are HINATA, a local-first personal assistant running on the owner's Windows laptop.
 All processing is local. Use this response style: {personality_instruction}
 Be honest about uncertainty; do not claim human feelings or claim an action succeeded before tool verification.
 Return ONE JSON object and nothing else. Never output Markdown.
 Keep "content" under 80 words so the object always finishes.
 Select one of these forms:
 {{"type":"tool","tool":"TOOL_NAME","arguments":{{}}}}
-{{"type":"plan","objective":"desired result","steps":[{{"tool":"TOOL_NAME","arguments":{{}}}}]}}
+{{"type":"plan","objective":"desired result","steps":[{{"step_id":"step_1","tool":"TOOL_NAME","arguments":{{}},"depends_on":[]}}]}}
 {{"type":"chat","content":"helpful response"}}
 {{"type":"clarify","content":"one specific question"}}
 Available tools and exact argument rules: {json.dumps(schemas, separators=(',', ':'))}
-Plans are limited to five validated low-impact steps and require owner approval before any step runs.
-Plan steps may use only code_inspect, open_application, open_folder, search_files, create_folder, read_text_file, volume, system_info, memory_search, list_preferences, or set_personality_mode.
+Plans are bounded, dependency-validated graphs and require owner approval or an approved low-risk autonomy policy before steps run.
 Rules:
 - Use a tool only when the user requests an action it can actually perform.
 - Never invent tools, arguments, paths, command lines, or action results.
@@ -313,21 +548,74 @@ Rules:
 - Approved user preferences: {preference_text or 'none'}
 - Voice and speaker scores are not authentication. Sensitive tools require separate approval.
 """
-        messages = [
-            {"role": str(row["role"]), "content": str(row["content"])[:2000]}
-            for row in history[-8:]
-            if row.get("role") in {"user", "assistant"}
-        ]
-        if not messages or messages[-1].get("content") != user_text:
-            messages.append({"role": "user", "content": user_text})
+        system, messages, _audit = self.context_manager.assemble(
+            system_prompt=base_system,
+            user_text=user_text,
+            history=history,
+            retrieved_memories=retrieved_memories,
+            observations=observations,
+        )
         # JSON mode keeps a small model from wrapping its answer in prose.  Some
         # builds ignore the flag, so parse_llm_plan still scans for the object.
         try:
             return self.chat(
-                messages, system, connect=connect, pull_missing=pull_missing, format="json"
+                messages,
+                system,
+                connect=connect,
+                pull_missing=pull_missing,
+                format="json",
+                role=role,
+                cancel_token=cancel_token,
             )
         except OllamaError as exc:
             # Older builds reject the "format" field; retry once without it.
             if "format" not in str(exc).lower() or isinstance(exc, ModelUnavailableError):
                 raise
-            return self.chat(messages, system, connect=connect, pull_missing=pull_missing)
+            return self.chat(
+                messages,
+                system,
+                connect=connect,
+                pull_missing=pull_missing,
+                role=role,
+                cancel_token=cancel_token,
+            )
+
+    def benchmark(self, prompt: str = "Reply with JSON: {\"ok\": true}") -> dict[str, Any]:
+        """Run a lightweight local latency and token-throughput benchmark against loopback Ollama."""
+        started = time.monotonic()
+        first_token_ms: float | None = None
+        chunks: list[str] = []
+
+        def _on_tok(piece: str) -> None:
+            nonlocal first_token_ms
+            if first_token_ms is None:
+                first_token_ms = round((time.monotonic() - started) * 1000.0, 2)
+            chunks.append(piece)
+
+        try:
+            list(
+                self.stream_chat(
+                    [{"role": "user", "content": prompt}],
+                    "Return a short JSON reply.",
+                    on_token=_on_tok,
+                    num_predict=32,
+                )
+            )
+            elapsed_ms = round((time.monotonic() - started) * 1000.0, 2)
+            full_text = "".join(chunks)
+            est_tokens = max(1, len(full_text) // 4)
+            tps = round(est_tokens / max(0.001, elapsed_ms / 1000.0), 2)
+            return {
+                "available": True,
+                "model_identity": self._last_model_identity,
+                "time_to_first_token_ms": first_token_ms or elapsed_ms,
+                "total_latency_ms": elapsed_ms,
+                "estimated_output_tokens": est_tokens,
+                "estimated_tokens_per_second": tps,
+            }
+        except OllamaError as exc:
+            return {
+                "available": False,
+                "error": str(exc),
+                "model_identity": self.config.model,
+            }

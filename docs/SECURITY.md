@@ -35,7 +35,8 @@ Allow-list only applications and roots you intend HINATA to control. Adding a wh
 
 ## Data at rest
 
-- SQLite stores conversations, commands, task results, preferences, and settings locally. It is **not an encrypted database**. Use Windows device encryption/BitLocker and a protected Windows account for stronger at-rest protection.
+- SQLite stores conversations, commands, task results, preferences, and settings locally. By default SQLite rows are plaintext; when `security.encrypt_at_rest = true` is enabled in `config.toml`, structured memory values and encrypted JSON backups are sealed with `LocalVault` authenticated envelopes (`HMAC-SHA256` encrypt-then-MAC over PBKDF2-derived keys wrapped by Windows DPAPI or POSIX `0600` keyfiles). SQLite table/index metadata itself is not full-database SQLCipher encryption—use Windows BitLocker/device encryption and a protected OS account for full-disk protection.
+- Secret patterns (API keys, private keys, bearer tokens, GitHub/AWS/OpenAI/Slack tokens) are detected by `hinata.security.redaction`: plaintext secrets are blocked from unencrypted persistent memory storage and scrubbed automatically from `TraceRecorder` logs and audit exports.
 - PINs are stored as PBKDF2-HMAC-SHA256 hashes with random salts and constant-time digest comparison. Plain PINs are not written to the database or logs.
 - Memory JSON exports deliberately exclude settings/PIN material, but can contain private conversations and preferences. Protect/delete exports appropriately.
 - Voice embeddings are protected with the current Windows user's DPAPI keys. Owner-only ACLs are applied best-effort to private paths. On non-Windows development systems, protection is owner-only filesystem permissions rather than DPAPI.
@@ -45,6 +46,11 @@ Allow-list only applications and roots you intend HINATA to control. Adding a wh
 ## Network behavior
 
 The only assistant runtime endpoint is the configured Ollama URL, restricted to `127.0.0.1`, `localhost`, or `::1` over plain HTTP. The Ollama client ignores environment proxies and refuses HTTP redirects. HINATA has no analytics, crash reporter, cloud speech, cloud TTS, or remote-AI fallback.
+
+In addition, `OfflineGuard` (`hinata.security.offline_guard`) enforces runtime egress policy in Python:
+- When `security.strict_offline = true` (or `online_mode_enabled = false`), non-loopback `socket.socket.connect` / `connect_ex` calls inside the HINATA process fail closed with `OfflinePolicyError`, and child subprocesses receive proxy-stripped offline environment flags (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `PIP_NO_INDEX=1`).
+- Coding workspace tests executed through `IsolatedSandboxRunner` run inside `unshare -rn` on supported Linux kernels and inject a startup `sitecustomize.py` socket guard blocking all outbound network connections inside the Python test runner.
+- Note that external native binaries (such as a separate host `ollama` daemon or launched desktop apps) are outside Python's in-process socket hook unless launched inside the OS namespace / Windows Sandbox wrapper.
 
 Internet is used by explicit setup/download operations (`pip`, `winget`, `ollama pull`, initial faster-whisper model preparation) and by any separate manual model download. Normal faster-whisper transcription requires cached model files and does not initiate a download; use `hinata setup-speech` explicitly to prepare the model. Once models are cached, normal assistant operations are offline. Disabling Ollama does not disable local deterministic tools.
 

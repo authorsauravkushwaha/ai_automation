@@ -18,6 +18,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "knowledge_sync": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
     "knowledge_index_semantic": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
     "knowledge_semantic_search": {"required": ["query"], "properties": {"query": ("string", 1, 200), "limit": ("integer", 1, 10)}},
+    "knowledge_hybrid_search": {"required": ["query"], "properties": {"query": ("string", 1, 200), "limit": ("integer", 1, 10)}},
     "knowledge_answer": {"required": ["query"], "properties": {"query": ("string", 1, 200)}},
     "knowledge_index": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
     "knowledge_remove": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
@@ -26,7 +27,19 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "close_application": {"required": ["name"], "properties": {"name": ("string", 1, 64)}},
     "open_folder": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
     "open_file": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
+    "list_directory": {
+        "required": [],
+        "properties": {"path": ("string", 0, 1024), "max_entries": ("integer", 1, 200)},
+    },
     "search_files": {
+        "required": ["query"],
+        "properties": {
+            "query": ("string", 1, 200),
+            "root": ("string", 0, 1024),
+            "max_results": ("integer", 1, 50),
+        },
+    },
+    "search_file_content": {
         "required": ["query"],
         "properties": {
             "query": ("string", 1, 200),
@@ -39,7 +52,38 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "required": ["path"],
         "properties": {"path": ("string", 1, 1024), "max_chars": ("integer", 1, 20000)},
     },
-    "type_text": {"required": ["text"], "properties": {"text": ("string", 1, 2000)}},
+    "write_text_file": {
+        "required": ["path", "content"],
+        "properties": {
+            "path": ("string", 1, 1024),
+            "content": ("string", 0, 100000),
+            "overwrite": ("boolean",),
+        },
+    },
+    "copy_file": {
+        "required": ["source", "destination"],
+        "properties": {"source": ("string", 1, 1024), "destination": ("string", 1, 1024)},
+    },
+    "move_file": {
+        "required": ["source", "destination"],
+        "properties": {"source": ("string", 1, 1024), "destination": ("string", 1, 1024)},
+    },
+    "compare_files": {
+        "required": ["first", "second"],
+        "properties": {"first": ("string", 1, 1024), "second": ("string", 1, 1024)},
+    },
+    "archive_files": {
+        "required": ["source", "archive_path"],
+        "properties": {"source": ("string", 1, 1024), "archive_path": ("string", 1, 1024)},
+    },
+    "quarantine_delete_file": {
+        "required": ["path"],
+        "properties": {"path": ("string", 1, 1024)},
+    },
+    "type_text": {
+        "required": ["text"],
+        "properties": {"text": ("string", 1, 2000), "target_window": ("string", 0, 200)},
+    },
     "volume": {
         "required": ["action"],
         "properties": {
@@ -48,6 +92,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         },
     },
     "system_info": {"required": [], "properties": {}},
+    "hardware_profile": {"required": [], "properties": {}},
     "memory_search": {
         "required": ["query"],
         "properties": {"query": ("string", 1, 200), "limit": ("integer", 1, 50)},
@@ -65,7 +110,80 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "clear_memory": {
         "required": ["scope"],
-        "properties": {"scope": ("enum", ["conversations", "commands", "preferences", "all"])},
+        "properties": {
+            "scope": (
+                "enum",
+                [
+                    "conversations",
+                    "commands",
+                    "preferences",
+                    "working",
+                    "episodic",
+                    "semantic",
+                    "procedural",
+                    "project",
+                    "all",
+                ],
+            )
+        },
+    },
+    # Sandboxed coding workspace tools
+    "workspace_list": {
+        "required": [],
+        "properties": {"workspace": ("string", 0, 512), "max_files": ("integer", 1, 500)},
+    },
+    "workspace_read": {
+        "required": ["path"],
+        "properties": {
+            "path": ("string", 1, 1024),
+            "workspace": ("string", 0, 512),
+            "max_chars": ("integer", 1, 50000),
+        },
+    },
+    "workspace_search": {
+        "required": ["query"],
+        "properties": {
+            "query": ("string", 1, 200),
+            "workspace": ("string", 0, 512),
+            "max_results": ("integer", 1, 50),
+        },
+    },
+    "workspace_diff": {
+        "required": [],
+        "properties": {"workspace": ("string", 0, 512)},
+    },
+    "workspace_propose_patch": {
+        "required": ["path", "new_content"],
+        "properties": {
+            "path": ("string", 1, 1024),
+            "new_content": ("string", 0, 150000),
+            "title": ("string", 1, 200),
+            "workspace": ("string", 0, 512),
+        },
+    },
+    "workspace_apply_patch": {
+        "required": ["patch_id"],
+        "properties": {"patch_id": ("string", 4, 64)},
+    },
+    "workspace_revert_patch": {
+        "required": ["patch_id"],
+        "properties": {"patch_id": ("string", 4, 64)},
+    },
+    "run_project_tests": {
+        "required": [],
+        "properties": {"workspace": ("string", 0, 512), "target": ("string", 0, 256)},
+    },
+    "run_linter": {
+        "required": [],
+        "properties": {"workspace": ("string", 0, 512)},
+    },
+    "run_type_checker": {
+        "required": [],
+        "properties": {"workspace": ("string", 0, 512)},
+    },
+    "inspect_repository_imports": {
+        "required": [],
+        "properties": {"workspace": ("string", 0, 512)},
     },
 }
 
@@ -95,7 +213,7 @@ class ActionValidator:
                     raise ValidationError(f"{key} must be a string of length {rule[1]}..{rule[2]}")
                 if "\x00" in value:
                     raise ValidationError(f"{key} contains a null byte")
-                cleaned = value.strip() if key != "text" else value
+                cleaned = value.strip() if key not in {"text", "content", "new_content"} else value
                 if len(cleaned) < rule[1]:
                     raise ValidationError(f"{key} must not be empty or whitespace")
                 clean[key] = cleaned
@@ -104,6 +222,10 @@ class ActionValidator:
                     raise ValidationError(f"{key} must be an integer")
                 if not rule[1] <= value <= rule[2]:
                     raise ValidationError(f"{key} must be between {rule[1]} and {rule[2]}")
+                clean[key] = value
+            elif rule[0] == "boolean":
+                if not isinstance(value, bool):
+                    raise ValidationError(f"{key} must be a boolean")
                 clean[key] = value
             elif rule[0] == "enum":
                 if value not in rule[1]:

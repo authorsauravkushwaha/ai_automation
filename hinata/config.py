@@ -26,6 +26,12 @@ class OllamaConfig:
     host: str = "http://127.0.0.1:11434"
     model: str = "qwen2.5:0.5b-instruct-q4_K_M"
     embedding_model: str = "nomic-embed-text"
+    planner_model: str = ""
+    coding_model: str = ""
+    reviewer_model: str = ""
+    allow_model_fallback: bool = True
+    strict_model_pin: bool = False
+    hardware_profile: str = "auto"  # auto, conservative_cpu, balanced, accelerated
     timeout_seconds: int = 90
     max_tokens: int = 256
     context_tokens: int = 2048
@@ -49,10 +55,18 @@ class OllamaConfig:
             raise ConfigError("ollama.host must be a plain HTTP loopback URL")
         # An empty model means "use whichever model is already present locally",
         # which keeps a fresh install usable before the configured model downloads.
-        if len(self.model) > 150 or ("\x00" in self.model) or self.model != self.model.strip():
-            raise ConfigError("ollama.model must be a local model name of at most 150 characters")
+        for label, model_val in (
+            ("ollama.model", self.model),
+            ("ollama.planner_model", self.planner_model),
+            ("ollama.coding_model", self.coding_model),
+            ("ollama.reviewer_model", self.reviewer_model),
+        ):
+            if not isinstance(model_val, str) or len(model_val) > 150 or ("\x00" in model_val) or model_val != model_val.strip():
+                raise ConfigError(f"{label} must be a local model name of at most 150 characters")
         if not isinstance(self.embedding_model, str) or not self.embedding_model or len(self.embedding_model) > 150 or self.embedding_model != self.embedding_model.strip() or "\x00" in self.embedding_model:
             raise ConfigError("ollama.embedding_model must be a local model name of at most 150 characters")
+        if self.hardware_profile not in {"auto", "conservative_cpu", "balanced", "accelerated"}:
+            raise ConfigError("ollama.hardware_profile must be auto, conservative_cpu, balanced, or accelerated")
         if not 1 <= self.timeout_seconds <= 600:
             raise ConfigError("ollama.timeout_seconds must be between 1 and 600")
         if not 16 <= self.max_tokens <= 4096:
@@ -105,6 +119,10 @@ class SecurityConfig:
     max_read_bytes: int = 1_000_000
     search_timeout_seconds: float = 5.0
     search_max_directories: int = 10_000
+    encrypt_at_rest: bool = False
+    strict_offline: bool = False
+    online_mode_enabled: bool = False
+    allowed_online_domains: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
         if not self.allowed_roots:
@@ -119,6 +137,51 @@ class SecurityConfig:
             raise ConfigError("security.max_read_bytes must be between 1 and 10000000")
         if not 0.1 <= self.search_timeout_seconds <= 30:
             raise ConfigError("security.search_timeout_seconds must be between 0.1 and 30")
+        if self.strict_offline and self.online_mode_enabled:
+            raise ConfigError("security.strict_offline and security.online_mode_enabled cannot both be true")
+
+
+@dataclass(slots=True)
+class AgenticConfig:
+    autonomy_mode: str = "APPROVED_PLAN"
+    max_plan_steps: int = 12
+    max_iterations: int = 8
+    max_duration_seconds: float = 180.0
+    max_model_calls: int = 10
+    max_tool_calls: int = 16
+    max_replans: int = 2
+    per_tool_timeout_seconds: float = 30.0
+    max_delegation_depth: int = 3
+    max_parallel_readonly: int = 2
+
+    def validate(self) -> None:
+        valid_modes = {
+            "SUGGEST_ONLY",
+            "APPROVAL_EACH_STEP",
+            "APPROVED_PLAN",
+            "LOW_RISK_AUTONOMY",
+            "OFFLINE_AUTONOMY",
+        }
+        if self.autonomy_mode not in valid_modes:
+            raise ConfigError(f"agentic.autonomy_mode must be one of: {', '.join(sorted(valid_modes))}")
+        if not 1 <= self.max_plan_steps <= 32:
+            raise ConfigError("agentic.max_plan_steps must be between 1 and 32")
+        if not 1 <= self.max_iterations <= 32:
+            raise ConfigError("agentic.max_iterations must be between 1 and 32")
+        if not 1.0 <= self.max_duration_seconds <= 3600.0:
+            raise ConfigError("agentic.max_duration_seconds must be between 1 and 3600")
+        if not 1 <= self.max_model_calls <= 50:
+            raise ConfigError("agentic.max_model_calls must be between 1 and 50")
+        if not 1 <= self.max_tool_calls <= 64:
+            raise ConfigError("agentic.max_tool_calls must be between 1 and 64")
+        if not 0 <= self.max_replans <= 5:
+            raise ConfigError("agentic.max_replans must be between 0 and 5")
+        if not 1.0 <= self.per_tool_timeout_seconds <= 300.0:
+            raise ConfigError("agentic.per_tool_timeout_seconds must be between 1 and 300")
+        if not 1 <= self.max_delegation_depth <= 5:
+            raise ConfigError("agentic.max_delegation_depth must be between 1 and 5")
+        if not 1 <= self.max_parallel_readonly <= 4:
+            raise ConfigError("agentic.max_parallel_readonly must be between 1 and 4")
 
 
 @dataclass(slots=True)
@@ -171,6 +234,7 @@ class HinataConfig:
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
+    agentic: AgenticConfig = field(default_factory=AgenticConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
     interface: InterfaceConfig = field(default_factory=InterfaceConfig)
     personality: PersonalityConfig = field(default_factory=PersonalityConfig)
@@ -182,6 +246,7 @@ class HinataConfig:
         self.ollama.validate()
         self.speech.validate()
         self.security.validate()
+        self.agentic.validate()
         self.personality.validate()
         self.memory.validate()
         if not self.applications:
@@ -293,7 +358,7 @@ def load_config(path: str | Path | None = None) -> HinataConfig:
             raise ConfigError(f"Cannot read {config_path}: {exc}") from exc
 
     known = {
-        "data_dir", "ollama", "speech", "security", "wake_word", "interface",
+        "data_dir", "ollama", "speech", "security", "agentic", "wake_word", "interface",
         "personality", "memory", "applications",
     }
     unknown = set(raw) - known
@@ -317,6 +382,7 @@ def load_config(path: str | Path | None = None) -> HinataConfig:
         ollama=_section(OllamaConfig, raw.get("ollama", {}), "ollama"),
         speech=_section(SpeechConfig, raw.get("speech", {}), "speech"),
         security=_section(SecurityConfig, security_values, "security"),
+        agentic=_section(AgenticConfig, raw.get("agentic", {}), "agentic"),
         wake_word=_section(WakeWordConfig, raw.get("wake_word", {}), "wake_word"),
         interface=_section(InterfaceConfig, raw.get("interface", {}), "interface"),
         personality=_section(PersonalityConfig, raw.get("personality", {}), "personality"),

@@ -421,37 +421,49 @@ setup.ps1 / setup.cmd       one-command Windows bootstrap
 
 The core uses only the Python standard library. Optional AI/GUI packages are lazy-loaded so `hinata --no-llm` stays lightweight. HINATA is released under [MIT](LICENSE); third-party code/model notices are in [THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).
 
-### Specialist workers
+### Specialist agents & coding workspaces
 
-The orchestrator routes validated, authorized tool actions through fixed research,
-read-only coding, memory, and execution workers; each has an explicit tool allowlist
-and records a local activity event. Use `inspect code Documents/script.py` to parse
-an approved-root Python file without executing it. It reports syntax, imports,
-definitions and a few heuristic warnings—not a security audit. A proposal-only
-replanner and a read-only reviewer are separate components. These deterministic
-workers are not independent autonomous AI personas: coding does not yet write code
-or run tests, and specialist scheduling and open-ended agent communication are not
-implemented. `hinata agents` lists the permitted tools and recent events.
+The orchestrator coordinates 10 specialized local agents (`orchestrator`,
+`planner`, `research`, `coding`, `reviewer`, `memory`, `execution`, `document`,
+`system_monitor`, and `voice`) via `hinata.agents.registry`.
+Every agent has an explicit tool allowlist, typed `AgentMessage` provenance,
+bounded delegation depth, cycle detection, resource locks, and independent
+reviewer dispute resolution:
 
-### Inspecting approved plans
+- Use `inspect code Documents/script.py` for read-only AST inspection.
+- Use `register workspace Documents/myrepo` to register a local coding workspace,
+  propose diffs, apply/revert patches atomically, and run unit tests inside a
+  bounded, network-disabled subprocess sandbox (`hinata workspaces`, `hinata workspaces --patches`).
+- Use `hinata agents` to view all 10 specialist manifests, permitted tools, and
+  recent coordination activity.
 
-Plans proposed by the local model are saved before approval. Their exact steps
-must match the preview and are claimed once when approved. Inspect recent plans
-or a specific task without starting or resuming anything:
+### Inspecting plans, checkpoints, offline assets, and audit logs
+
+Plans proposed by the local model use a cycle-checked DAG (`ExecutionPlan` /
+`PlanNode`) that groups independent read-only steps into parallel waves while
+binding interactive approval to the canonical SHA-256 `plan_hash`. Inspect tasks,
+hardware profiles, offline asset SHA-256 bundles, and redacted trace timelines:
 
 ```text
 hinata tasks
 hinata tasks TASK_ID
+hinata tasks TASK_ID --timeline
+hinata tasks TASK_ID --pause
+hinata tasks TASK_ID --resume-paused
+hinata tasks TASK_ID --reconcile
 hinata tasks TASK_ID --cancel
 hinata tasks TASK_ID --verify
 hinata tasks TASK_ID --reject
-hinata agents
+hinata model hardware
+hinata model benchmark
+hinata assets --verify
+hinata audit
 ```
 
-`--cancel` only cancels a plan still awaiting approval. An interrupted `RUNNING`
-step has an **unknown outcome**: it might already have changed the system. It is
-never replayed automatically. Inspect the target manually and start a new plan
-if appropriate. Emergency stop remains cooperative and an in-flight action may
+`--cancel` only cancels a plan still awaiting approval. `--pause` pauses an
+active task at a safe boundary (never mid-RUNNING step). An interrupted `RUNNING`
+step has an **unknown outcome**: `--reconcile` inspects lease liveness and flags
+uncertain checkpoints without ever replaying side effects automatically. Emergency stop remains cooperative and an in-flight action may
 finish. Successful tool returns normally leave the task in `VERIFYING`, not
 `COMPLETED`. A narrow exception is an exact request `ensure folder PATH exists`
 (with a whitespace-free path) and a single approved create-folder step targeting

@@ -30,6 +30,7 @@ from hinata.core.assistant import HinataAssistant
 from hinata.core.types import AssistantResponse
 from hinata.interface.canvas import OrbLogo, SceneCanvas
 from hinata.interface.components import ConversationView, StatusPill, Worker
+from hinata.interface.control_center import AgentControlCenterDialog
 from hinata.interface.dialogs import EnrollmentDialog, MemoryDialog, SettingsDialog, StatusDialog
 from hinata.interface.styles import STYLE_SHEET
 from hinata.speech.voice_pipeline import VoiceResult
@@ -117,10 +118,14 @@ class MainWindow(QMainWindow):
         self.reconnect_button.setToolTip("Start the local Ollama service and check the local model")
         self.reconnect_button.clicked.connect(self.reconnect_ollama)
         header_layout.addWidget(self.reconnect_button)
+        control_button = QPushButton("Agent center")
+        control_button.setToolTip("Inspect tasks, plan graphs, specialist agents, workspaces, RAG, and security")
+        control_button.clicked.connect(self.open_control_center)
         status_button = QPushButton("System status")
         status_button.clicked.connect(self.open_status)
         settings_button = QPushButton("Settings")
         settings_button.clicked.connect(self.open_settings)
+        header_layout.addWidget(control_button)
         header_layout.addWidget(status_button)
         header_layout.addWidget(settings_button)
         outer.addWidget(header)
@@ -582,6 +587,9 @@ class MainWindow(QMainWindow):
         dialog = MemoryDialog(self.assistant, self)
         dialog.actionRequested.connect(self.submit_text)
         dialog.exec()
+
+    def open_control_center(self) -> None:
+        AgentControlCenterDialog(self.assistant, self).exec()
 
     def open_enrollment(self) -> None:
         if self.pending_tasks or self.assistant.microphone.recording:
