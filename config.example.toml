@@ -83,7 +83,7 @@ cooldown_seconds = 2.0
 [interface]
 dark_theme = true
 start_minimized = false
-speak_responses = false
+speak_responses = true  # Speak replies to typed and voice requests; can be turned off in Settings.
 
 [memory]
 # Conversation messages kept locally; older messages are pruned when a new one is saved.

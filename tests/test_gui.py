@@ -53,7 +53,7 @@ class DesktopTests(unittest.TestCase):
         self.assertIsNotNone(self.window.listening_pill)
         self.assertIsNotNone(self.window.processing_pill)
         self.assertIsNotNone(self.window.speaking_pill)
-        self.assertEqual(self.window.mode_combo.count(), 5)
+        self.assertEqual(self.window.mode_combo.count(), 6)
         self.assertEqual(self.window.stop_button.text(), "Emergency stop")
 
     def test_task_review_requires_user_confirmation_and_evidence(self) -> None:
@@ -63,6 +63,7 @@ class DesktopTests(unittest.TestCase):
             '{"type":"plan","objective":"Make folder",'
             '"steps":[{"tool":"create_folder","arguments":{"path":"Documents/test-review"}}]}'
         )
+        self.window.speak_responses = False  # This test verifies review, not the audio backend.
         proposed = self.assistant.process_text("please prepare the workspace")
         result = self.assistant.execute_plan(proposed.plan_actions, task_id=proposed.data["task_id"])
         task_id = result.data["task_id"]
@@ -80,8 +81,32 @@ class DesktopTests(unittest.TestCase):
         self.assertIn("<img src=x onerror=alert(1)>", self.window.conversation.toPlainText())
         self.assertNotIn("<img src=x onerror=alert(1)>", self.window.conversation.toHtml())
 
+    def test_typed_and_voice_replies_speak_once_and_do_not_read_approvals(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from hinata.core.types import ActionRequest, AssistantResponse
+
+        voice = SimpleNamespace(speaker_match=True, speaker_required=False)
+        with patch.object(self.window, "speak_text") as speak:
+            self.window.handle_response(AssistantResponse("Typed answer", True))
+            speak.assert_called_once_with("Typed answer")
+            speak.reset_mock()
+            self.window.handle_response(AssistantResponse("Voice answer", True), voice=voice)
+            speak.assert_called_once_with("Voice answer")
+        from PySide6.QtWidgets import QMessageBox
+        with patch.object(self.window, "speak_text") as speak, patch(
+            "hinata.interface.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.No,
+        ):
+            self.window.handle_response(AssistantResponse(
+                "secret argument", False, "confirmation_required",
+                ActionRequest("close_application", {"name": "secret.exe"}),
+            ))
+            self.assertEqual(speak.call_count, 2)
+            self.assertNotIn("secret", " ".join(call.args[0] for call in speak.call_args_list))
+
     def test_settings_default_to_local_values(self) -> None:
-        self.assertFalse(self.window.speak_responses)
+        self.assertTrue(self.window.speak_responses)
         self.assertFalse(self.assistant.orchestrator.llm_enabled)
 
 

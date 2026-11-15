@@ -216,7 +216,7 @@ class WakeWordConfig:
 class InterfaceConfig:
     dark_theme: bool = True
     start_minimized: bool = False
-    speak_responses: bool = False
+    speak_responses: bool = True
 
 
 @dataclass(slots=True)

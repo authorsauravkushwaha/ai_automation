@@ -291,7 +291,7 @@ else {
 }
 
 Write-Host "[7/7] Running a real text-pipeline smoke test..."
-Invoke-Native $VenvPython @("-m", "hinata", "--no-llm", "ask", "system", "info")
+Invoke-Native $VenvPython @("-m", "hinata", "--no-llm", "--no-speak", "ask", "system", "info")
 if (-not $SkipOllama -and -not $Lite) {
     # Prove the automatic connection end to end before the owner sees the window.
     Write-Host "Checking the local model connection..."

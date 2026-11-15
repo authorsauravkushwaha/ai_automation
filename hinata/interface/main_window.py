@@ -33,6 +33,7 @@ from hinata.interface.components import ConversationView, StatusPill, Worker
 from hinata.interface.control_center import AgentControlCenterDialog
 from hinata.interface.dialogs import EnrollmentDialog, MemoryDialog, SettingsDialog, StatusDialog
 from hinata.interface.styles import STYLE_SHEET
+from hinata.speech.replies import spoken_reply
 from hinata.speech.voice_pipeline import VoiceResult
 
 
@@ -264,6 +265,8 @@ class MainWindow(QMainWindow):
     def show_task_error(self, message: str) -> None:
         self.conversation.add_message("System", f"Error: {message}")
         self.statusBar().showMessage("Task failed; no success was assumed", 7000)
+        if self.speak_responses:
+            self.speak_text("I could not complete that request. Please check the error on screen.")
 
     def submit_text(self, text: str | None = None) -> None:
         if self.pending_tasks:
@@ -282,6 +285,8 @@ class MainWindow(QMainWindow):
 
     def handle_response(self, response: AssistantResponse, voice: VoiceResult | None = None) -> None:
         self.conversation.add_message("HINATA", response.text)
+        if self.speak_responses:
+            self.speak_text(spoken_reply(response))
         self.statusBar().showMessage(response.status.replace("_", " "), 5000)
         if response.status == "model_unavailable":
             text = response.text.lower()
@@ -341,6 +346,8 @@ class MainWindow(QMainWindow):
                 if response.data.get("task_id"):
                     self.assistant.tasks.cancel_pending(response.data["task_id"])
                 self.conversation.add_message("System", "Plan cancelled; no steps were executed.")
+                if self.speak_responses:
+                    self.speak_text("Plan cancelled. No steps were executed.")
                 return
             self.run_task(
                 lambda: self.assistant.execute_plan(
@@ -367,6 +374,8 @@ class MainWindow(QMainWindow):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 self.conversation.add_message("System", "Action cancelled; nothing was executed.")
+                if self.speak_responses:
+                    self.speak_text("Action cancelled. Nothing was executed.")
                 return
             self.run_task(
                 lambda: self.assistant.resume(
@@ -389,6 +398,8 @@ class MainWindow(QMainWindow):
             )
             if not accepted:
                 self.conversation.add_message("System", "Action cancelled; nothing was executed.")
+                if self.speak_responses:
+                    self.speak_text("Action cancelled. Nothing was executed.")
                 return
             # The worker consumes and removes the only task-held PIN copy.
             secret = [pin]
@@ -410,10 +421,11 @@ class MainWindow(QMainWindow):
             )
             return
         self.last_response_text = response.text
-        if self.speak_responses:
-            self.speak_text(response.text)
 
     def toggle_microphone(self) -> None:
+        if not self.assistant.microphone.recording:
+            # Prevent HINATA's own answer from being transcribed as a new command.
+            self.assistant.tts.stop()
         if self.assistant.microphone.recording:
             try:
                 self.listening_pill.set_active(False)

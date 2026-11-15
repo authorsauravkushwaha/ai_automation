@@ -23,6 +23,7 @@ from hinata.config import ConfigError, OllamaConfig, load_config
 from hinata.core.assistant import HinataAssistant
 from hinata.core.ollama_service import OllamaService
 from hinata.core.types import AssistantResponse
+from hinata.speech.replies import spoken_reply
 
 EXAMPLES = """Structured commands (work without an LLM):
   open notepad                         close notepad
@@ -48,7 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", help="Path to config.toml")
     parser.add_argument("--no-llm", action="store_true", help="Use deterministic tools only")
-    parser.add_argument("--speak", action="store_true", help="Speak final responses offline")
+    speech = parser.add_mutually_exclusive_group()
+    speech.add_argument("--speak", action="store_true", help="Require offline speech output (fail if unavailable)")
+    speech.add_argument("--no-speak", action="store_true", help="Mute replies for this session")
     parser.add_argument("--version", action="version", version=f"HINATA {__version__}")
     commands = parser.add_subparsers(dest="command")
 
@@ -194,14 +197,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"model": "stabilityai/sd-turbo", "ready": is_model_ready(folder), "path": str(folder)}, indent=2))
             return 0
         assistant = HinataAssistant(config, llm_enabled=False if args.no_llm else None)
+        speak = args.speak or (config.interface.speak_responses and not args.no_speak)
         if args.command == "ask":
             return emit_with_approvals(
-                assistant, assistant.process_text(" ".join(args.request)), speak=args.speak, wait_for_speech=True
+                assistant, assistant.process_text(" ".join(args.request)), speak=speak, wait_for_speech=True, speech_required=args.speak
             )
         if args.command == "listen":
             voice, response = assistant.process_voice(args.duration)
             print(f"You (voice/{voice.speaker_status}): {voice.text}")
-            return emit_with_approvals(assistant, response, voice=voice, speak=args.speak, wait_for_speech=True)
+            return emit_with_approvals(assistant, response, voice=voice, speak=speak, wait_for_speech=True, speech_required=args.speak)
         if args.command == "gui":
             try:
                 from hinata.interface.main_window import run_gui
@@ -210,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             return run_gui(assistant)
         if args.command == "wake":
-            return wake_loop(assistant, args.duration)
+            return wake_loop(assistant, args.duration, speak=speak, speech_required=args.speak)
         if args.command == "status":
             print(json.dumps(assistant.status(check_model=not args.no_model_check), indent=2))
             return 0
@@ -364,12 +368,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(assistant.playbooks.list_playbooks(), indent=2, ensure_ascii=False))
             return 0
         if args.command == "briefing":
-            resp = assistant.process_text("executive briefing")
-            print(resp.text)
-            if args.speak:
-                assistant.tts.speak(resp.text)
-                assistant.tts.wait()
-            return 0 if resp.success else 1
+            return emit_with_approvals(
+                assistant, assistant.process_text("executive briefing"), speak=speak,
+                wait_for_speech=True, speech_required=args.speak,
+            )
         if args.command == "override":
             if args.lockdown:
                 print(json.dumps(assistant.engage_lockdown(args.reason), indent=2))
@@ -482,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "memory":
             return memory_command(assistant, args)
-        return interactive(assistant, speak=args.speak)
+        return interactive(assistant, speak=speak, speech_required=args.speak)
     except KeyboardInterrupt:
         print("\nStopped.")
         return 130
@@ -533,10 +535,35 @@ def emit_with_approvals(
     voice: Any = None,
     speak: bool = False,
     wait_for_speech: bool = False,
+    speech_required: bool = True,
 ) -> int:
+    def say(text: str, *, block: bool = False) -> bool:
+        if not speak or not text.strip():
+            return True
+        try:
+            if block:
+                assistant.tts.speak(text)
+                assistant.tts.wait()
+            else:
+                def on_speech_state(state: str, error: str | None) -> None:
+                    if state == "error" and error:
+                        print(f"HINATA: Speech output unavailable: {error}", file=sys.stderr)
+
+                assistant.tts.speak(text, on_speech_state)
+            if block:
+                if assistant.tts.last_error:
+                    raise RuntimeError(assistant.tts.last_error)
+        except (RuntimeError, OSError) as exc:
+            print(f"HINATA: Speech output unavailable: {exc}", file=sys.stderr)
+            return not speech_required
+        return True
+
     source = "voice" if voice is not None else "text"
     while True:
         print(f"HINATA: {response.text}")
+        if not say(spoken_reply(response), block=wait_for_speech or speech_required or response.needs_plan_confirmation
+                   or response.needs_confirmation or response.needs_pin):
+            return 1
         if response.needs_plan_confirmation:
             try:
                 answer = input("Approve this entire plan? Type yes to confirm [y/N]: ").strip().lower()
@@ -544,11 +571,13 @@ def emit_with_approvals(
                 if response.data.get("task_id"):
                     assistant.tasks.cancel_pending(response.data["task_id"])
                 print("\nHINATA: Plan cancelled; no steps were executed.")
+                say("Plan cancelled; no steps were executed.", block=wait_for_speech)
                 return 1
             if answer not in {"y", "yes"}:
                 if response.data.get("task_id"):
                     assistant.tasks.cancel_pending(response.data["task_id"])
                 print("HINATA: Plan cancelled; no steps were executed.")
+                say("Plan cancelled; no steps were executed.", block=wait_for_speech)
                 return 1
             response = assistant.execute_plan(
                 response.plan_actions,
@@ -565,9 +594,11 @@ def emit_with_approvals(
                 answer = input("Proceed? Type yes to confirm [y/N]: ").strip().lower()
             except EOFError:
                 print("\nHINATA: Action cancelled; no confirmation input was available.")
+                say("Action cancelled; no confirmation was given.", block=wait_for_speech)
                 return 1
             if answer not in {"y", "yes"}:
                 print("HINATA: Action cancelled; nothing was executed.")
+                say("Action cancelled; nothing was executed.", block=wait_for_speech)
                 return 1
             response = assistant.resume(
                 response.action,
@@ -581,6 +612,7 @@ def emit_with_approvals(
                 pin = getpass.getpass("HINATA PIN: ")
             except EOFError:
                 print("\nHINATA: Action cancelled; no PIN input was available.")
+                say("Action cancelled; no PIN was entered.", block=wait_for_speech)
                 return 1
             response = assistant.resume(
                 response.action,
@@ -591,13 +623,6 @@ def emit_with_approvals(
             )
             pin = ""  # Do not retain the PIN in local variables longer than necessary.
             continue
-        if speak:
-            assistant.tts.speak(response.text)
-            if wait_for_speech:
-                assistant.tts.wait()
-                if assistant.tts.last_error:
-                    print(f"HINATA: Speech output failed: {assistant.tts.last_error}", file=sys.stderr)
-                    return 1
         return 0 if response.success else 1
 
 
@@ -622,7 +647,7 @@ def connect_local_model(assistant: HinataAssistant) -> None:
         print("Ollama is not responding; structured commands still work. Run 'hinata doctor'.")
 
 
-def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
+def interactive(assistant: HinataAssistant, *, speak: bool = False, speech_required: bool = False) -> int:
     print(f"HINATA {__version__} — local assistant. Type /help for commands, /quit to exit.")
     connect_local_model(assistant)
     if not assistant.authentication.is_configured:
@@ -644,7 +669,7 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
             )
             continue
         if text == "/briefing":
-            emit_with_approvals(assistant, assistant.process_text("executive briefing"), speak=speak)
+            emit_with_approvals(assistant, assistant.process_text("executive briefing"), speak=speak, speech_required=speech_required)
             continue
         if text == "/lockdown":
             print(json.dumps(assistant.engage_lockdown("Interactive shell Red Alert Lockdown"), indent=2))
@@ -685,13 +710,14 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
             setup_pin(assistant)
             continue
         if text == "/forget":
-            emit_with_approvals(assistant, assistant.process_text("clear memory"))
+            emit_with_approvals(assistant, assistant.process_text("clear memory"), speak=speak, speech_required=speech_required)
             continue
         if text == "/voice":
             try:
+                assistant.tts.stop()
                 voice, response = assistant.process_voice()
                 print(f"You (voice/{voice.speaker_status}): {voice.text}")
-                emit_with_approvals(assistant, response, voice=voice, speak=speak)
+                emit_with_approvals(assistant, response, voice=voice, speak=speak, wait_for_speech=True, speech_required=speech_required)
             except (RuntimeError, OSError, ValueError) as exc:
                 print(f"HINATA: Voice request failed safely: {exc}")
             continue
@@ -705,10 +731,10 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False) -> int:
                 assistant.microphone.cancel()
             print("Listening and speech stopped.")
             continue
-        emit_with_approvals(assistant, assistant.process_text(text), speak=speak)
+        emit_with_approvals(assistant, assistant.process_text(text), speak=speak, speech_required=speech_required)
 
 
-def wake_loop(assistant: HinataAssistant, duration: float) -> int:
+def wake_loop(assistant: HinataAssistant, duration: float, *, speak: bool = True, speech_required: bool = False) -> int:
     if not assistant.config.wake_word.enabled:
         print("Enable [wake_word] and configure a custom Hey HINATA ONNX model first.", file=sys.stderr)
         return 1
@@ -730,9 +756,11 @@ def wake_loop(assistant: HinataAssistant, duration: float) -> int:
             detected.clear()
             service.stop()  # Release the microphone before recording/transcribing the command.
             detected.clear()
+            assistant.tts.stop()  # Never listen while HINATA is still speaking.
             voice, response = assistant.process_voice(duration)
             print(f"You (voice/{voice.speaker_status}): {voice.text}")
-            emit_with_approvals(assistant, response, voice=voice)
+            emit_with_approvals(assistant, response, voice=voice, speak=speak,
+                                wait_for_speech=True, speech_required=speech_required)
             print("Listening for Hey HINATA again…")
             service.start(on_detection)
     except KeyboardInterrupt:

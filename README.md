@@ -162,6 +162,7 @@ To check that the actual launcher parses the script without installing anything 
 .\hinata.cmd                     :: interactive terminal
 .\hinata.cmd ask "system info"   :: one typed request
 .\hinata.cmd listen              :: one 5-second voice request
+.\hinata.cmd --no-speak ask "system info" :: mute this request
 .\hinata.cmd doctor              :: local diagnostics
 .\hinata.cmd status              :: JSON feature/model status
 ```
@@ -244,7 +245,7 @@ Useful setup switches: `-SkipOllama`, `-SkipModelDownload`, `-SkipSpeechDownload
 - **Offline voice input:** configurable microphone, explicit start/stop controls, faster-whisper `tiny` with INT8 CPU inference, or Vosk. Normal transcription uses cached Whisper files only; `setup-speech` explicitly permits the initial download. The STT model is released after each voice request to reduce RAM overlap.
 - **Owner speaker profile:** 3–8 in-memory enrollment samples, local embeddings, conservative accept/reject/uncertain states, DPAPI-protected profile on Windows, no raw recordings saved.
 - **Typed input:** same parser/planner/tool pipeline as voice, persistent command/conversation history.
-- **Offline speech output:** interruptible Windows SAPI through `pyttsx3`; optional Piper executable support with configured local voice.
+- **Offline speech output:** typed requests, microphone requests, and wake-word replies now speak by default using interruptible Windows SAPI through `pyttsx3` (or a configured local Piper voice). Approval/PIN prompts use generic spoken cues and do not read sensitive arguments or PINs aloud. The full response remains visible; errors in the speaker are reported instead of silently claiming speech succeeded. Mute with `--no-speak` on the CLI, `/speak` during an interactive session, or the desktop Settings checkbox. `--speak` explicitly requires audio and reports failure if the device is unavailable. Existing `config.toml` or saved desktop settings with `speak_responses = false` still opt out; change it to `true` or enable speaking in Settings to hear replies.
 - **Controlled PC automation:** allow-listed apps, root-confined files/folders/search/read, active-window Unicode typing, hardware volume keys, optional exact volume through `pycaw`, basic system information.
 - **Owner stop control:** the desktop emergency-stop button stops speech, recording, and wake listening, closes a pending local Ollama response, discards late desktop results and prevents pending approvals or a not-yet-started action while stop is active. A fresh request starts a new operation. A Windows action already executing may finish; HINATA reports that limitation rather than promising forcible rollback.
 - **SQLite memory:** conversations, approved preferences, commands, task results, UI settings, and selected personality mode; inspect/search/export/delete controls.
@@ -541,3 +542,8 @@ also choose specific role models in `config.toml`. Roles are loaded one at a tim
 write only to configured allowed roots, and run project checks in the offline
 sandbox. Generated code remains untrusted and requires your review; a fallback
 project is an explicitly labeled scaffold, **not** a completed custom project.
+
+**Autonomy boundary:** HINATA can plan, generate, execute approved local tools, and
+run sandboxed project checks, but it does not take unlimited control of the PC or
+guarantee that every task is finished correctly. Confirmation, PIN, and human
+review remain in place even when voice replies are enabled.

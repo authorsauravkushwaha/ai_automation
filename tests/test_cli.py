@@ -20,7 +20,7 @@ class CliTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["HINATA_DATA_DIR"] = str(Path(temporary.name) / "data")
         return subprocess.run(
-            [sys.executable, "-m", "hinata", "--no-llm", *arguments],
+            [sys.executable, "-m", "hinata", "--no-llm", "--no-speak", *arguments],
             input=input_text,
             text=True,
             capture_output=True,

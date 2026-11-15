@@ -50,7 +50,7 @@ class SettingsDialog(QDialog):
 
         general = QWidget()
         form = QFormLayout(general)
-        self.speak_checkbox = QCheckBox("Speak final responses using the offline engine")
+        self.speak_checkbox = QCheckBox("Speak replies to typed and voice requests (offline)")
         self.speak_checkbox.setChecked(speak_responses)
         self.llm_checkbox = QCheckBox("Use local Ollama for requests outside structured commands")
         self.llm_checkbox.setChecked(llm_enabled)
