@@ -28,10 +28,12 @@ automation.
 | Inspect Python code | `inspect code Documents/script.py` | Read-only static inspection, not a security audit. |
 | Use a local model | Ask a question in the desktop or CLI | Requires an installed Ollama runtime and prepared model. |
 
-HINATA also offers optional semantic retrieval, offline speech, bounded plans
-and Windows automation. Some components require separately installed models or
-hardware; fixed specialist workers are not autonomous AI agents. See the
-[feature details](#local-document-search-and-question-answering) and
+HINATA also offers optional semantic retrieval, offline speech, bounded plans,
+model-backed specialist preflight, and Windows automation. Specialist reports are
+strictly scoped and all side effects still pass through the central permission
+manager; this is not an uncontrolled autonomous system. Some components require
+separately installed models or hardware. See the [feature details](#local-document-search-and-question-answering),
+[capability matrix and gap register](docs/JARVIS_GAP_REGISTER.md), and
 [roadmap](docs/STAGE_STATUS.md).
 
 ## Try the core without a model
@@ -48,17 +50,19 @@ features, follow the Windows setup below.
 
 ## Security and project status
 
-- Normal use is **local-first, not network-isolated**. The optional
-  [offline isolation guide](docs/OFFLINE_ISOLATION.md) describes stronger network
-  restrictions and their limitations.
+- Normal use is **local-first, not an operating-system network boundary**. The
+  process guard and coding sandbox are defense-in-depth; the optional [offline
+  isolation guide](docs/OFFLINE_ISOLATION.md) describes stronger restrictions and
+  their limitations.
 - Actions are allowlisted and sensitive actions require approval; arbitrary
   model-generated shell commands are not executed. These controls are not a full
   operating-system sandbox. [Security model](docs/SECURITY.md).
-- Successful tool calls do not prove arbitrary objectives. Automatic verification
-  is limited to specific folder-existence requests; other objectives require review.
+- Project files are not proof of completion. Build results explicitly distinguish
+  `SUCCESS`, `PARTIAL`, `FAILED`, `BLOCKED`, and `UNKNOWN_OUTCOME`; missing or
+  skipped checks never pass. The deterministic offline scaffold remains `PARTIAL`.
 - No model weights or voice recordings are bundled. Connected setup and optional
-  downloads require consent; physical audio and real-model acceptance need testing
-  on the target computer.
+  downloads require consent; physical audio, Windows isolation, and real-model
+  acceptance need testing on the target computer.
 
 ## One-click start from the downloaded ZIP
 
@@ -251,7 +255,7 @@ Useful setup switches: `-SkipOllama`, `-SkipModelDownload`, `-SkipSpeechDownload
 - **SQLite memory:** conversations, approved preferences, commands, task results, UI settings, and selected personality mode; inspect/search/export/delete controls.
 - **Desktop UI:** microphone and text input, conversation view, listening/processing/speaking indicators, settings, enrollment, status, memory controls, and personality-mode selector. The dark-glass interface adds a softly animated perspective-grid scene, floating light orbs, a glossy HINATA sphere, translucent panels, and gradient controls with tactile press/focus states; it is painted locally without remote assets.
 - **Six personality modes:** Friend, Advisor, Technical, Strategist, Professional, and Jarvis. Choose a mode in the desktop UI or say/type `switch to jarvis mode`. Modes adjust response style only and never modify permissions.
-- **Controlled multi-step planning:** a local model may propose up to five schema-validated low-impact tool steps. HINATA shows the complete plan and waits for one explicit owner approval before execution. Higher-impact actions (such as typing into an app, clearing memory, or closing apps) are excluded from batch plans and remain separately gated.
+- **Controlled multi-step planning:** a local model may propose a configured bounded DAG (default five safe steps; the agentic configuration can allow up to 32 validated nodes). HINATA shows the complete plan, binds approval to its hash, delegates each node through a registered specialist, and keeps every side effect behind central authorization. Higher-impact actions (such as typing into an app, clearing memory, or closing apps) remain separately gated.
 - **Wake word:** explicit `hinata wake` mode with bounded 80 ms streaming and cooldown for a user-supplied custom **Hey HINATA** ONNX model; disabled by default and never started automatically.
 
 ## Example commands
@@ -427,9 +431,12 @@ The core uses only the Python standard library. Optional AI/GUI packages are laz
 The orchestrator coordinates 10 specialized local agents (`orchestrator`,
 `planner`, `research`, `coding`, `reviewer`, `memory`, `execution`, `document`,
 `system_monitor`, and `voice`) via `hinata.agents.registry`.
-Every agent has an explicit tool allowlist, typed `AgentMessage` provenance,
-bounded delegation depth, cycle detection, resource locks, and independent
-reviewer dispute resolution:
+Every agent has an explicit versioned tool allowlist, model role, memory scope,
+risk ceiling, typed `AgentMessage` provenance, bounded delegation depth, cycle
+detection, concurrency/resource locks, and evidence-bearing reports. Model-backed
+roles use `AgentExecutor` for strict JSON preflight; they cannot execute tools or
+approve themselves. Independent reviewer dispute resolution remains bounded and
+is not a substitute for target-hardware validation:
 
 - Use `inspect code Documents/script.py` for read-only AST inspection.
 - Use `register workspace Documents/myrepo` to register a local coding workspace,
@@ -540,8 +547,10 @@ also choose specific role models in `config.toml`. Roles are loaded one at a tim
 `generate image <idea> to <path.png>` and
 `build project <specification> in <empty-directory>` require owner approval,
 write only to configured allowed roots, and run project checks in the offline
-sandbox. Generated code remains untrusted and requires your review; a fallback
-project is an explicitly labeled scaffold, **not** a completed custom project.
+sandbox. The builder persists file, test, and diagnostic evidence and returns
+truthful lifecycle states: a missing suite is `PARTIAL`, a failing check is
+`FAILED`, and a deterministic fallback project is an explicitly labeled
+scaffold, **not** a completed custom project.
 
 **Autonomy boundary:** HINATA can plan, generate, execute approved local tools, and
 run sandboxed project checks, but it does not take unlimited control of the PC or
