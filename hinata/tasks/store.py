@@ -165,8 +165,8 @@ class TaskStore:
                 """INSERT INTO agent_task_steps(
                     task_id, ordinal, step_id, agent_id, tool, arguments_json,
                     depends_on_json, risk_tier, side_effect, idempotency,
-                    timeout_seconds, max_retries, explanation, state
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED')""",
+                    timeout_seconds, max_retries, explanation, condition, state
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED')""",
                 [
                     (
                         task_id,
@@ -182,6 +182,7 @@ class TaskStore:
                         node.timeout_seconds,
                         node.max_retries,
                         node.explanation,
+                        node.condition,
                     )
                     for i, node in enumerate(effective_nodes, 1)
                 ],
@@ -243,7 +244,7 @@ class TaskStore:
             return res.rowcount == 1
 
     def pause_task(self, task_id: str, reason: str = "User paused at safe boundary") -> bool:
-        """Pause a task ONLY if no step is currently in-flight (RUNNING)."""
+        """Pause a claimed RUNNING task only at a boundary with no in-flight step."""
         with self.database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             inflight = conn.execute(
@@ -255,21 +256,86 @@ class TaskStore:
             res = conn.execute(
                 """UPDATE agent_tasks SET state = 'PAUSED', paused_reason = ?,
                    version = version + 1, updated_at = datetime('now')
-                   WHERE id = ? AND state IN ('RUNNING', 'AWAITING_APPROVAL')""",
+                   WHERE id = ? AND state = 'RUNNING'""",
                 (reason[:300], task_id),
             )
             return res.rowcount == 1
 
-    def resume_paused_task(self, task_id: str) -> bool:
-        """Resume a PAUSED task only if all prior steps have reconciled known outcomes."""
+    def resume_paused_task(self, task_id: str, plan: ExecutionPlan | None = None) -> bool:
+        """Resume within the original, unexpired approval and only from known outcomes.
+
+        A reconciled failed action may return to QUEUED only when its effect is
+        proven NOT_STARTED and the stored tool contract says it is idempotent or
+        deduplicated. Unknown or possibly-applied side effects always block resume.
+        """
         with self.database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            uncertain = conn.execute(
-                "SELECT 1 FROM agent_task_steps WHERE task_id = ? AND state IN ('RUNNING', 'UNKNOWN_OUTCOME')",
+            task = conn.execute(
+                "SELECT state, plan_hash, approval_json FROM agent_tasks WHERE id = ?",
                 (task_id,),
             ).fetchone()
-            if uncertain is not None:
+            if task is None or task["state"] != "PAUSED":
                 return False
+            try:
+                approval = json.loads(task["approval_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                return False
+            if not isinstance(approval, dict):
+                return False
+            try:
+                expires = float(approval.get("expires_at_epoch", 0))
+            except (TypeError, ValueError):
+                return False
+            if (
+                not approval.get("approved_by")
+                or not task["plan_hash"]
+                or approval.get("plan_hash") != task["plan_hash"]
+                or expires <= time.time()
+            ):
+                return False
+            steps = conn.execute(
+                """SELECT ordinal, step_id, tool, arguments_json, depends_on_json, condition,
+                          state, effect_state, idempotency
+                   FROM agent_task_steps WHERE task_id = ? ORDER BY ordinal""",
+                (task_id,),
+            ).fetchall()
+            if not steps:
+                return False
+            if plan is not None:
+                expected_nodes = (
+                    list(plan.nodes)
+                    if plan.nodes
+                    else [PlanNode(step_id=f"step_{i}", action=step) for i, step in enumerate(plan.steps, 1)]
+                )
+                expected = [
+                    (node.step_id, node.action.tool, node.action.arguments,
+                     list(node.depends_on), node.condition)
+                    for node in expected_nodes
+                ]
+                actual = [
+                    (str(step["step_id"]), str(step["tool"]), json.loads(step["arguments_json"]),
+                     json.loads(step["depends_on_json"] or "[]"), str(step["condition"] or ""))
+                    for step in steps
+                ]
+                if plan.plan_hash() != task["plan_hash"] or actual != expected:
+                    return False
+            retryable: list[int] = []
+            for step in steps:
+                if step["state"] in {"QUEUED", "COMPLETED", "SKIPPED", "SUCCEEDED"}:
+                    continue
+                if (
+                    step["state"] == "FAILED"
+                    and step["effect_state"] == "NOT_STARTED"
+                    and step["idempotency"] in {"idempotent", "deduplicated"}
+                ):
+                    retryable.append(int(step["ordinal"]))
+                    continue
+                return False
+            for ordinal in retryable:
+                conn.execute(
+                    "UPDATE agent_task_steps SET state='QUEUED', retry_count=retry_count+1 WHERE task_id=? AND ordinal=? AND state='FAILED'",
+                    (task_id, ordinal),
+                )
             res = conn.execute(
                 """UPDATE agent_tasks SET state = 'RUNNING', paused_reason = '',
                    version = version + 1, updated_at = datetime('now')
@@ -277,6 +343,47 @@ class TaskStore:
                 (task_id,),
             )
             return res.rowcount == 1
+
+    def restore_approved_plan(self, task_id: str, planner: Any) -> ExecutionPlan:
+        """Rebuild a plan from checkpoints and verify its exact original approval hash."""
+        task = self.get(task_id)
+        if task is None or task["state"] != "PAUSED":
+            raise TaskStateError("Only a PAUSED task can be resumed")
+        candidate = {
+            "type": "plan",
+            "objective": str(task["objective"]),
+            "steps": [
+                {
+                    "step_id": str(step["step_id"]),
+                    "tool": str(step["tool"]),
+                    "arguments": json.loads(step["arguments_json"]),
+                    "depends_on": json.loads(step["depends_on_json"] or "[]"),
+                    "agent_id": str(step["agent_id"]),
+                    "explanation": str(step["explanation"]),
+                    "condition": str(step.get("condition", "")),
+                }
+                for step in task["steps"]
+            ],
+        }
+        plan = planner.validate(
+            candidate,
+            allow_confirm_tools=True,
+            user_request=str(task["user_request"] or task["objective"]),
+            autonomy_mode=str(task["autonomy_mode"] or "APPROVED_PLAN"),
+        )
+        try:
+            approval = json.loads(task["approval_json"] or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise TaskStateError("Stored approval record is malformed") from exc
+        if (
+            not isinstance(approval, dict)
+            or not approval.get("approved_by")
+            or not task["plan_hash"]
+            or plan.plan_hash() != task["plan_hash"]
+            or approval.get("plan_hash") != task["plan_hash"]
+        ):
+            raise TaskStateError("Stored task no longer matches its approved plan")
+        return plan
 
     def reconcile_interrupted_task(
         self,
@@ -402,10 +509,10 @@ class TaskStore:
             )
             return True
 
-    def record_step_observation(self, task_id: str, ordinal: int, observation: dict[str, Any], *, effect_state: str = "SUCCEEDED", retry_count: int = 0) -> None:
+    def record_step_observation(self, task_id: str, ordinal: int, observation: dict[str, Any], *, effect_state: str = "SUCCEEDED", retry_count: int | None = None) -> None:
         self.database.execute(
-            """UPDATE agent_task_steps SET observation_json = ?, effect_state = ?, retry_count = ?
-               WHERE task_id = ? AND ordinal = ?""",
+            """UPDATE agent_task_steps SET observation_json = ?, effect_state = ?,
+               retry_count = COALESCE(?, retry_count) WHERE task_id = ? AND ordinal = ?""",
             (
                 json.dumps(redact_value(observation), ensure_ascii=False)[:4000],
                 effect_state,
@@ -455,6 +562,18 @@ class TaskStore:
             if result.rowcount != 1:
                 raise TaskStateError("Cannot checkpoint task result; outcome may be uncertain")
 
+    def skip_step(self, task_id: str, ordinal: int, reason: str) -> None:
+        """Durably record a branch that was not selected; never call it successful."""
+        with self.database.connect() as connection:
+            result = connection.execute(
+                """UPDATE agent_task_steps SET state='SKIPPED', effect_state='NOT_STARTED', evidence=?
+                   WHERE task_id=? AND ordinal=? AND state='QUEUED' AND EXISTS
+                   (SELECT 1 FROM agent_tasks WHERE id=? AND state='RUNNING')""",
+                (reason[:500], task_id, ordinal, task_id),
+            )
+            if result.rowcount != 1:
+                raise TaskStateError("Cannot checkpoint skipped task step")
+
     def finish(self, task_id: str, state: str) -> None:
         if state not in {"FAILED", "BLOCKED", "PARTIAL", "CANCELLED", "UNKNOWN_OUTCOME"}:
             raise ValueError("Invalid final task state")
@@ -470,7 +589,9 @@ class TaskStore:
             connection.execute("BEGIN IMMEDIATE")
             task = connection.execute("SELECT state FROM agent_tasks WHERE id=?", (task_id,)).fetchone()
             steps = connection.execute("SELECT ordinal, tool, state FROM agent_task_steps WHERE task_id=? ORDER BY ordinal", (task_id,)).fetchall()
-            if not task or task["state"] != "RUNNING" or not steps or any(step["state"] != "COMPLETED" for step in steps):
+            if not task or task["state"] != "RUNNING" or not steps or any(
+                step["state"] not in {"COMPLETED", "SKIPPED"} for step in steps
+            ):
                 raise TaskStateError("Task is not ready for verification")
             if len(checks) != len(steps) or any(
                 c.get("step") != step["ordinal"] or c.get("tool") != step["tool"] or c.get("status") not in {"verified", "unknown", "contradicted"}
@@ -522,7 +643,8 @@ class TaskStore:
             steps = connection.execute("SELECT ordinal, tool, state FROM agent_task_steps WHERE task_id=? ORDER BY ordinal", (task_id,)).fetchall()
             if not steps or len(checks) != len(steps) or any(
                 c.get("step") != step["ordinal"] or c.get("tool") != step["tool"] or
-                c.get("status") not in {"verified", "unknown", "contradicted"} or step["state"] != "COMPLETED"
+                c.get("status") not in {"verified", "unknown", "contradicted"} or
+                step["state"] not in {"COMPLETED", "SKIPPED"}
                 for c, step in zip(checks, steps, strict=True)
             ):
                 raise TaskStateError("Verification evidence does not match the task")
