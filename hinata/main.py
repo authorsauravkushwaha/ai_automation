@@ -89,14 +89,14 @@ def build_parser() -> argparse.ArgumentParser:
     image.add_argument("operation", choices=["status", "setup"])
 
     commands.add_parser("agents", help="Show registered specialist agents, manifests, and recent activity")
-    tasks = commands.add_parser("tasks", help="Inspect saved plan checkpoints (never auto-replays execution)")
+    tasks = commands.add_parser("tasks", help="Inspect, reconcile, or safely resume saved plan checkpoints")
     tasks.add_argument("id", nargs="?", help="Task ID; omit to list recent tasks")
     task_action = tasks.add_mutually_exclusive_group()
     task_action.add_argument("--cancel", action="store_true", help="Cancel an unapproved plan by ID")
     task_action.add_argument("--verify", action="store_true", help="Review an executed task and record observed evidence")
     task_action.add_argument("--reject", action="store_true", help="Record that an executed task did not meet its objective")
     task_action.add_argument("--pause", action="store_true", help="Pause a task at a safe non-RUNNING boundary")
-    task_action.add_argument("--resume-paused", action="store_true", help="Resume a PAUSED task if all prior outcomes are known")
+    task_action.add_argument("--resume-paused", action="store_true", help="Continue an approved PAUSED plan from verified checkpoints")
     task_action.add_argument("--reconcile", action="store_true", help="Run read-only crash reconciliation without replaying actions")
     task_action.add_argument("--timeline", action="store_true", help="Inspect durable trace timeline for a task")
 
@@ -477,11 +477,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Task {args.id} paused at safe boundary.")
                 return 0
             if args.resume_paused:
-                if not args.id or not assistant.tasks.resume_paused_task(args.id):
-                    print("Task could not be resumed (not PAUSED or contains uncertain step outcomes).", file=sys.stderr)
+                if not args.id:
+                    print("A task ID is required.", file=sys.stderr)
                     return 1
-                print(f"Task {args.id} transitioned to RUNNING.")
-                return 0
+                resumed = assistant.resume_task(args.id)
+                print(json.dumps({
+                    "task_id": args.id,
+                    "status": resumed.status,
+                    "success": resumed.success,
+                    "message": resumed.text,
+                }, indent=2, ensure_ascii=False))
+                return 0 if resumed.success or resumed.status == "verification_required" else 1
             if args.reconcile:
                 if not args.id:
                     print("A task ID is required.", file=sys.stderr)

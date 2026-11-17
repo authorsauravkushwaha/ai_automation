@@ -131,6 +131,8 @@ class ReliabilityAndObservabilityTests(unittest.TestCase):
         recon = self.assistant.reconcile_task(tid)
         self.assertEqual(recon["reconciled_steps"][0]["reconciled_state"], "FAILED")
         self.assertFalse((Path(self.tmp.name) / "Documents" / "rec1").exists())
+        self.assertTrue(self.assistant.tasks.resume_paused_task(tid))
+        self.assertEqual(self.assistant.tasks.get(tid)["steps"][0]["state"], "QUEUED")
 
         # Simulate crash during system_info (non-reconcilable) -> UNKNOWN_OUTCOME
         tid2 = self.assistant.tasks.create(

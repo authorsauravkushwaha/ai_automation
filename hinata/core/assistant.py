@@ -43,6 +43,7 @@ from hinata.speech.microphone import Microphone
 from hinata.speech.speaker_recognition import SpeakerRecognition
 from hinata.speech.speech_to_text import SpeechToText
 from hinata.speech.text_to_speech import TextToSpeech
+from hinata.tasks.store import TaskStateError
 from hinata.speech.voice_pipeline import VoicePipeline, VoiceResult
 from hinata.speech.wake_word import WakeWordDetector, WakeWordService
 from hinata.tasks.playbooks import PlaybookManager
@@ -221,6 +222,30 @@ class HinataAssistant:
             speaker_match=speaker_match,
             speaker_required=speaker_required,
             task_id=task_id,
+        )
+
+    def resume_task(self, task_id: str) -> AssistantResponse:
+        """Continue only the verified remainder of the exact, still-approved plan."""
+        task = self.tasks.get(task_id)
+        if task is None:
+            return AssistantResponse("Task not found.", False, "invalid")
+        try:
+            plan = self.tasks.restore_approved_plan(task_id, self.planner)
+        except (TaskStateError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            return AssistantResponse(f"Task cannot be resumed safely: {exc}", False, "invalid")
+        if not self.tasks.resume_paused_task(task_id, plan):
+            return AssistantResponse(
+                "Task cannot be resumed: approval may be expired or a step has an uncertain/non-retryable outcome.",
+                False,
+                "blocked",
+                data={"task_id": task_id},
+            )
+        return self.orchestrator.execute_plan(
+            list(plan.steps),
+            source=str(task["source"]),
+            task_id=task_id,
+            plan_override=plan,
+            resume_existing=True,
         )
 
     def reconcile_task(self, task_id: str) -> dict[str, Any]:

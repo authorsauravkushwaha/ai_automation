@@ -475,6 +475,7 @@ class Orchestrator:
         task_id: str | None = None,
         plan_override: ExecutionPlan | None = None,
         run_id: str = "",
+        resume_existing: bool = False,
     ) -> AssistantResponse:
         """Revalidate and execute an owner-approved plan (sequential or read-only DAG waves)."""
         token = self.cancellations.create_token()
@@ -504,7 +505,22 @@ class Orchestrator:
                 if task_id is None:
                     task_id = self.tasks.create(plan, source)
                 try:
-                    self.tasks.claim(task_id, plan, source)
+                    if resume_existing:
+                        task = self.tasks.get(task_id)
+                        expected = [(step.tool, step.arguments) for step in plan.steps]
+                        actual = [
+                            (row["tool"], json.loads(row["arguments_json"]))
+                            for row in (task or {}).get("steps", [])
+                        ]
+                        if (
+                            not task
+                            or task["state"] != "RUNNING"
+                            or task["plan_hash"] != plan.plan_hash()
+                            or actual != expected
+                        ):
+                            raise TaskStateError("Resumed task no longer matches its approved checkpoint")
+                    else:
+                        self.tasks.claim(task_id, plan, source)
                 except TaskStateError as exc:
                     return AssistantResponse(f"Plan rejected: {exc}", False, "invalid")
 
@@ -527,6 +543,32 @@ class Orchestrator:
 
             completed: list[dict[str, Any]] = []
             step_outcomes: dict[str, str] = {}
+            resumed_step_states: dict[str, str] = {}
+            if resume_existing and self.tasks and task_id:
+                task = self.tasks.get(task_id)
+                resumed_step_states = {
+                    str(row["step_id"]): str(row["state"])
+                    for row in (task or {}).get("steps", [])
+                }
+                for node in effective_nodes:
+                    prior_state = resumed_step_states.get(node.step_id, "")
+                    if prior_state in {"COMPLETED", "SUCCEEDED"}:
+                        step_outcomes[node.step_id] = "succeeded"
+                        completed.append({
+                            "step": ordinal_by_step_id[node.step_id],
+                            "tool": node.action.tool,
+                            "success": True,
+                            "message": "[Recovered from verified checkpoint; not replayed]",
+                        })
+                    elif prior_state == "SKIPPED":
+                        step_outcomes[node.step_id] = "skipped"
+                    elif prior_state != "QUEUED":
+                        return AssistantResponse(
+                            f"Task cannot resume safely: step {node.step_id} has state {prior_state or 'missing'}.",
+                            False,
+                            "invalid",
+                            data={"task_id": task_id, "step_id": node.step_id},
+                        )
 
             for wave in waves:
                 if self._cancelled(token):
@@ -545,6 +587,10 @@ class Orchestrator:
                 # Evaluate typed branch conditions before launching wave steps
                 runnable_wave: list[PlanNode] = []
                 for node in wave:
+                    if resume_existing and resumed_step_states.get(node.step_id) in {
+                        "COMPLETED", "SUCCEEDED", "SKIPPED"
+                    }:
+                        continue
                     if node.condition:
                         dep_id, _, required_state = node.condition.partition(".")
                         actual = step_outcomes.get(dep_id, "")
@@ -553,7 +599,9 @@ class Orchestrator:
                         ):
                             idx = ordinal_by_step_id[node.step_id]
                             step_outcomes[node.step_id] = "skipped"
-                            completed.append({"step": idx, "tool": node.action.tool, "success": True, "message": "[Skipped by branch condition]"})
+                            if self.tasks and task_id:
+                                self.tasks.skip_step(task_id, idx, "Skipped because its validated branch condition was not met")
+                            completed.append({"step": idx, "tool": node.action.tool, "success": True, "message": "[Skipped by branch condition; not reported as executed]"})
                             continue
                     runnable_wave.append(node)
 
@@ -670,7 +718,10 @@ class Orchestrator:
                             if task and int(task["revision"]) < max_rev:
                                 try:
                                     revised = self.replanner.propose(
-                                        task["objective"], action.tool, list(plan.steps[:index])
+                                        task["user_request"] or task["objective"],
+                                        action.tool,
+                                        list(plan.steps[:index]),
+                                        observation={"status": result.status, "message": result.text},
                                     )
                                     if not self._cancelled(token):
                                         revised_id = self.tasks.create(

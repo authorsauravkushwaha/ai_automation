@@ -501,6 +501,14 @@ def _m006_agent_reports_and_project_records(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m007_resumable_plan_conditions(conn: sqlite3.Connection) -> None:
+    """Persist branch conditions so an approved DAG can be restored exactly."""
+    if _table_exists(conn, "agent_task_steps"):
+        step_cols = _columns(conn, "agent_task_steps")
+        if "condition" not in step_cols:
+            conn.execute("ALTER TABLE agent_task_steps ADD COLUMN condition TEXT NOT NULL DEFAULT ''")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "001_baseline_core", _m001_baseline_core),
     Migration(2, "002_tasks_and_knowledge", _m002_tasks_and_knowledge),
@@ -508,6 +516,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(4, "004_memory_rag_and_workspaces", _m004_memory_rag_and_workspaces),
     Migration(5, "005_tamper_evident_traces_and_playbooks", _m005_tamper_evident_traces_and_playbooks),
     Migration(6, "006_agent_reports_and_project_records", _m006_agent_reports_and_project_records),
+    Migration(7, "007_resumable_plan_conditions", _m007_resumable_plan_conditions),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
