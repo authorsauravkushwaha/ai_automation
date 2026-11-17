@@ -172,6 +172,17 @@ if (-not (Test-Path (Join-Path $Root "config.toml"))) {
     Write-Host "Created config.toml from the reviewed example."
 }
 
+# Ask only in a real interactive terminal; redirected setup remains unattended-safe.
+if (-not [Console]::IsInputRedirected) {
+    $OwnerName = Read-Host "What name should HINATA use for you? (optional)"
+    if (-not [string]::IsNullOrWhiteSpace($OwnerName)) {
+        Invoke-Native $VenvPython @("-m", "hinata", "setup-owner", "--name", $OwnerName.Trim())
+    }
+}
+else {
+    Write-Host "Non-interactive setup: you can set your name later in HINATA Settings."
+}
+
 Write-Host "[3/7] Running portable tests before model downloads..."
 Invoke-Native $VenvPython @("scripts\run_tests.py")
 

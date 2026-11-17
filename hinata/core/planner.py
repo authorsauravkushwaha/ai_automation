@@ -21,6 +21,12 @@ class PlanningError(ValueError):
 # approved via step-level approval mode.
 PLAN_SAFE_TOOLS = frozenset(
     {
+        "web_search",
+        "fetch_webpage",
+        "list_installed_apps",
+        "write_code",
+        "set_owner_name",
+        "owner_name",
         "code_inspect",
         "inspect_repository_imports",
         "open_application",

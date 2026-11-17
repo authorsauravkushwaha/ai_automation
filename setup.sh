@@ -11,6 +11,15 @@ fi
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/python -m pip install -e .
 [[ -f config.toml ]] || cp config.example.toml config.toml
+if [[ -t 0 ]]; then
+  printf 'What name should HINATA use for you? (optional): '
+  IFS= read -r OWNER_NAME || OWNER_NAME=""
+  if [[ -n "${OWNER_NAME//[[:space:]]/}" ]]; then
+    .venv/bin/python -m hinata setup-owner --name "$OWNER_NAME"
+  fi
+else
+  echo "Non-interactive setup: you can set your name later in HINATA Settings."
+fi
 .venv/bin/python scripts/run_tests.py
 .venv/bin/python -m hinata --no-llm ask system info
 cat <<'EOF'

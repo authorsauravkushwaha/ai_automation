@@ -142,7 +142,7 @@ class AutoConnectClientTests(unittest.TestCase):
             {"system_info": {"required": [], "properties": {}}},
         )
         self.assertEqual(reply, '{"type":"chat","content":"ok"}')
-        self.assertEqual(stub.chat_payload["keep_alive"], 0)
+        self.assertEqual(stub.chat_payload["keep_alive"], manager.config.keep_alive)
         self.assertEqual(stub.chat_payload["format"], "json")
         self.assertEqual(stub.chat_payload["messages"][0]["role"], "system")
         self.assertIn('user says "Hello"', stub.chat_payload["messages"][0]["content"])

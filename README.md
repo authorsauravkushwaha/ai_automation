@@ -22,6 +22,11 @@ automation.
 
 | You want to… | Try this in HINATA | What to know |
 |---|---|---|
+| Search the live internet | `Search about author Saurav Kushwaha` or `google ...` | Internet is tried automatically when available. If unavailable, HINATA falls back to local models/indexed files and marks the answer as not live-verified. `strict_offline = true` or `web_search_enabled = false` disables web access. No remote AI model is used. |
+| Read a public webpage | `fetch webpage https://example.com` | Fetch is restricted to public HTTP(S) pages and blocks private/loopback/link-local addresses. |
+| Open an installed application | `open Spotify` or `list installed apps` | Searches configured apps, Start Menu/Desktop shortcuts, Windows registry, and packaged Start apps. |
+| Write code in a language | `write code in Rust: implement ...` | Supports 30+ languages; use `output_path` in a normal request to save inside permitted roots. |
+| Remember your name | `My name is Saurav` or `our names are Saurav and Priya` | Stored locally; installation asks interactively when a terminal is available. Settings can change it later. |
 | See your machine's status | `system info` | Deterministic; no model needed. |
 | Search local notes | `index document Documents/notes.txt` then `search knowledge for project` | Indexing requires approval. Files must be under an allowed root. |
 | Remember a preference | `remember that my editor is vim` then `list preferences` | Saving requires approval; memory is stored locally in unencrypted SQLite. |

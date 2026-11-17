@@ -21,6 +21,43 @@ class IntentParser:
 
     def parse(self, text: str) -> ActionRequest | None:
         stripped = text.strip()
+        # User-name capture and common internet/app/code requests are deterministic.
+        match = re.fullmatch(r"(?:my name is|our names are|we are|we're)\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("set_owner_name", {"name": match.group(1).strip()}, text)
+        if re.fullmatch(r"(?:what is|what's|tell me)\s+(?:my|our)\s+name", stripped, re.IGNORECASE):
+            return self._action("owner_name", {}, text)
+        match = re.fullmatch(r"google\s+(.+)", stripped, re.IGNORECASE)
+        if match and match.group(1).strip():
+            return self._action("web_search", {"query": match.group(1).strip()}, text)
+        match = re.fullmatch(r"search\s+(?:about|for)\s+(.+)", stripped, re.IGNORECASE)
+        if match and match.group(1).strip() and not match.group(1).strip().lower().startswith("memory "):
+            return self._action("web_search", {"query": match.group(1).strip()}, text)
+        match = re.fullmatch(r"search\s+(?:the )?(?:internet|web|online)(?:\s+(?:for|about))?\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("web_search", {"query": match.group(1).strip()}, text)
+        match = re.fullmatch(r"fetch\s+(?:webpage|website|url)\s+(.+)", stripped, re.IGNORECASE)
+        if match:
+            return self._action("fetch_webpage", {"url": match.group(1).strip()}, text)
+        # Automatically ground clearly factual/current research questions in live sources.
+        # Casual chat and ordinary explanations still stay on the local chat path.
+        match = re.fullmatch(
+            r"(?:who\s+is|who\s+was|tell\s+me\s+about|look\s+up|find\s+out\s+about|"
+            r"what\s+are\s+the\s+latest|what\s+is\s+the\s+latest|latest\s+news\s+(?:about|on)|"
+            r"recent\s+news\s+(?:about|on)|current\s+(?:price|status|news|version)\s+(?:of|for)|"
+            r"biography\s+of|career\s+of|works\s+of)\s+(.+)",
+            stripped,
+            re.IGNORECASE,
+        )
+        if match:
+            return self._action("web_search", {"query": match.group(1).strip()}, text)
+        if re.fullmatch(r"(?:list|show)\s+(?:my\s+)?installed\s+apps", stripped, re.IGNORECASE):
+            return self._action("list_installed_apps", {}, text)
+        match = re.fullmatch(r"(?:write|create|generate)\s+(?:complete\s+)?(?:code|program|script)\s+(?:in\s+)?([a-zA-Z0-9+#.-]+)\s*(?::|for|to)?\s*(.*)", stripped, re.IGNORECASE)
+        if match:
+            language, task = match.group(1), match.group(2).strip()
+            task = task or f"Create a complete starter program in {language}."
+            return self._action("write_code", {"language": language, "task": task}, text)
         # J.A.R.V.I.S. tactical & desktop cockpit natural commands
         if re.fullmatch(
             r"(?:executive|tactical|morning|jarvis|status)\s+(?:briefing|report)|brief\s+me",
@@ -225,6 +262,22 @@ class IntentParser:
             scope = match.group(1).lower()
             return self._action("clear_memory", {"scope": "all" if scope in {"memory", "everything"} else scope}, text)
         return None
+
+    def parse_multitask(self, text: str) -> list[str]:
+        """Split clear independent compound requests; return [] when any part is ambiguous."""
+        raw = text.strip()
+        # Require a recognizable command at each boundary; never split ordinary prose.
+        parts = re.split(
+            r"\s*(?:;|\band\s+then\b|\bthen\b|\balso\b|\band\s+(?=(?:search|google|open|launch|start|close|list|show|write|create|generate|fetch|system|find|set\s+volume)\b))\s*",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        parts = [part.strip(" ,") for part in parts if part.strip(" ,")]
+        if len(parts) < 2 or len(parts) > 5:
+            return []
+        if any(self.parse(part) is None for part in parts):
+            return []
+        return parts
 
     @staticmethod
     def _strip_matching_quotes(value: str) -> str:

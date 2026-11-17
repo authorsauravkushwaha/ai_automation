@@ -634,7 +634,12 @@ class ProjectArchitectEngine:
 
     SAFE_REL_FILE_RE = re.compile(r"^[A-Za-z0-9_.\-/]{1,120}$")
     ALLOWED_SCAFFOLD_SUFFIXES = frozenset(
-        {".py", ".toml", ".md", ".json", ".txt", ".html", ".css", ".js", ".ts", ".yaml", ".yml", ".ini"}
+        {
+            ".py", ".toml", ".md", ".json", ".txt", ".html", ".css", ".js", ".ts",
+            ".jsx", ".tsx", ".c", ".cpp", ".h", ".hpp", ".cs", ".java", ".rs", ".go",
+            ".kt", ".swift", ".php", ".rb", ".sql", ".sh", ".ps1", ".dart", ".lua",
+            ".r", ".scala", ".yaml", ".yml", ".ini", ".xml",
+        }
     )
 
     def __init__(

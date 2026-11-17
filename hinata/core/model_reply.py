@@ -84,7 +84,13 @@ def extract_reply_object(text: str) -> dict[str, Any] | None:
     """Return the first dict that looks like a HINATA reply, or ``None``."""
     cleaned = _strip_think_blocks(text)
     for candidate in _candidates(cleaned):
-        if candidate.get("type") in {"tool", "plan", "chat", "clarify"}:
+        kind = candidate.get("type")
+        if kind in {"chat", "clarify"}:
+            content = candidate.get("content")
+            if isinstance(content, str) and content.strip():
+                return candidate
+            continue
+        if kind in {"tool", "plan"}:
             return candidate
     return None
 
@@ -123,6 +129,16 @@ def _display_chat_text(candidate: dict[str, Any]) -> str | None:
             value = nested.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
+    # Some small models return topic/fact JSON rather than the agreed chat shape.
+    # Render it as display-only prose, never as a tool action.
+    safe_fields = ("topic", "summary", "findings", "conclusion", "details", "description")
+    rendered = [
+        f"{key.replace('_', ' ').title()}: {value.strip()}"
+        for key in safe_fields
+        if isinstance((value := candidate.get(key)), str) and value.strip()
+    ]
+    if rendered:
+        return "\n".join(rendered)
     return None
 
 

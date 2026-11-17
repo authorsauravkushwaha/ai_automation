@@ -37,6 +37,11 @@ WORKERS = MappingProxyType({
         "research",
         frozenset(
             {
+                "web_search",
+                "fetch_webpage",
+                "list_installed_apps",
+                "set_owner_name",
+                "owner_name",
                 "knowledge_list",
                 "knowledge_sync",
                 "knowledge_index",
@@ -73,6 +78,7 @@ WORKERS = MappingProxyType({
                 "run_linter",
                 "run_type_checker",
                 "build_project",
+                "write_code",
             }
         ),
     ),

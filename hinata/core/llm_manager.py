@@ -463,7 +463,7 @@ class LLMManager:
             payload: dict[str, Any] = {
                 "model": model,
                 "stream": True,
-                "keep_alive": 0,
+                "keep_alive": self.config.keep_alive,
                 "messages": [{"role": "system", "content": system}, *messages],
                 "options": {
                     "temperature": self.config.temperature,
@@ -523,6 +523,46 @@ class LLMManager:
                     if self._active_response is response:
                         self._active_response = None
 
+    @staticmethod
+    def _schemas_for_query(user_text: str, schemas: dict[str, Any]) -> dict[str, Any]:
+        """Keep only tools relevant to this request, shrinking the prompt dramatically."""
+        text = user_text.lower()
+        groups = {
+            "web": {"web_search", "fetch_webpage"},
+            "apps": {"open_application", "close_application", "list_installed_apps"},
+            "coding": {"write_code", "code_inspect", "inspect_repository_imports", "build_project", "workspace_list", "workspace_read", "workspace_search"},
+            "files": {"open_file", "open_folder", "list_directory", "search_files", "search_file_content", "read_text_file", "write_text_file", "create_folder"},
+            "knowledge": {name for name in schemas if name.startswith("knowledge_")},
+            "memory": {"memory_search", "remember_preference", "list_preferences"},
+            "system": {"system_info", "hardware_profile", "ai_fleet_profile", "list_processes", "volume"},
+        }
+        selected: set[str] = set()
+        if any(w in text for w in ("search", "internet", "web", "google", "website", "url", "fetch")):
+            selected |= groups["web"] | groups["knowledge"]
+        if any(w in text for w in ("app", "open", "launch", "close", "installed", "start")):
+            selected |= groups["apps"]
+        if any(w in text for w in ("code", "program", "script", "function", "class", "python", "javascript", "java", "rust", "c++", "html")):
+            selected |= groups["coding"]
+        if any(w in text for w in ("file", "folder", "directory", "document", "read", "write")):
+            selected |= groups["files"]
+        if any(w in text for w in ("remember", "memory", "preference", "name")):
+            selected |= groups["memory"]
+        if any(w in text for w in ("system", "computer", "hardware", "volume", "process")):
+            selected |= groups["system"]
+        # Conversational requests need no tool catalog; action-style queries receive at most 14 schemas.
+        action_terms = ("open ", "launch ", "search ", "google ", "fetch ", "write ", "program ", "script ", "create ", "read ", "list ", "close ", "find ", "run ", "inspect ", "analyze ")
+        if not any(term in text for term in action_terms):
+            return {}
+        matched_names = [name for name in schemas if name in selected]
+        return {name: schemas[name] for name in matched_names[:14]}
+
+    def _completion_budget(self, text: str, role: str) -> int:
+        if role == "coder" or any(word in text.lower() for word in ("write code", "program in", "implement", "generate code")):
+            return max(1536, min(3072, self.config.max_tokens * 6))
+        if any(word in text.lower() for word in ("search", "research", "explain", "compare", "everything", "from start")):
+            return max(900, min(1536, self.config.max_tokens * 3))
+        return max(384, min(768, self.config.max_tokens * 2))
+
     def complete(
         self,
         user_text: str,
@@ -539,17 +579,17 @@ class LLMManager:
         cancel_token: CancellationToken | None = None,
     ) -> str:
         preference_text = "; ".join(f"{row['key']}={row['value']}" for row in preferences[:20])
+        relevant_schemas = self._schemas_for_query(user_text, schemas)
         base_system = f"""You are HINATA, a local-first personal assistant running on the owner's Windows laptop.
-All processing is local. Use this response style: {personality_instruction}
-Be honest about uncertainty; do not claim human feelings or claim an action succeeded before tool verification.
-Return ONE JSON object and nothing else. Never output Markdown.
-Keep "content" under 80 words so the object always finishes.
+Use this response style: {personality_instruction}
+Be honest about uncertainty; never claim an action succeeded before tool verification.
+Return ONE compact JSON object. For chat replies, answer naturally and completely; do not apply a word limit.
 Select one of these forms:
 {{"type":"tool","tool":"TOOL_NAME","arguments":{{}}}}
 {{"type":"plan","objective":"desired result","steps":[{{"step_id":"step_1","tool":"TOOL_NAME","arguments":{{}},"depends_on":[]}}]}}
 {{"type":"chat","content":"helpful response"}}
 {{"type":"clarify","content":"one specific question"}}
-Available tools and exact argument rules: {json.dumps(schemas, separators=(',', ':'))}
+Relevant tools and exact argument rules: {json.dumps(relevant_schemas, separators=(',', ':'))}
 Plans are bounded, dependency-validated graphs and require owner approval or an approved low-risk autonomy policy before steps run.
 Rules:
 - Use a tool only when the user requests an action it can actually perform.
@@ -581,6 +621,8 @@ Rules:
                 pull_missing=pull_missing,
                 format="json" if use_json_format else None,
                 role=role,
+                keep_alive=self.config.keep_alive,
+                num_predict=self._completion_budget(user_text, role),
                 cancel_token=cancel_token,
             )
         except OllamaError as exc:
@@ -593,6 +635,8 @@ Rules:
                 connect=connect,
                 pull_missing=pull_missing,
                 role=role,
+                keep_alive=self.config.keep_alive,
+                num_predict=self._completion_budget(user_text, role),
                 cancel_token=cancel_token,
             )
         if "<think>" in raw_reply.lower():

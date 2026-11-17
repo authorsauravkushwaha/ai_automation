@@ -41,7 +41,7 @@ class LocalIntegrationTests(unittest.TestCase):
                     history = assistant.memory.recent_messages()
                     self.assertEqual(history[-1]["content"], "Local response")
                     self.assertEqual(received[0][0], "/api/chat")
-                    self.assertEqual(received[0][1]["keep_alive"], 0)
+                    self.assertEqual(received[0][1]["keep_alive"], assistant.config.ollama.keep_alive)
                     self.assertEqual(received[0][1]["messages"][-1]["role"], "user")
                 finally:
                     assistant.close()
