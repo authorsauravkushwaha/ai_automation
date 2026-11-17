@@ -246,6 +246,11 @@ def default_agent_manifests() -> tuple[AgentManifest, ...]:
             model_role="chat",
             allowed_tools=frozenset(
                 {
+                    "web_search",
+                    "fetch_webpage",
+                    "list_installed_apps",
+                    "set_owner_name",
+                    "owner_name",
                     "knowledge_list",
                     "knowledge_sync",
                     "knowledge_index",
@@ -292,6 +297,7 @@ def default_agent_manifests() -> tuple[AgentManifest, ...]:
                     "run_linter",
                     "run_type_checker",
                     "build_project",
+                    "write_code",
                 }
             ),
             max_risk_tier="medium",

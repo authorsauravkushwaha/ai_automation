@@ -39,6 +39,7 @@ class OllamaConfig:
     context_tokens: int = 2048
     threads: int = 2
     temperature: float = 0.2
+    keep_alive: str | int = "5m"
     # Start the loopback Ollama service automatically when it is not running.
     auto_start: bool = True
     # Download the configured model once if it is genuinely missing.
@@ -90,6 +91,10 @@ class OllamaConfig:
             raise ConfigError("ollama.context_tokens must be between 512 and 8192 on this profile")
         if not 1 <= self.threads <= 16:
             raise ConfigError("ollama.threads must be between 1 and 16")
+        if isinstance(self.keep_alive, bool) or not isinstance(self.keep_alive, (int, str)):
+            raise ConfigError("ollama.keep_alive must be a duration string (e.g. '5m') or integer seconds")
+        if isinstance(self.keep_alive, str) and (len(self.keep_alive) > 20 or "\x00" in self.keep_alive):
+            raise ConfigError("ollama.keep_alive string must be at most 20 characters")
 
 
 @dataclass(slots=True)
@@ -103,7 +108,10 @@ class SpeechConfig:
     vosk_model_path: str = ""
     tts_backend: str = "pyttsx3"
     tts_voice: str = ""
-    tts_rate: int = 175
+    tts_voice_gender: str = "female"
+    tts_rate: int = 165
+    tts_volume: float = 0.92
+    edge_tts_voice: str = "en-US-AriaNeural"
     piper_executable: str = ""
     piper_model: str = ""
     piper_config: str = ""
@@ -115,10 +123,16 @@ class SpeechConfig:
             raise ConfigError("speech.stt_backend must be 'faster-whisper' or 'vosk'")
         if self.language not in {"en", "hi", "fr", "de"}:
             raise ConfigError("speech.language must be en, hi, fr, or de")
-        if self.tts_backend not in {"pyttsx3", "piper"}:
-            raise ConfigError("speech.tts_backend must be 'pyttsx3' or 'piper'")
+        if self.tts_backend not in {"pyttsx3", "edge-tts", "piper"}:
+            raise ConfigError("speech.tts_backend must be 'pyttsx3', 'edge-tts', or 'piper'")
+        if self.tts_voice_gender not in {"female", "male", "any"}:
+            raise ConfigError("speech.tts_voice_gender must be 'female', 'male', or 'any'")
         if not 100 <= self.tts_rate <= 250:
             raise ConfigError("speech.tts_rate must be between 100 and 250")
+        if isinstance(self.tts_volume, bool) or not isinstance(self.tts_volume, (int, float)) or not 0.1 <= float(self.tts_volume) <= 1.0:
+            raise ConfigError("speech.tts_volume must be between 0.1 and 1.0")
+        if not isinstance(self.edge_tts_voice, str) or len(self.edge_tts_voice) > 100 or "\x00" in self.edge_tts_voice:
+            raise ConfigError("speech.edge_tts_voice must be a valid voice name")
         if self.sample_rate != 16000:
             raise ConfigError("Only a 16000 Hz microphone stream is supported by this build")
         if not 0.0 <= self.speaker_threshold <= 1.0:
@@ -129,7 +143,14 @@ class SpeechConfig:
 class SecurityConfig:
     allowed_roots: list[Path] = field(default_factory=list)
     text_extensions: list[str] = field(
-        default_factory=lambda: [".txt", ".md", ".log", ".json", ".csv", ".py"]
+        default_factory=lambda: [
+            ".txt", ".md", ".log", ".json", ".csv", ".py",
+            ".js", ".ts", ".tsx", ".jsx", ".html", ".css",
+            ".c", ".cpp", ".h", ".hpp", ".cs", ".java",
+            ".rs", ".go", ".kt", ".swift", ".php", ".rb",
+            ".sql", ".sh", ".ps1", ".yaml", ".yml", ".toml",
+            ".xml", ".dart", ".lua", ".r", ".scala",
+        ]
     )
     max_read_bytes: int = 1_000_000
     search_timeout_seconds: float = 5.0
@@ -138,6 +159,8 @@ class SecurityConfig:
     database_encryption_backend: str = "envelope"  # envelope, sqlcipher, auto
     strict_offline: bool = False
     online_mode_enabled: bool = False
+    web_search_enabled: bool = True
+    discover_installed_apps: bool = True
     allowed_online_domains: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
@@ -234,12 +257,16 @@ class MemoryConfig:
 @dataclass(slots=True)
 class PersonalityConfig:
     mode: str = "friend"
+    user_name: str = ""
 
     def validate(self) -> None:
         if self.mode not in {"friend", "advisor", "technical", "strategist", "professional", "jarvis"}:
             raise ConfigError(
                 "personality.mode must be friend, advisor, technical, strategist, professional, or jarvis"
             )
+        if not isinstance(self.user_name, str) or len(self.user_name) > 160 or "\x00" in self.user_name:
+            raise ConfigError("personality.user_name must be a string of at most 160 characters")
+        self.user_name = self.user_name.strip()
 
 
 @dataclass(slots=True)

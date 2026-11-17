@@ -17,6 +17,12 @@ class PermissionLevel(StrEnum):
 
 
 POLICY = {
+    "web_search": PermissionLevel.SAFE,
+    "fetch_webpage": PermissionLevel.SAFE,
+    "list_installed_apps": PermissionLevel.SAFE,
+    "write_code": PermissionLevel.SAFE,
+    "set_owner_name": PermissionLevel.SAFE,
+    "owner_name": PermissionLevel.SAFE,
     "code_inspect": PermissionLevel.SAFE,
     "inspect_repository_imports": PermissionLevel.SAFE,
     "knowledge_list": PermissionLevel.SAFE,
@@ -164,6 +170,9 @@ class PermissionManager:
                 risk_tier="medium",
             )
         level = self.level(action.tool)
+        # Code generation is read-only unless a destination file was requested.
+        if action.tool == "write_code" and str(action.arguments.get("output_path", "")).strip():
+            level = PermissionLevel.CONFIRM
         risk = {
             PermissionLevel.SAFE: "low",
             PermissionLevel.CONFIRM: "medium",

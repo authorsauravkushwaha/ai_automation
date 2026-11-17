@@ -67,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser("delete-voice-profile", help="Delete local owner voice embeddings")
     commands.add_parser("setup-pin", help="Set or change the PIN for sensitive actions")
+    owner = commands.add_parser("setup-owner", help="Set the name(s) HINATA uses to address you")
+    owner.add_argument("--name", default="", help="One name or multiple names separated by commas or 'and'")
     commands.add_parser("devices", help="List available input microphones")
     commands.add_parser("setup-speech", help="Prepare the configured offline STT model")
     voice_output = commands.add_parser("voice-output", help="Inspect, test, enable, or mute spoken replies")
@@ -199,6 +201,19 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"model": "stabilityai/sd-turbo", "ready": is_model_ready(folder), "path": str(folder)}, indent=2))
             return 0
         assistant = HinataAssistant(config, llm_enabled=False if args.no_llm else None)
+        if args.command == "setup-owner":
+            name = args.name.strip()
+            if not name:
+                if not sys.stdin.isatty():
+                    print("No name supplied and stdin is not interactive. Use: hinata setup-owner --name \"Name\"")
+                    return 2
+                name = input("Your name (or names separated by commas): ").strip()
+            if not name:
+                print("No name was entered; nothing changed.")
+                return 2
+            saved = assistant.personality.set_owner_name(name)
+            print(f"Hinata will address you as {saved}.")
+            return 0
         speak = args.speak or (speaking_enabled(config.interface, assistant.database) and not args.no_speak)
         if args.command == "voice-output":
             if args.operation in {"enable", "disable"}:
@@ -216,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             if not ready["backend_ready"]:
                 print(f"Voice output unavailable: {ready['guidance']}", file=sys.stderr)
                 return 2
-            assistant.tts.speak("HINATA voice check. Systems online.")
+            assistant.tts.speak(assistant.personality.voice_test_phrase())
             assistant.tts.wait(timeout=20.0)
             if assistant.tts.speaking:
                 assistant.tts.stop()
@@ -677,7 +692,8 @@ def connect_local_model(assistant: HinataAssistant) -> None:
 
 
 def interactive(assistant: HinataAssistant, *, speak: bool = False, speech_required: bool = False) -> int:
-    print(f"HINATA {__version__} — local assistant. Type /help for commands, /quit to exit.")
+    print(f"HINATA {__version__} — {assistant.personality.welcome_greeting()}")
+    print("Type /help for commands, /quit to exit.")
     connect_local_model(assistant)
     if not assistant.authentication.is_configured:
         print("Setup recommended: run 'hinata setup-pin' before sensitive actions or enrollment.")

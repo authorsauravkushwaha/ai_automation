@@ -37,6 +37,12 @@ class ToolManifest:
 
 
 DEFAULT_MANIFESTS: tuple[ToolManifest, ...] = (
+    ToolManifest("web_search", "1.0", "Search public web sources and return cited excerpts", "read_only", "low", "idempotent", True, 18.0),
+    ToolManifest("fetch_webpage", "1.0", "Fetch a public webpage with SSRF protection and extract readable text", "read_only", "low", "idempotent", True, 12.0),
+    ToolManifest("list_installed_apps", "1.0", "Discover installed Windows desktop and Store apps", "read_only", "low", "idempotent", True, 10.0),
+    ToolManifest("write_code", "1.0", "Generate complete polyglot source code; optionally save in permitted roots", "local_write", "low", "idempotent", True, 30.0),
+    ToolManifest("set_owner_name", "1.0", "Persist the preferred user name(s)", "local_write", "low", "idempotent", True, 5.0),
+    ToolManifest("owner_name", "1.0", "Retrieve configured owner name(s)", "read_only", "low", "idempotent", True, 5.0),
     ToolManifest("code_inspect", "1.1", "Read-only static Python AST analysis", "read_only", "low", "idempotent", True, 10.0),
     ToolManifest("inspect_repository_imports", "1.0", "Build Python module import graph across workspace", "read_only", "low", "idempotent", True, 20.0),
     ToolManifest("knowledge_list", "1.0", "List indexed local knowledge documents", "read_only", "low", "idempotent", True, 10.0),

@@ -52,7 +52,7 @@ class MainWindow(QMainWindow):
         self.speech_signals = SpeechSignals()
         self.speech_signals.state.connect(self.update_speech_state)
         self.threadpool = QThreadPool(self)
-        self.threadpool.setMaxThreadCount(2)
+        self.threadpool.setMaxThreadCount(4)
         self.threadpool.setExpiryTimeout(30_000)
         self._load_ui_settings()
         self.setWindowTitle(f"HINATA {__version__} — Local AI Assistant")
@@ -76,6 +76,17 @@ class MainWindow(QMainWindow):
             self.assistant.microphone.device = (
                 int(microphone) if microphone.isascii() and microphone.isdigit() else microphone or None
             )
+        owner_name = self.assistant.database.get_setting("owner.name")
+        if owner_name:
+            self.assistant.personality.set_owner_name(owner_name)
+        web_enabled = self.assistant.database.get_setting("ui.web_search_enabled")
+        if web_enabled is not None:
+            enabled = web_enabled == "true"
+            self.assistant.config.security.web_search_enabled = enabled
+            self.assistant.orchestrator.web_search.enabled = enabled
+        voice_gender = self.assistant.database.get_setting("ui.voice_gender")
+        if voice_gender in {"female", "male", "any"}:
+            self.assistant.config.speech.tts_voice_gender = voice_gender
 
     def _build_ui(self) -> None:
         # The animated 3D backdrop paints itself; every panel floats on top.
@@ -132,8 +143,8 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.conversation, 1)
         self.conversation.add_message(
             "HINATA",
-            "Ready. Type a request or start voice input. Structured PC commands work even when Ollama is offline. "
-            "Nothing is sent to a cloud AI service.",
+            self.assistant.personality.welcome_greeting()
+            + " Type a request or start voice input. Structured PC commands work even when Ollama is offline.",
         )
 
         indicators = QHBoxLayout()
@@ -172,7 +183,7 @@ class MainWindow(QMainWindow):
         speak_button.clicked.connect(lambda: self.speak_text(self.last_response_text))
         voice_check = QPushButton("Test speaker")
         voice_check.setToolTip("Play a short offline test and show any audio error")
-        voice_check.clicked.connect(lambda: self.speak_text("HINATA voice check. Systems online."))
+        voice_check.clicked.connect(lambda: self.speak_text(self.assistant.personality.voice_test_phrase()))
         self.stop_button = QPushButton("Emergency stop")
         self.stop_button.setToolTip("Stop speech, microphone capture, wake listening, and request task cancellation")
         self.stop_button.clicked.connect(self.emergency_stop)
@@ -260,8 +271,11 @@ class MainWindow(QMainWindow):
     def _update_busy_state(self) -> None:
         busy = self.pending_tasks > 0
         self.processing_pill.set_active(busy, "#e7b66b")
-        self.send_button.setEnabled(not busy)
-        self.microphone_button.setEnabled(not busy and not self.assistant.microphone.recording)
+        # Keep the composer active while earlier requests run; thread-pool workers
+        # allow independent tasks to overlap (model requests remain serialized safely).
+        self.send_button.setEnabled(True)
+        self.input.setEnabled(True)
+        self.microphone_button.setEnabled(not self.assistant.microphone.recording)
 
     def show_task_error(self, message: str) -> None:
         self.conversation.add_message("System", f"Error: {message}")
@@ -270,8 +284,6 @@ class MainWindow(QMainWindow):
             self.speak_text("I could not complete that request. Please check the error on screen.")
 
     def submit_text(self, text: str | None = None) -> None:
-        if self.pending_tasks:
-            return
         value = text if isinstance(text, str) else self.input.text()
         cleaned = value.strip()
         if not cleaned:
@@ -594,6 +606,12 @@ class MainWindow(QMainWindow):
             return
         self.speak_responses = dialog.speak_checkbox.isChecked()
         self.assistant.orchestrator.llm_enabled = dialog.llm_checkbox.isChecked()
+        self.assistant.personality.set_owner_name(dialog.owner_name_input.text())
+        web_enabled = dialog.web_search_checkbox.isChecked()
+        self.assistant.config.security.web_search_enabled = web_enabled
+        self.assistant.orchestrator.web_search.enabled = web_enabled
+        voice_gender = str(dialog.voice_gender_combo.currentData())
+        self.assistant.config.speech.tts_voice_gender = voice_gender
         selected = dialog.selected_microphone
         self.assistant.microphone.device = (
             int(selected) if selected.isascii() and selected.isdigit() else selected or None
@@ -603,6 +621,8 @@ class MainWindow(QMainWindow):
             "ui.llm_enabled", str(self.assistant.orchestrator.llm_enabled).lower()
         )
         self.assistant.database.set_setting("ui.microphone", selected)
+        self.assistant.database.set_setting("ui.web_search_enabled", str(web_enabled).lower())
+        self.assistant.database.set_setting("ui.voice_gender", voice_gender)
         if self.assistant.orchestrator.llm_enabled and not self.pending_tasks:
             QTimer.singleShot(0, self.connect_ollama)
         self.statusBar().showMessage("Settings saved locally", 4000)

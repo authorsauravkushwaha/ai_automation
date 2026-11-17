@@ -13,6 +13,12 @@ class ValidationError(ValueError):
 
 
 SCHEMAS: dict[str, dict[str, Any]] = {
+    "web_search": {"required": ["query"], "properties": {"query": ("string", 1, 1000), "max_results": ("integer", 1, 12)}},
+    "fetch_webpage": {"required": ["url"], "properties": {"url": ("string", 8, 2048), "max_chars": ("integer", 200, 15000)}},
+    "list_installed_apps": {"required": [], "properties": {"query": ("string", 0, 100), "limit": ("integer", 1, 200)}},
+    "write_code": {"required": ["task"], "properties": {"task": ("string", 1, 4000), "language": ("string", 1, 40), "output_path": ("string", 0, 1024), "overwrite": ("boolean",)}},
+    "set_owner_name": {"required": ["name"], "properties": {"name": ("string", 1, 160)}},
+    "owner_name": {"required": [], "properties": {}},
     "code_inspect": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},
     "knowledge_list": {"required": [], "properties": {}},
     "knowledge_sync": {"required": ["path"], "properties": {"path": ("string", 1, 1024)}},

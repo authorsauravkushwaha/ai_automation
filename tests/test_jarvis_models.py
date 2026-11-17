@@ -152,7 +152,13 @@ class JarvisStudioTests(unittest.TestCase):
         self.assertEqual(project["status"], "PARTIAL")
         self.assertIn("Ran 2 tests", project["sandbox_verification"]["stderr"])
         self.assertTrue((self.root / "todo_app" / "tests" / "test_core.py").is_file())
-        self.assertEqual(database.fetch_one("SELECT status FROM project_records WHERE root_path = ?", (str(self.root / "todo_app"),))["status"], "PARTIAL")
+        canonical_root = str(Path(project["project_root"]).resolve())
+        self.assertEqual(
+            database.fetch_one(
+                "SELECT status FROM project_records WHERE root_path = ?", (canonical_root,)
+            )["status"],
+            "PARTIAL",
+        )
         with self.assertRaises(AutomationError):
             ProjectArchitectEngine(self.files, workspace).build_project(
                 project_dir="todo_app", specification="overwrite", llm_enabled=False,

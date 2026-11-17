@@ -56,6 +56,20 @@ class SettingsDialog(QDialog):
         self.llm_checkbox.setChecked(llm_enabled)
         form.addRow(self.speak_checkbox)
         form.addRow(self.llm_checkbox)
+        self.owner_name_input = QLineEdit(assistant.personality.owner_name)
+        self.owner_name_input.setPlaceholderText("Your name, or names separated by commas / and")
+        form.addRow("Owner name(s)", self.owner_name_input)
+        self.web_search_checkbox = QCheckBox("Allow live internet search (disabled by strict-offline mode)")
+        self.web_search_checkbox.setChecked(assistant.config.security.web_search_enabled)
+        form.addRow(self.web_search_checkbox)
+        self.voice_gender_combo = QComboBox()
+        self.voice_gender_combo.addItem("Soft female voice (recommended)", "female")
+        self.voice_gender_combo.addItem("Male voice", "male")
+        self.voice_gender_combo.addItem("Any available voice", "any")
+        gender_index = self.voice_gender_combo.findData(assistant.config.speech.tts_voice_gender)
+        if gender_index >= 0:
+            self.voice_gender_combo.setCurrentIndex(gender_index)
+        form.addRow("Voice preference", self.voice_gender_combo)
         form.addRow("Configured model", QLabel(assistant.config.ollama.model or "auto-detect"))
         form.addRow("Ollama endpoint", QLabel(assistant.config.ollama.host))
         connection = assistant.llm.connect_status()
@@ -101,7 +115,10 @@ class SettingsDialog(QDialog):
         privacy_form = QFormLayout(privacy)
         privacy_form.addRow("Local data", QLabel(str(assistant.config.data_dir)))
         privacy_form.addRow("Voice embeddings", QLabel("DPAPI-protected on Windows; no raw samples saved"))
-        privacy_form.addRow("Network policy", QLabel("Ollama loopback only; no cloud AI or telemetry"))
+        privacy_form.addRow(
+            "Network policy",
+            QLabel("Local Ollama stays on loopback. Live search contacts public search/API sites only when enabled; no cloud AI model or telemetry."),
+        )
         roots = QLabel("\n".join(str(path) for path in assistant.config.security.allowed_roots))
         roots.setWordWrap(True)
         privacy_form.addRow("Permitted folders", roots)

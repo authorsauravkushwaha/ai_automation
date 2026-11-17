@@ -14,6 +14,7 @@ from hinata.automation.app_control import AppControl
 from hinata.automation.file_manager import FileManager
 from hinata.automation.jarvis_cockpit import DesktopCockpit, JarvisOverrideController
 from hinata.automation.system_info import SystemInfo
+from hinata.automation.web_search import WebSearchEngine
 from hinata.automation.windows_control import WindowsControl
 from hinata.automation.workspace import WorkspaceManager
 from hinata.config import HinataConfig, load_config
@@ -85,7 +86,16 @@ class HinataAssistant:
             self.config.memory.conversation_limit,
             embeddings=self.embeddings if self.config.ollama.enabled else None,
         )
-        self.personality = PersonalityManager(self.database, self.config.personality.mode)
+        self.personality = PersonalityManager(
+            self.database, self.config.personality.mode,
+            default_user_name=self.config.personality.user_name,
+        )
+        saved_voice_gender = self.database.get_setting("ui.voice_gender")
+        if saved_voice_gender in {"female", "male", "any"}:
+            self.config.speech.tts_voice_gender = saved_voice_gender
+        saved_web_search = self.database.get_setting("ui.web_search_enabled")
+        if saved_web_search is not None:
+            self.config.security.web_search_enabled = saved_web_search == "true"
         self.authentication = Authentication(self.database)
         self.validator = ActionValidator()
         self.parser = IntentParser(self.validator)
@@ -129,8 +139,16 @@ class HinataAssistant:
             memory=self.memory,
             personality=self.personality,
             permissions=self.permissions,
-            apps=AppControl(self.config.applications),
+            apps=AppControl(
+                self.config.applications,
+                discover_installed=self.config.security.discover_installed_apps,
+            ),
             files=self.files,
+            web_search=WebSearchEngine(
+                enabled=self.config.security.web_search_enabled,
+                strict_offline=self.config.security.strict_offline,
+                offline_guard=self.offline_guard,
+            ),
             knowledge=self.knowledge,
             tasks=self.tasks,
             workspace_manager=self.workspaces,
@@ -331,6 +349,16 @@ class HinataAssistant:
             "autonomy_mode": self.orchestrator.autonomy_mode,
             "tactical_override": self.override_controller.status(),
             "offline_policy": self.offline_guard.status(),
+            "web_search": {
+                "enabled": self.config.security.web_search_enabled,
+                "strict_offline": self.config.security.strict_offline,
+                "behavior": (
+                    "blocked"
+                    if self.config.security.strict_offline or not self.config.security.web_search_enabled
+                    else "try_live_sources_then_use_local_fallback"
+                ),
+                "sources": ["DuckDuckGo", "Wikipedia", "GitHub", "OpenLibrary (when relevant)"],
+            },
             "encryption_at_rest": self.vault is not None,
             "database_encryption": self.database.encryption_status(),
             "knowledge_index": self.knowledge.index_stats(),
