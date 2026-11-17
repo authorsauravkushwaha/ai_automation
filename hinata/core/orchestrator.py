@@ -34,9 +34,9 @@ from hinata.automation.app_control import AppControl, AutomationError
 from hinata.automation.file_manager import FileManager
 from hinata.automation.jarvis_cockpit import DesktopCockpit, build_executive_briefing
 from hinata.automation.system_info import SystemInfo
+from hinata.automation.web_search import WebSearchEngine
 from hinata.automation.windows_control import WindowsControl
 from hinata.automation.workspace import WorkspaceManager
-from hinata.automation.web_search import WebSearchEngine
 from hinata.core.errors import (
     BudgetTracker,
     CancellationRegistry,

@@ -8,9 +8,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from hinata.agents.coder import PolyglotCoder, resolve_language
-from hinata.automation.app_control import AppControl
+from hinata.automation.app_control import AppControl, AutomationError
 from hinata.automation.file_manager import FileManager
-from hinata.automation.web_search import WebSearchEngine, extract_core_search_query, is_safe_public_url
+from hinata.automation.web_search import (
+    WebSearchEngine,
+    extract_core_search_query,
+    is_safe_public_url,
+)
 from hinata.config import SecurityConfig
 from hinata.core.intent_parser import IntentParser
 from hinata.core.model_reply import plain_text_reply
@@ -52,7 +56,7 @@ class WebSearchAndPolyglotTests(unittest.TestCase):
     def test_fetch_rejects_private_url_before_network_request(self):
         engine = WebSearchEngine()
         with patch.object(engine._opener, "open") as http:
-            with self.assertRaises(Exception):
+            with self.assertRaises(AutomationError):
                 engine.fetch_webpage("http://127.0.0.1/private")
             http.assert_not_called()
 
@@ -94,33 +98,37 @@ class WebSearchAndPolyglotTests(unittest.TestCase):
     def test_malformed_model_plan_retries_as_safe_display_only_chat(self):
         with tempfile.TemporaryDirectory() as directory:
             assistant = make_assistant(directory, llm_enabled=True)
-            self.addCleanup(assistant.close)
-            assistant.llm.complete = lambda *args, **kwargs: "{\"type\": \"chat\", \"content\": "
-            assistant.llm.chat = lambda messages, system, **kwargs: "Here is a plain-language answer."
-            result = assistant.process_text("Explain how photosynthesis works")
-            self.assertTrue(result.success, result.text)
-            self.assertEqual(result.status, "completed")
-            self.assertEqual(result.text, "Here is a plain-language answer.")
+            try:
+                assistant.llm.complete = lambda *args, **kwargs: "{\"type\": \"chat\", \"content\": "
+                assistant.llm.chat = lambda messages, system, **kwargs: "Here is a plain-language answer."
+                result = assistant.process_text("Explain how photosynthesis works")
+                self.assertTrue(result.success, result.text)
+                self.assertEqual(result.status, "completed")
+                self.assertEqual(result.text, "Here is a plain-language answer.")
+            finally:
+                assistant.close()
 
     def test_offline_internet_search_falls_back_to_local_model(self):
         with tempfile.TemporaryDirectory() as directory:
             assistant = make_assistant(directory, llm_enabled=True)
-            self.addCleanup(assistant.close)
-            assistant.orchestrator.web_search.search = lambda *args, **kwargs: {
-                "query": "current weather",
-                "results": [],
-                "page_excerpts": [],
-                "count": 0,
-                "network_errors": {"ddg_html": "network unreachable"},
-                "connection_mode": "offline_fallback",
-                "live_sources_available": False,
-            }
-            assistant.llm.chat = lambda messages, system, **kwargs: "Offline answer; I cannot verify current conditions."
-            result = assistant.process_text("Search about current weather")
-            self.assertTrue(result.success, result.text)
-            self.assertIn("OFFLINE FALLBACK", result.text)
-            self.assertIn("cannot verify current conditions", result.text)
-            self.assertEqual(result.data["connection_mode"], "offline_fallback")
+            try:
+                assistant.orchestrator.web_search.search = lambda *args, **kwargs: {
+                    "query": "current weather",
+                    "results": [],
+                    "page_excerpts": [],
+                    "count": 0,
+                    "network_errors": {"ddg_html": "network unreachable"},
+                    "connection_mode": "offline_fallback",
+                    "live_sources_available": False,
+                }
+                assistant.llm.chat = lambda messages, system, **kwargs: "Offline answer; I cannot verify current conditions."
+                result = assistant.process_text("Search about current weather")
+                self.assertTrue(result.success, result.text)
+                self.assertIn("OFFLINE FALLBACK", result.text)
+                self.assertIn("cannot verify current conditions", result.text)
+                self.assertEqual(result.data["connection_mode"], "offline_fallback")
+            finally:
+                assistant.close()
 
     def test_polyglot_coder_repairs_python_syntax_once_before_fallback(self):
         from types import SimpleNamespace
