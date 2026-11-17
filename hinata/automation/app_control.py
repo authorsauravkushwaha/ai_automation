@@ -198,7 +198,7 @@ class AppControl:
         if os.name != "nt":  # pragma: no cover - Windows registry discovery
             return
         try:
-            import winreg
+            winreg: Any = __import__("winreg")
         except ImportError:
             return
 

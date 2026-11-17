@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 from collections.abc import Callable, Sequence
@@ -389,7 +390,7 @@ class TextToSpeech:
         with tempfile.TemporaryDirectory(prefix="hinata-neural-tts-") as directory:
             out_mp3 = Path(directory) / "speech.mp3"
             cmd = [
-                os.sys.executable,
+                sys.executable,
                 "-m",
                 "edge_tts",
                 "--voice",
