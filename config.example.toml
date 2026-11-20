@@ -99,7 +99,7 @@ conversation_limit = 1000
 [personality]
 # friend, advisor, technical, strategist, professional, or jarvis. Change at runtime by text or voice.
 mode = "friend"
-user_name = ""  # Owner name(s) set during installation or Settings so HINATA addresses you personally.
+user_name = ""  # Blank uses "Darling"; customize this during installation or in Settings.
 
 # Only these applications can be launched. Commands are fixed arrays, never model-generated.
 [applications.notepad]

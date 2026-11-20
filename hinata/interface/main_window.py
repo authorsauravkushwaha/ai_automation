@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
+import time
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -33,7 +35,9 @@ from hinata.interface.components import ConversationView, StatusPill, Worker
 from hinata.interface.control_center import AgentControlCenterDialog
 from hinata.interface.dialogs import EnrollmentDialog, MemoryDialog, SettingsDialog, StatusDialog
 from hinata.interface.styles import STYLE_SHEET
+from hinata.speech.microphone import HandsFreeSettings
 from hinata.speech.replies import speaking_enabled, spoken_reply
+from hinata.speech.speech_to_text import NoSpeechDetected
 from hinata.speech.voice_pipeline import VoiceResult
 
 
@@ -48,7 +52,14 @@ class MainWindow(QMainWindow):
         self.workers: set[Worker] = set()
         self.pending_tasks = 0
         self._stop_generation = 0
+        self._voice_session = False
+        self._voice_capturing = False
+        self._voice_resume_at = 0.0
+        self._voice_timer = QTimer(self)
+        self._voice_timer.setInterval(100)
+        self._voice_timer.timeout.connect(self._voice_tick)
         self.last_response_text = ""
+        self._browser_retry_query: str | None = None
         self.speech_signals = SpeechSignals()
         self.speech_signals.state.connect(self.update_speech_state)
         self.threadpool = QThreadPool(self)
@@ -76,6 +87,10 @@ class MainWindow(QMainWindow):
             self.assistant.microphone.device = (
                 int(microphone) if microphone.isascii() and microphone.isdigit() else microphone or None
             )
+        self.assistant.microphone.hands_free = HandsFreeSettings.from_saved(
+            self.assistant.database.get_setting("ui.hands_free_pause_ms"),
+            self.assistant.database.get_setting("ui.hands_free_sensitivity"),
+        )
         owner_name = self.assistant.database.get_setting("owner.name")
         if owner_name:
             self.assistant.personality.set_owner_name(owner_name)
@@ -144,7 +159,7 @@ class MainWindow(QMainWindow):
         self.conversation.add_message(
             "HINATA",
             self.assistant.personality.welcome_greeting()
-            + " Type a request or start voice input. Structured PC commands work even when Ollama is offline.",
+            + " Type a request or start hands-free voice. Structured PC commands work even when Ollama is offline.",
         )
 
         indicators = QHBoxLayout()
@@ -158,11 +173,15 @@ class MainWindow(QMainWindow):
         self.activity_label = QLabel("Ready")
         self.activity_label.setObjectName("muted")
         indicators.addWidget(self.activity_label)
+        latest = QPushButton("Latest message")
+        latest.setToolTip("Jump to the latest chat message")
+        latest.clicked.connect(self.conversation.jump_to_latest)
+        indicators.addWidget(latest)
         outer.addLayout(indicators)
 
         input_row = QHBoxLayout()
-        self.microphone_button = QPushButton("Start voice")
-        self.microphone_button.setToolTip("Start recording; click again to stop and transcribe locally")
+        self.microphone_button = QPushButton("Start hands-free voice")
+        self.microphone_button.setToolTip("Listen locally until you stop speaking; click again to pause hands-free voice")
         self.microphone_button.clicked.connect(self.toggle_microphone)
         self.input = QLineEdit()
         self.input.setPlaceholderText("Ask HINATA or enter a command…")
@@ -170,9 +189,14 @@ class MainWindow(QMainWindow):
         self.send_button = QPushButton("Send")
         self.send_button.setObjectName("primary")
         self.send_button.clicked.connect(self.submit_text)
+        self.browser_retry_button = QPushButton("Try in browser")
+        self.browser_retry_button.setToolTip("Send the unsuccessful web query to your default browser")
+        self.browser_retry_button.clicked.connect(self.retry_in_browser)
+        self.browser_retry_button.hide()
         input_row.addWidget(self.microphone_button)
         input_row.addWidget(self.input, 1)
         input_row.addWidget(self.send_button)
+        input_row.addWidget(self.browser_retry_button)
         outer.addLayout(input_row)
 
         tools = QHBoxLayout()
@@ -248,17 +272,20 @@ class MainWindow(QMainWindow):
             if generation == self._stop_generation:
                 on_result(result)
 
+        def deliver_error_if_current(message: str) -> None:
+            if generation == self._stop_generation:
+                (on_error or self.show_task_error)(message)
+
+        self._pause_voice_capture()
         worker = Worker(run_if_current)
         self.workers.add(worker)
         self.pending_tasks += 1
         self.activity_label.setText(label)
         self._update_busy_state()
-        worker.signals.result.connect(deliver_if_current)
-        if on_error is not None:
-            worker.signals.error.connect(on_error)
-        else:
-            worker.signals.error.connect(self.show_task_error)
-        worker.signals.finished.connect(lambda worker=worker: self.finish_task(worker))
+        queued = Qt.ConnectionType.QueuedConnection
+        worker.signals.result.connect(deliver_if_current, queued)
+        worker.signals.error.connect(deliver_error_if_current, queued)
+        worker.signals.finished.connect(lambda worker=worker: self.finish_task(worker), queued)
         self.threadpool.start(worker)
 
     def finish_task(self, worker: Worker) -> None:
@@ -275,7 +302,7 @@ class MainWindow(QMainWindow):
         # allow independent tasks to overlap (model requests remain serialized safely).
         self.send_button.setEnabled(True)
         self.input.setEnabled(True)
-        self.microphone_button.setEnabled(not self.assistant.microphone.recording)
+        self.microphone_button.setEnabled(self._voice_session or not busy)
 
     def show_task_error(self, message: str) -> None:
         self.conversation.add_message("System", f"Error: {message}")
@@ -289,6 +316,25 @@ class MainWindow(QMainWindow):
         if not cleaned:
             return
         self.input.clear()
+        if not self._navigate_chat(cleaned):
+            self._send_text(cleaned)
+
+    def _navigate_chat(self, text: str) -> bool:
+        """Handle local chat navigation without adding messages or invoking a model."""
+        command = " ".join(text.casefold().strip().rstrip(".!?").split())
+        command = re.sub(r"^hinata(?:[,!:]\s*|\s+)(?:please\s+)?|^please\s+", "", command)
+        if command == "scroll chat up":
+            self.conversation.scroll_history(-1)
+        elif command == "scroll chat down":
+            self.conversation.scroll_history(1)
+        elif command in {"latest message", "go to latest message", "go to the latest message"}:
+            self.conversation.jump_to_latest()
+        else:
+            return False
+        return True
+
+    def _send_text(self, cleaned: str) -> None:
+        self._set_browser_retry(None)
         self.conversation.add_message("You", cleaned)
         self.run_task(
             lambda: self.assistant.process_text(cleaned),
@@ -296,8 +342,22 @@ class MainWindow(QMainWindow):
             label="Understanding request",
         )
 
+    def _set_browser_retry(self, query: str | None) -> None:
+        self._browser_retry_query = query
+        self.browser_retry_button.setVisible(query is not None)
+
+    def retry_in_browser(self) -> None:
+        if self._browser_retry_query:
+            # Keep any draft in the input box. Browser-first syntax treats the
+            # whole query as data, and dispatch rechecks current permissions.
+            query = " ".join(self._browser_retry_query.split())
+            self._send_text(f"search in browser for {query}")
+
     def handle_response(self, response: AssistantResponse, voice: VoiceResult | None = None) -> None:
         self.conversation.add_message("HINATA", response.text)
+        retry = response.data.get("browser_retry_query")
+        web = self.assistant.orchestrator.web_search
+        self._set_browser_retry(retry if isinstance(retry, str) and retry and web.enabled and not web.strict_offline else None)
         if self.speak_responses:
             self.speak_text(spoken_reply(response))
         self.statusBar().showMessage(response.status.replace("_", " "), 5000)
@@ -436,38 +496,78 @@ class MainWindow(QMainWindow):
         self.last_response_text = response.text
 
     def toggle_microphone(self) -> None:
-        if not self.assistant.microphone.recording:
-            # Prevent HINATA's own answer from being transcribed as a new command.
-            self.assistant.tts.stop()
-        if self.assistant.microphone.recording:
-            try:
-                self.listening_pill.set_active(False)
-                self.run_task(
-                    self.assistant.voice.stop_and_process,
-                    self.process_voice_result,
-                    self.voice_error,
-                    "Recognizing speech locally",
-                )
-            except RuntimeError as exc:
-                self.show_task_error(str(exc))
+        if self._voice_session:
+            self._end_voice_session()
+            if not self.pending_tasks:
+                self.activity_label.setText("Ready")
             return
-        if self.pending_tasks:
+        if self.pending_tasks or self.assistant.microphone.recording:
+            return
+        self._voice_session = True
+        self.microphone_button.setText("Pause voice")
+        self._voice_timer.start()
+        self._voice_tick()
+
+    def _pause_voice_capture(self) -> None:
+        if self._voice_capturing:
+            self._voice_capturing = False
+            self.assistant.microphone.cancel()
+            self.listening_pill.set_active(False)
+
+    def _end_voice_session(self) -> None:
+        self._voice_session = False
+        self._voice_timer.stop()
+        self._pause_voice_capture()
+        self.microphone_button.setText("Start hands-free voice")
+        self._update_busy_state()
+
+    def _voice_tick(self) -> None:
+        if not self._voice_session:
+            return
+        if self.assistant.tts.speaking:
+            # Leave a short buffer for audio playback to drain before opening the mic.
+            self._voice_resume_at = time.monotonic() + 0.3
+        if self.pending_tasks or QApplication.activeModalWidget() or time.monotonic() < self._voice_resume_at:
+            self._pause_voice_capture()
+            return
+        if self.assistant.tts.speaking:
             return
         try:
-            self.assistant.voice.start()
+            if not self._voice_capturing:
+                if self.assistant.microphone.recording:
+                    return
+                self.assistant.voice.start()
+                self._voice_capturing = True
+                self.listening_pill.set_active(True, "#ef7f89")
+                self.activity_label.setText("Listening — speak, then pause to send")
+            elif self.assistant.microphone.poll_utterance():
+                # Stop and transcribe in the worker. Don't let run_task discard this turn.
+                self._voice_capturing = False
+                self.listening_pill.set_active(False)
+                self.run_task(
+                    self._finish_utterance, self.process_voice_result, self.voice_error,
+                    "Recognizing speech locally",
+                )
         except RuntimeError as exc:
-            QMessageBox.critical(self, "Microphone", str(exc))
-            return
-        self.microphone_button.setEnabled(True)
-        self.microphone_button.setText("Stop & process")
-        self.microphone_button.setObjectName("recording")
-        self._repolish(self.microphone_button)
-        self.listening_pill.set_active(True, "#ef7f89")
-        self.activity_label.setText("Listening — click Stop & process when finished")
+            self.voice_error(str(exc))
 
-    def process_voice_result(self, voice: VoiceResult) -> None:
-        self.reset_microphone_button()
+    def _finish_utterance(self) -> VoiceResult | None:
+        try:
+            return self.assistant.voice.stop_and_process()
+        except NoSpeechDetected:
+            return None
+
+    def process_voice_result(self, voice: VoiceResult | None) -> None:
+        if voice is None:
+            return
+        voice_authorized = voice.speaker_match is True or (voice.speaker_match is None and not voice.speaker_required)
+        if voice_authorized and self._navigate_chat(voice.text):
+            return
         self.conversation.add_message("You", f"[Voice: {voice.speaker_status}] {voice.text}")
+        if voice.text.strip().rstrip(".!?").casefold() == "pause voice":
+            self._end_voice_session()
+            self.conversation.add_message("HINATA", "Voice paused. Select Start hands-free voice to resume.")
+            return
         self.run_task(
             lambda: self.assistant.orchestrator.process(
                 voice.text,
@@ -480,18 +580,14 @@ class MainWindow(QMainWindow):
         )
 
     def voice_error(self, message: str) -> None:
-        self.reset_microphone_button()
-        self.listening_pill.set_active(False)
+        self._end_voice_session()
+        self.activity_label.setText("Voice paused")
         self.show_task_error(message)
-
-    def reset_microphone_button(self) -> None:
-        self.microphone_button.setText("Start voice")
-        self.microphone_button.setObjectName("")
-        self._repolish(self.microphone_button)
-        self.listening_pill.set_active(False)
 
     def speak_text(self, text: str) -> None:
         if text:
+            self._pause_voice_capture()
+            self._voice_resume_at = time.monotonic() + 0.3
             try:
                 self.assistant.tts.speak(text, self.speech_signals.state.emit)
             except (RuntimeError, OSError) as exc:
@@ -504,9 +600,9 @@ class MainWindow(QMainWindow):
 
     def emergency_stop(self) -> None:
         self._stop_generation += 1
+        self._set_browser_retry(None)
+        self._end_voice_session()
         self.assistant.emergency_stop()
-        if not self.assistant.microphone.recording:
-            self.reset_microphone_button()
         self.speaking_pill.set_active(False)
         self.activity_label.setText("Stop requested — an action already in progress may finish")
         self.statusBar().showMessage("Stop requested; HINATA will not start another action", 7000)
@@ -596,6 +692,7 @@ class MainWindow(QMainWindow):
         self.connect_ollama()
 
     def open_settings(self) -> None:
+        self._pause_voice_capture()
         dialog = SettingsDialog(
             self.assistant,
             speak_responses=self.speak_responses,
@@ -610,6 +707,8 @@ class MainWindow(QMainWindow):
         web_enabled = dialog.web_search_checkbox.isChecked()
         self.assistant.config.security.web_search_enabled = web_enabled
         self.assistant.orchestrator.web_search.enabled = web_enabled
+        if not web_enabled:
+            self._set_browser_retry(None)
         voice_gender = str(dialog.voice_gender_combo.currentData())
         self.assistant.config.speech.tts_voice_gender = voice_gender
         selected = dialog.selected_microphone
@@ -620,6 +719,10 @@ class MainWindow(QMainWindow):
         self.assistant.database.set_setting(
             "ui.llm_enabled", str(self.assistant.orchestrator.llm_enabled).lower()
         )
+        hands_free = dialog.hands_free_settings
+        self.assistant.microphone.hands_free = hands_free
+        self.assistant.database.set_setting("ui.hands_free_pause_ms", str(hands_free.pause_ms))
+        self.assistant.database.set_setting("ui.hands_free_sensitivity", hands_free.sensitivity)
         self.assistant.database.set_setting("ui.microphone", selected)
         self.assistant.database.set_setting("ui.web_search_enabled", str(web_enabled).lower())
         self.assistant.database.set_setting("ui.voice_gender", voice_gender)
@@ -637,6 +740,7 @@ class MainWindow(QMainWindow):
 
     def quick_lockdown(self) -> None:
         if not self.assistant.override_controller.is_lockdown:
+            self._end_voice_session()
             self.assistant.engage_lockdown("Main Window Red Alert Lockdown")
             self.conversation.add_message(
                 "System",
@@ -657,9 +761,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "PIN Verification Failed", str(exc))
 
     def open_enrollment(self) -> None:
-        if self.pending_tasks or self.assistant.microphone.recording:
+        if self.pending_tasks:
             QMessageBox.information(self, "Busy", "Finish the current task before enrollment.")
             return
+        self._end_voice_session()
         EnrollmentDialog(self.assistant, self.run_task, self).exec()
 
     def open_status(self) -> None:
@@ -679,6 +784,7 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
+        self._end_voice_session()
         if self.assistant.microphone.recording:
             self.assistant.microphone.cancel()
         self.assistant.tts.stop()
@@ -698,4 +804,6 @@ def run_gui(assistant: HinataAssistant) -> int:
     application.setStyleSheet(STYLE_SHEET)
     window = MainWindow(assistant)
     window.show()
+    if window.speak_responses:
+        window.speak_text(assistant.personality.welcome_greeting())
     return int(application.exec())

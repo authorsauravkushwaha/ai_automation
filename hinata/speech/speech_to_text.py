@@ -13,6 +13,10 @@ class SpeechRecognitionError(RuntimeError):
     pass
 
 
+class NoSpeechDetected(SpeechRecognitionError):
+    """Audio was processed successfully but yielded no intelligible speech."""
+
+
 class SpeechToText:
     def __init__(self, config: SpeechConfig) -> None:
         self.config = config
@@ -75,7 +79,7 @@ class SpeechToText:
         except Exception as exc:
             raise SpeechRecognitionError(f"Offline Whisper transcription failed: {exc}") from exc
         if not text:
-            raise SpeechRecognitionError("No intelligible speech was detected")
+            raise NoSpeechDetected("No intelligible speech was detected")
         return text
 
     def _load_vosk(self, sample_rate: int) -> Any:
@@ -116,7 +120,7 @@ class SpeechToText:
             raise SpeechRecognitionError(f"Offline Vosk transcription failed: {exc}") from exc
         text = str(result.get("text", "")).strip()
         if not text:
-            raise SpeechRecognitionError("No intelligible speech was detected")
+            raise NoSpeechDetected("No intelligible speech was detected")
         return text
 
     def unload(self) -> None:

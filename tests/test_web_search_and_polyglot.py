@@ -127,6 +127,7 @@ class WebSearchAndPolyglotTests(unittest.TestCase):
                 self.assertIn("OFFLINE FALLBACK", result.text)
                 self.assertIn("cannot verify current conditions", result.text)
                 self.assertEqual(result.data["connection_mode"], "offline_fallback")
+                self.assertEqual(result.data["browser_retry_query"], "current weather")
             finally:
                 assistant.close()
 

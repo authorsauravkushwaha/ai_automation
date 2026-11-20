@@ -2,7 +2,8 @@ import importlib.util
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 from tests.helpers import make_assistant
 
@@ -104,6 +105,98 @@ class DesktopTests(unittest.TestCase):
             ))
             self.assertEqual(speak.call_count, 2)
             self.assertNotIn("secret", " ".join(call.args[0] for call in speak.call_args_list))
+
+    def test_hands_free_turn_waits_for_reply_then_reopens_mic_until_stopped(self) -> None:
+        from hinata.core.types import AssistantResponse
+        from hinata.speech.voice_pipeline import VoiceResult
+
+        voice = VoiceResult("system info", True, True, "verified")
+        mic = self.assistant.microphone
+        tts = self.assistant.tts
+        self.window.speak_responses = False
+        with (
+            patch.object(self.assistant.voice, "start") as start,
+            patch.object(mic, "poll_utterance", return_value=True),
+            patch.object(mic, "cancel") as cancel,
+            patch.object(self.assistant.voice, "stop_and_process", return_value=voice),
+            patch.object(self.assistant.orchestrator, "process", return_value=AssistantResponse("Done", True)) as process,
+            patch.object(type(tts), "speaking", new_callable=PropertyMock, return_value=False) as speaking,
+        ):
+            self.window.toggle_microphone()
+            self.window._voice_timer.stop()  # Step the listener deterministically.
+            start.assert_called_once()
+            self.window._voice_tick()
+            # First worker transcribes; the UI callback schedules the command worker.
+            for _ in range(2):
+                self.assertTrue(self.window.threadpool.waitForDone(3000))
+                QApplication.processEvents()
+            process.assert_called_once_with("system info", source="voice", speaker_match=True, speaker_required=True)
+            self.assertIn("Done", self.window.conversation.toPlainText())
+            speaking.return_value = True
+            self.window._voice_tick()
+            start.assert_called_once()
+            speaking.return_value = False
+            self.window._voice_resume_at = 0.0
+            self.window._voice_tick()
+            self.assertEqual(start.call_count, 2)
+            self.window.emergency_stop()
+            self.window._voice_tick()
+            self.assertEqual(start.call_count, 2)
+            cancel.assert_called()
+            self.assertEqual(self.window.microphone_button.text(), "Start hands-free voice")
+
+    def test_browser_retry_waits_for_click_and_preserves_the_draft(self) -> None:
+        self.window.speak_responses = False
+        query = "train times"
+        web = self.assistant.orchestrator.web_search
+        with (
+            patch.object(web, "search", return_value={"results": [], "page_excerpts": []}),
+            patch("hinata.automation.web_search.open_browser_search", return_value="your default browser") as launch,
+        ):
+            self.window.submit_text(f"search for {query}")
+            self.assertTrue(self.window.threadpool.waitForDone(3000))
+            QApplication.processEvents()
+            self.assertFalse(self.window.browser_retry_button.isHidden())
+            launch.assert_not_called()
+            self.window.input.setText("my next question")
+            self.window.browser_retry_button.click()
+            self.assertTrue(self.window.threadpool.waitForDone(3000))
+            QApplication.processEvents()
+            launch.assert_called_once()
+            self.assertEqual(parse_qs(urlsplit(launch.call_args.args[0]).query), {"q": [query]})
+            self.assertEqual(self.window.input.text(), "my next question")
+            self.assertTrue(self.window.browser_retry_button.isHidden())
+
+    def test_chat_navigation_preserves_reading_position_when_new_messages_arrive(self) -> None:
+        from hinata.speech.voice_pipeline import VoiceResult
+
+        self.window.show()
+        QApplication.processEvents()
+        conversation = self.window.conversation
+        for i in range(30):
+            conversation.add_message("HINATA", f"Message {i}\n" + "More text\n" * 7)
+        QApplication.processEvents()
+        scrollbar = conversation.verticalScrollBar()
+        self.assertGreater(scrollbar.maximum(), 0)
+        self.assertEqual(scrollbar.value(), scrollbar.maximum())
+        with patch.object(self.assistant, "process_text") as process_text:
+            self.window.submit_text("Scroll chat up.")
+            process_text.assert_not_called()
+        position = scrollbar.value()
+        self.assertLess(position, scrollbar.maximum())
+        conversation.add_message("HINATA", "A new reply arrived")
+        QApplication.processEvents()
+        self.assertEqual(scrollbar.value(), position)
+        self.window.process_voice_result(VoiceResult("Hinata, go to the latest message.", True, True, "verified"))
+        self.assertEqual(scrollbar.value(), scrollbar.maximum())
+
+    def test_voice_settings_load_from_the_local_profile(self) -> None:
+        database = self.assistant.database
+        database.set_setting("ui.hands_free_pause_ms", "1750")
+        database.set_setting("ui.hands_free_sensitivity", "high")
+        self.window._load_ui_settings()
+        self.assertEqual(self.assistant.microphone.hands_free.pause_ms, 1750)
+        self.assertEqual(self.assistant.microphone.hands_free.sensitivity, "high")
 
     def test_settings_default_to_local_values(self) -> None:
         self.assertTrue(self.window.speak_responses)

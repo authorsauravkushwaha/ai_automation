@@ -5,11 +5,60 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 
 
 class MicrophoneError(RuntimeError):
     pass
+
+
+BLOCK_DURATION_MS = 250
+HANDS_FREE_PAUSES_MS = (750, 1250, 1750, 2500)
+SPEECH_THRESHOLDS = {"high": 0.006, "normal": 0.012, "low": 0.024}
+
+
+@dataclass(frozen=True, slots=True)
+class HandsFreeSettings:
+    pause_ms: int = 1250
+    sensitivity: str = "normal"
+
+    def __post_init__(self) -> None:
+        if self.pause_ms not in HANDS_FREE_PAUSES_MS or self.sensitivity not in SPEECH_THRESHOLDS:
+            raise ValueError("Unsupported hands-free pause or microphone sensitivity")
+
+    @classmethod
+    def from_saved(cls, pause: str | None, sensitivity: str | None) -> HandsFreeSettings:
+        defaults = cls()
+        pause_ms = next((ms for ms in HANDS_FREE_PAUSES_MS if str(ms) == pause), defaults.pause_ms)
+        return cls(pause_ms, sensitivity if sensitivity in SPEECH_THRESHOLDS else defaults.sensitivity)
+
+    def make_detector(self) -> UtteranceDetector:
+        return UtteranceDetector(
+            threshold=SPEECH_THRESHOLDS[self.sensitivity], quiet_blocks_required=self.pause_ms // BLOCK_DURATION_MS,
+        )
+
+
+@dataclass(slots=True)
+class UtteranceDetector:
+    """A bounded energy gate for 250 ms microphone blocks, not a transcription engine."""
+
+    threshold: float = SPEECH_THRESHOLDS["normal"]
+    quiet_blocks_required: int = 5
+    heard_speech: bool = False
+    quiet_blocks: int = 0
+    elapsed_blocks: int = 0
+
+    def update(self, rms: float) -> bool:
+        if rms >= self.threshold:
+            self.heard_speech = True
+            self.quiet_blocks = 0
+        elif self.heard_speech:
+            self.quiet_blocks += 1
+        if self.heard_speech:
+            self.elapsed_blocks += 1
+        # Submit after the configured pause, or cap the turn at 30 seconds.
+        return self.quiet_blocks >= self.quiet_blocks_required or self.elapsed_blocks >= 30_000 // BLOCK_DURATION_MS
 
 
 class Microphone:
@@ -20,6 +69,8 @@ class Microphone:
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=256)
         self._chunks: list[Any] = []
         self._lock = threading.Lock()
+        self.hands_free = HandsFreeSettings()
+        self._detector = self.hands_free.make_detector()
 
     @staticmethod
     def _sounddevice() -> Any:
@@ -29,6 +80,8 @@ class Microphone:
             raise MicrophoneError(
                 "Microphone support is not installed. Run: python -m pip install -e \".[speech]\""
             ) from exc
+        except OSError as exc:
+            raise MicrophoneError(f"Could not load the PortAudio microphone driver: {exc}") from exc
         return sd
 
     def list_devices(self) -> list[dict[str, Any]]:
@@ -49,6 +102,7 @@ class Microphone:
                 raise MicrophoneError("The microphone is already listening")
             sd = self._sounddevice()
             self._chunks = []
+            self._detector = self.hands_free.make_detector()
             while not self._queue.empty():
                 try:
                     self._queue.get_nowait()
@@ -71,7 +125,7 @@ class Microphone:
                     channels=1,
                     dtype="float32",
                     device=self.device,
-                    blocksize=int(self.sample_rate * 0.25),
+                    blocksize=self.sample_rate * BLOCK_DURATION_MS // 1000,
                     callback=callback,
                 )
                 self._stream.start()
@@ -84,26 +138,43 @@ class Microphone:
                 self._stream = None
                 raise MicrophoneError(f"Could not start microphone: {exc}") from exc
 
+    def poll_utterance(self) -> bool:
+        """Keep a short pre-roll while idle; report once a spoken turn is ready."""
+        np = self._numpy_module()
+        with self._lock:
+            while self._stream is not None:
+                try:
+                    block = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._chunks.append(block)
+                if self._detector.update(float(np.sqrt(np.mean(block * block)))):
+                    return True
+                if not self._detector.heard_speech:
+                    self._chunks = self._chunks[-2:]
+            return False
+
     def stop(self) -> Any:
         with self._lock:
             stream, self._stream = self._stream, None
-        if stream is None:
-            raise MicrophoneError("The microphone is not listening")
-        try:
-            stream.stop()
-            stream.close()
-        except Exception as exc:
-            raise MicrophoneError(f"Could not stop microphone cleanly: {exc}") from exc
-        np = self._numpy_module()
-        while True:
+            if stream is None:
+                raise MicrophoneError("The microphone is not listening")
             try:
-                self._chunks.append(self._queue.get_nowait())
-            except queue.Empty:
-                break
-        if not self._chunks:
+                try:
+                    stream.stop()
+                finally:
+                    stream.close()
+            except Exception as exc:
+                raise MicrophoneError(f"Could not stop microphone cleanly: {exc}") from exc
+            chunks, self._chunks = self._chunks, []
+            while True:
+                try:
+                    chunks.append(self._queue.get_nowait())
+                except queue.Empty:
+                    break
+        if not chunks:
             raise MicrophoneError("No microphone audio was captured")
-        audio = np.concatenate(self._chunks).astype("float32", copy=False)
-        self._chunks = []
+        audio = self._numpy_module().concatenate(chunks).astype("float32", copy=False)
         if audio.size < self.sample_rate // 2:
             raise MicrophoneError("The recording is too short; speak for at least half a second")
         return audio
@@ -111,18 +182,20 @@ class Microphone:
     def cancel(self) -> None:
         with self._lock:
             stream, self._stream = self._stream, None
-        if stream is not None:
-            try:
-                stream.stop()
-                stream.close()
-            except Exception:
-                pass
-        self._chunks = []
-        while not self._queue.empty():
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                break
+            if stream is not None:
+                try:
+                    try:
+                        stream.stop()
+                    finally:
+                        stream.close()
+                except Exception:
+                    pass
+            self._chunks = []
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    break
 
     @property
     def recording(self) -> bool:

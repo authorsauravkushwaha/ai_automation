@@ -17,12 +17,14 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlsplit
 
 from hinata.automation.app_control import AutomationError
+from hinata.automation.browser_search import open_browser_search
 from hinata.security.offline_guard import OfflineGuard, OfflinePolicyError
 
 USER_AGENT = (
@@ -259,12 +261,15 @@ def is_safe_public_url(url: str) -> bool:
 class _SafePublicRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Follow HTTP redirects only to validated public HTTP/HTTPS targets."""
 
+    def __init__(self, check_url: Callable[[str], None]) -> None:
+        super().__init__()
+        self._check_url = check_url
+
     def redirect_request(
         self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
     ) -> Any:
         resolved = urljoin(req.full_url, newurl)
-        if not is_safe_public_url(resolved):
-            raise urllib.error.URLError("Blocked redirect to non-public or unsafe URL")
+        self._check_url(resolved)
         return super().redirect_request(req, fp, code, msg, headers, resolved)
 
 
@@ -283,9 +288,9 @@ class WebSearchEngine:
         self.strict_offline = strict_offline
         self.offline_guard = offline_guard
         self.timeout_seconds = max(1.5, min(float(timeout_seconds), 20.0))
-        self._opener = urllib.request.build_opener(_SafePublicRedirectHandler())
+        self._opener = urllib.request.build_opener(_SafePublicRedirectHandler(self._check_policy))
 
-    def _check_policy(self, url: str) -> None:
+    def _check_web_enabled(self) -> None:
         if self.strict_offline:
             raise AutomationError(
                 "Internet search is blocked because strict_offline = true is active in config.toml."
@@ -294,18 +299,38 @@ class WebSearchEngine:
             raise AutomationError(
                 "Internet search is currently disabled. Enable web_search_enabled = true in Settings or config.toml."
             )
+
+    def _check_policy(self, url: str, *, resolve: bool = True) -> None:
+        self._check_web_enabled()
         if self.offline_guard is not None:
             if self.offline_guard.strict_offline:
                 raise AutomationError(
                     "Internet search is blocked by active strict_offline socket guard."
                 )
-            if self.offline_guard.online_mode_enabled and self.offline_guard.allowed_online_domains:
+            if self.offline_guard.online_mode_enabled:
                 try:
                     self.offline_guard.check_url(url, purpose="web_search")
                 except OfflinePolicyError as exc:
                     raise AutomationError(str(exc)) from exc
-        if not is_safe_public_url(url):
+        if resolve and not is_safe_public_url(url):
             raise AutomationError(f"Refused non-public or invalid URL: {url}")
+
+    def search_in_browser(self, query: str, *, browser: str = "default", engine: str = "duckduckgo") -> dict[str, Any]:
+        """Hand a search to the desktop without scraping or requiring Ollama."""
+        endpoints = {
+            "duckduckgo": "https://duckduckgo.com/",
+            "google": "https://www.google.com/search",
+            "bing": "https://www.bing.com/search",
+        }
+        query = " ".join(query.split())
+        if not query or engine not in endpoints:
+            raise AutomationError("A query and a supported search engine are required")
+        url = f"{endpoints[engine]}?{urllib.parse.urlencode({'q': query})}"
+        # This URL is built from a fixed HTTPS endpoint. Do not use a HINATA DNS
+        # lookup here: the user's browser may have its own resolver or proxy.
+        self._check_policy(url, resolve=False)
+        opened = open_browser_search(url, browser)
+        return {"browser": opened, "engine": engine, "url": url}
 
     def _http_get(
         self,
@@ -579,14 +604,9 @@ class WebSearchEngine:
         deep_read: bool = True,
     ) -> dict[str, Any]:
         """Search multiple internet sources concurrently and optionally read top excerpts."""
-        if self.strict_offline:
-            raise AutomationError(
-                "Internet search is blocked because strict_offline = true is active in config.toml."
-            )
-        if not self.enabled:
-            raise AutomationError(
-                "Internet search is currently disabled. Enable web_search_enabled = true in Settings or config.toml."
-            )
+        self._check_web_enabled()
+        if self.offline_guard is not None and self.offline_guard.strict_offline:
+            raise AutomationError("Internet search is blocked by active strict_offline socket guard.")
         full_query = " ".join(query.strip().split())
         if not full_query:
             raise AutomationError("Search query must not be empty")

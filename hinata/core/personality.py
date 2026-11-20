@@ -16,6 +16,9 @@ class PersonalityMode:
     instruction: str
 
 
+DEFAULT_ADDRESS = "Darling"
+
+
 MODES: dict[str, PersonalityMode] = {
     "friend": PersonalityMode(
         "friend",
@@ -105,36 +108,21 @@ class PersonalityManager:
 
     @property
     def effective_instruction(self) -> str:
-        base = self.mode.instruction
-        who = self.owner_name
-        if not who:
-            return base
-        plural_note = (
-            f"The owners using this PC are {who}. Address them warmly and naturally by name when greeting or helping them."
-            if len(self._owner_names) > 1
-            else f"The user's name is {who}. Address {who} warmly, respectfully, and naturally by name in greetings and replies."
+        who = self.owner_name or DEFAULT_ADDRESS
+        return (
+            f"{self.mode.instruction} Address the user as {who} naturally in greetings and replies."
         )
-        return f"{base} {plural_note}"
 
     def welcome_greeting(self) -> str:
-        who = self.owner_name
-        if who:
-            return (
-                f"Hello {who}! I'm Hinata, your personal AI assistant. "
-                "I can search the internet, open your installed apps, write code in any language, "
-                "and handle multiple tasks at once. How can I help you today?"
-            )
+        who = self.owner_name or DEFAULT_ADDRESS
         return (
-            "Hello! I'm Hinata, your personal AI assistant. "
-            "I can search the internet, open your installed apps, write code in any language, "
-            "and handle multiple tasks at once. Tip: say 'My name is ...' or set your name in Settings so I can address you personally."
+            f"Hello {who}! I'm Hinata, your personal AI assistant. "
+            "Ask me to search the web, open an app, or help with another task."
         )
 
     def voice_test_phrase(self) -> str:
-        who = self.owner_name
-        if who:
-            return f"Hello {who}! I am Hinata. My voice and systems are ready to assist you."
-        return "Hello! I am Hinata. My voice and systems are ready to assist you."
+        who = self.owner_name or DEFAULT_ADDRESS
+        return f"Hello {who}! I am Hinata. My voice and systems are ready to assist you."
 
     def set_owner_name(self, raw_name: str) -> str:
         cleaned = raw_name.strip()

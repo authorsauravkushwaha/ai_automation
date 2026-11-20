@@ -362,6 +362,8 @@ def default_agent_manifests() -> tuple[AgentManifest, ...]:
             allowed_tools=frozenset(
                 {
                     "open_application",
+                    "browser_search",
+                    "scroll_window",
                     "close_application",
                     "open_folder",
                     "open_file",
@@ -418,7 +420,7 @@ def default_agent_manifests() -> tuple[AgentManifest, ...]:
             display_name="Voice Session Agent",
             version="1.0",
             role="speech_coordination",
-            scope_description="Coordinates offline push-to-talk STT, speaker verification, and interruptible TTS.",
+            scope_description="Coordinates offline desktop and CLI STT, speaker verification, and interruptible TTS.",
             system_prompt="Route recognized speech cleanly into the policy-controlled assistant runtime; voice is never PIN auth.",
             model_role="none",
             allowed_tools=frozenset(),

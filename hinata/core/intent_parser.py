@@ -10,6 +10,11 @@ from hinata.core.model_reply import extract_reply_object, normalize_plan, plain_
 from hinata.core.types import ActionRequest
 from hinata.security.action_validator import ActionValidator, ValidationError
 
+_ADDRESS_PREFIX = re.compile(r"^hinata(?:[,!:]\s*|\s+)", re.I)
+_BROWSER_FIRST_SEARCH = re.compile(
+    r"(?:please\s+)?(search|google|bing)\s+(?:in|on|using)\s+(.+?)\s+(?:for|about)\s+(.+)", re.I
+)
+
 
 class PlanError(ValueError):
     pass
@@ -20,13 +25,35 @@ class IntentParser:
         self.validator = validator
 
     def parse(self, text: str) -> ActionRequest | None:
-        stripped = text.strip()
+        stripped = _ADDRESS_PREFIX.sub("", text.strip())
         # User-name capture and common internet/app/code requests are deterministic.
         match = re.fullmatch(r"(?:my name is|our names are|we are|we're)\s+(.+)", stripped, re.IGNORECASE)
         if match:
             return self._action("set_owner_name", {"name": match.group(1).strip()}, text)
         if re.fullmatch(r"(?:what is|what's|tell me)\s+(?:my|our)\s+name", stripped, re.IGNORECASE):
             return self._action("owner_name", {}, text)
+        browser_search = _BROWSER_FIRST_SEARCH.fullmatch(stripped)
+        if browser_search:
+            verb, browser, query = browser_search.groups()
+            engine = "duckduckgo" if verb.casefold() == "search" else verb.casefold()
+            if verb.casefold() == "search" and browser.casefold() in {"google", "bing", "duckduckgo"}:
+                engine, browser = browser.casefold(), "default"
+            return self._action("browser_search", {"query": query, "browser": browser, "engine": engine}, text)
+        browser_search = re.fullmatch(
+            r"(?:please\s+)?(search|google|bing)\s+(?:for\s+)?(.+?)\s+(?:in|on|using)\s+"
+            r"((?:my |default )?browser|(?:google )?chrome|(?:mozilla )?firefox|(?:microsoft )?edge|"
+            r"brave(?: browser)?|opera(?: browser)?|vivaldi(?: browser)?)\s*[.!?]?", stripped, re.I
+        )
+        if browser_search:
+            verb, query, browser = browser_search.groups()
+            engine = "duckduckgo" if verb.casefold() == "search" else verb.casefold()
+            return self._action("browser_search", {"query": query, "browser": browser, "engine": engine}, text)
+        match = re.fullmatch(r"(?:please\s+)?scroll\s+(up|down)(?:\s+(\d{1,2}|one|two|three|four|five)(?:\s+(?:notches?|steps?))?)?[.!?]?", stripped, re.I)
+        if match:
+            direction, amount = match.groups()
+            counts = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+            steps = int(amount) if amount and amount.isdecimal() else counts.get((amount or "").casefold(), 3)
+            return self._action("scroll_window", {"direction": direction.casefold(), "steps": steps}, text)
         match = re.fullmatch(r"google\s+(.+)", stripped, re.IGNORECASE)
         if match and match.group(1).strip():
             return self._action("web_search", {"query": match.group(1).strip()}, text)
@@ -261,17 +288,25 @@ class IntentParser:
         if match:
             scope = match.group(1).lower()
             return self._action("clear_memory", {"scope": "all" if scope in {"memory", "everything"} else scope}, text)
+        match = re.fullmatch(r"(?:please\s+)?(?:search(?:\s+for)?|web\s+search(?:\s+for)?)\s+(.+)", stripped, re.I)
+        if match:
+            return self._action("web_search", {"query": match.group(1).strip()}, text)
         return None
 
     def parse_multitask(self, text: str) -> list[str]:
         """Split clear independent compound requests; return [] when any part is ambiguous."""
         raw = text.strip()
-        # Require a recognizable command at each boundary; never split ordinary prose.
-        parts = re.split(
-            r"\s*(?:;|\band\s+then\b|\bthen\b|\balso\b|\band\s+(?=(?:search|google|open|launch|start|close|list|show|write|create|generate|fetch|system|find|set\s+volume)\b))\s*",
-            raw,
-            flags=re.IGNORECASE,
-        )
+        # Browser-first syntax takes the entire query literally, including words
+        # such as "then" and punctuation such as semicolons.
+        unaddressed = _ADDRESS_PREFIX.sub("", raw)
+        if _BROWSER_FIRST_SEARCH.fullmatch(unaddressed):
+            return []
+        # In a free-form search, “and open source” is query text, not a second
+        # command. Require an explicit separator for those searches.
+        separator = r";|\band\s+then\b|\bthen\b"
+        if not re.match(r"^(?:please\s+)?search\s+(?!(?:the\s+)?(?:web|internet|online)\b)", unaddressed, re.I):
+            separator += r"|\balso\b|\band\s+(?=(?:search|google|open|launch|start|close|list|show|write|create|generate|fetch|system|find|set\s+volume)\b)"
+        parts = re.split(rf"\s*(?:{separator})\s*", raw, flags=re.IGNORECASE)
         parts = [part.strip(" ,") for part in parts if part.strip(" ,")]
         if len(parts) < 2 or len(parts) > 5:
             return []

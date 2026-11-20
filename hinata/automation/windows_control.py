@@ -1,4 +1,4 @@
-"""Small Windows SendInput helpers for text and hardware volume keys."""
+"""Small Windows helpers for scrolling, text, and hardware volume keys."""
 
 from __future__ import annotations
 
@@ -59,6 +59,36 @@ class WindowsControl:
         buf = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, buf, length + 1)
         return str(buf.value or "")
+
+    def scroll(self, direction: str, *, steps: int = 3) -> dict[str, Any]:
+        self._require_windows()
+        if direction not in {"up", "down"} or not 1 <= steps <= 10:
+            raise AutomationError("Scroll requires up or down and between 1 and 10 steps")
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.WindowFromPoint.argtypes = [wintypes.POINT]
+        user32.WindowFromPoint.restype = wintypes.HWND
+        user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user32.GetAncestor.restype = wintypes.HWND
+        user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user32.PostMessageW.restype = wintypes.BOOL
+        foreground = user32.GetForegroundWindow()
+        cursor = wintypes.POINT()
+        if not foreground or not user32.GetCursorPos(ctypes.byref(cursor)):
+            raise AutomationError("No active Windows app or pointer position is available")
+        target = user32.WindowFromPoint(cursor)
+        if not target or user32.GetAncestor(target, 2) != foreground or user32.GetForegroundWindow() != foreground:
+            raise AutomationError("Click the app and leave the pointer over the area you want to scroll, then retry.")
+        delta = 120 * steps * (1 if direction == "up" else -1)
+        wheel_param = (delta & 0xFFFF) << 16
+        position_param = (cursor.x & 0xFFFF) | ((cursor.y & 0xFFFF) << 16)
+        # Address the hovered child directly so a focus change can't send input to a different app.
+        if not user32.PostMessageW(target, 0x020A, wheel_param, position_param):
+            raise AutomationError("Windows blocked the scroll event; the target app may be elevated.")
+        return {"direction": direction, "steps": steps}
 
     def type_text(self, text: str, *, target_window: str = "") -> dict[str, Any]:
         self._require_windows()

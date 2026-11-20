@@ -43,12 +43,11 @@ from hinata.speech.microphone import Microphone
 from hinata.speech.speaker_recognition import SpeakerRecognition
 from hinata.speech.speech_to_text import SpeechToText
 from hinata.speech.text_to_speech import TextToSpeech
-from hinata.tasks.store import TaskStateError
 from hinata.speech.voice_pipeline import VoicePipeline, VoiceResult
 from hinata.speech.wake_word import WakeWordDetector, WakeWordService
 from hinata.tasks.playbooks import PlaybookManager
 from hinata.tasks.scheduler import TaskScheduler
-from hinata.tasks.store import TaskStore
+from hinata.tasks.store import TaskStateError, TaskStore
 
 
 class HinataAssistant:
