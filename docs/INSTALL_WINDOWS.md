@@ -231,6 +231,15 @@ Remove-Item Env:QT_QPA_PLATFORM
 
 Expected: dark main window, text/microphone controls, conversation, three activity indicators, settings, enrollment, memory, and system/model status. Send `system info`, then a confirmation-gated command. Confirm that long LLM/STT operations run in the background and the window cannot close midway through a tool task.
 
+On the Windows desktop, also check the full hands-free workflow:
+
+1. Open HINATA. A fresh profile should greet you as **Darling**, with the microphone off.
+2. Click **Start hands-free voice**. Say “system info” and pause. Confirm HINATA answers without another click, then shows **LISTENING** again after playback. Repeat once without touching the controls. In **Settings → Voice**, try a longer pause if HINATA cuts off your sentences, or adjust mic sensitivity if it misses a quiet voice or reacts to background noise.
+3. Say “search in browser for train times.” Verify results open in your system default browser. Try “search in Firefox for train times” if Firefox is registered on the machine. With that window in the foreground and the pointer over the page, say “scroll down,” then “scroll up.”
+4. In a test where HINATA's in-chat providers return no results, check that **Try in browser** appears and does not open a page until clicked. Disable internet search in Settings and verify a new browser-search command is blocked.
+5. Say “pause voice” and confirm the listening indicator switches off. Start again, click **Emergency stop**, and verify HINATA does not reopen the microphone on its own.
+
+
 ## STAGE 10 — Memory, reliability, offline integration
 
 **Objective:** verify persistence, deletion, recovery, and normal offline operation.

@@ -1,7 +1,7 @@
 """Voice, audio diagnostics, and capability-gated local vision/OCR adapter.
 
 Safety invariants:
-- Push-to-talk default; wake word remains strictly opt-in.
+- Desktop hands-free sessions and wake-word listening are strictly opt-in.
 - Voice speaker verification is NEVER a substitute for PIN authentication.
 - Raw audio samples stay in memory unless explicitly exported by the user.
 - Vision/OCR runs locally ONLY when an offline vision model or local OCR

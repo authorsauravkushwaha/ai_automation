@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from hinata.core.assistant import HinataAssistant
+from hinata.speech.microphone import HANDS_FREE_PAUSES_MS, HandsFreeSettings
 
 
 class SettingsDialog(QDialog):
@@ -57,9 +58,9 @@ class SettingsDialog(QDialog):
         form.addRow(self.speak_checkbox)
         form.addRow(self.llm_checkbox)
         self.owner_name_input = QLineEdit(assistant.personality.owner_name)
-        self.owner_name_input.setPlaceholderText("Your name, or names separated by commas / and")
+        self.owner_name_input.setPlaceholderText("Darling (default), or enter your preferred name(s)")
         form.addRow("Owner name(s)", self.owner_name_input)
-        self.web_search_checkbox = QCheckBox("Allow live internet search (disabled by strict-offline mode)")
+        self.web_search_checkbox = QCheckBox("Allow internet and browser search (blocked in strict offline mode)")
         self.web_search_checkbox.setChecked(assistant.config.security.web_search_enabled)
         form.addRow(self.web_search_checkbox)
         self.voice_gender_combo = QComboBox()
@@ -94,6 +95,19 @@ class SettingsDialog(QDialog):
         refresh = QPushButton("Refresh microphones")
         refresh.clicked.connect(self.refresh_devices)
         voice_form.addRow(refresh)
+        self.pause_combo = QComboBox()
+        for pause_ms in HANDS_FREE_PAUSES_MS:
+            self.pause_combo.addItem(f"{pause_ms / 1000:g} seconds", pause_ms)
+        self.pause_combo.setCurrentIndex(self.pause_combo.findData(assistant.microphone.hands_free.pause_ms))
+        self.pause_combo.setToolTip("How long to wait after you stop speaking before sending the request")
+        voice_form.addRow("Pause before sending", self.pause_combo)
+        self.sensitivity_combo = QComboBox()
+        self.sensitivity_combo.addItem("High (quiet voice)", "high")
+        self.sensitivity_combo.addItem("Normal", "normal")
+        self.sensitivity_combo.addItem("Low (noisy room)", "low")
+        self.sensitivity_combo.setCurrentIndex(self.sensitivity_combo.findData(assistant.microphone.hands_free.sensitivity))
+        self.sensitivity_combo.setToolTip("Adjusts when the mic detects speech, not speaker verification")
+        voice_form.addRow("Mic sensitivity", self.sensitivity_combo)
         voice_form.addRow("Speech-to-text", QLabel(assistant.config.speech.stt_backend))
         voice_form.addRow("Text-to-speech", QLabel(assistant.config.speech.tts_backend))
         from hinata.speech.text_to_speech import output_readiness
@@ -130,6 +144,10 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
         self._current_device = current_device
         QTimer.singleShot(0, self.refresh_devices)
+
+    @property
+    def hands_free_settings(self) -> HandsFreeSettings:
+        return HandsFreeSettings(self.pause_combo.currentData(), self.sensitivity_combo.currentData())
 
     @staticmethod
     def describe_connection(state: str) -> str:

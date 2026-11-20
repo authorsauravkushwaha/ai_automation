@@ -9,6 +9,16 @@ from tests.helpers import make_assistant
 
 
 class PersonalityTests(unittest.TestCase):
+    def test_new_install_addresses_the_user_as_darling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "memory.db")
+            manager = PersonalityManager(database)
+            self.assertIn("Hello Darling!", manager.welcome_greeting())
+            self.assertIn("Hello Darling!", manager.voice_test_phrase())
+            self.assertIn("Darling", manager.effective_instruction)
+            manager.set_owner_name("Anita")
+            self.assertIn("Hello Anita!", PersonalityManager(database).welcome_greeting())
+
     def test_all_five_modes_are_available_and_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "memory.db")

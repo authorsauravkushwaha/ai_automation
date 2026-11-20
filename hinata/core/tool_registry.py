@@ -38,6 +38,8 @@ class ToolManifest:
 
 DEFAULT_MANIFESTS: tuple[ToolManifest, ...] = (
     ToolManifest("web_search", "1.0", "Search public web sources and return cited excerpts", "read_only", "low", "idempotent", True, 18.0),
+    ToolManifest("browser_search", "1.0", "Open a results page in the default or named registered browser", "process_control", "low", "non_idempotent", False, 10.0, offline_capable=False, requires_online=True),
+    ToolManifest("scroll_window", "1.0", "Scroll within the active Windows app under the pointer", "ui_focus", "low", "non_idempotent", False, 5.0),
     ToolManifest("fetch_webpage", "1.0", "Fetch a public webpage with SSRF protection and extract readable text", "read_only", "low", "idempotent", True, 12.0),
     ToolManifest("list_installed_apps", "1.0", "Discover installed Windows desktop and Store apps", "read_only", "low", "idempotent", True, 10.0),
     ToolManifest("write_code", "1.0", "Generate complete polyglot source code; optionally save in permitted roots", "local_write", "low", "idempotent", True, 30.0),

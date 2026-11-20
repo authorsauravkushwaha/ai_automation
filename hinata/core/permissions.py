@@ -18,6 +18,8 @@ class PermissionLevel(StrEnum):
 
 POLICY = {
     "web_search": PermissionLevel.SAFE,
+    "browser_search": PermissionLevel.SAFE,
+    "scroll_window": PermissionLevel.SAFE,
     "fetch_webpage": PermissionLevel.SAFE,
     "list_installed_apps": PermissionLevel.SAFE,
     "write_code": PermissionLevel.SAFE,

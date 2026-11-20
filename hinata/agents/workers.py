@@ -91,6 +91,8 @@ WORKERS = MappingProxyType({
         frozenset(
             {
                 "open_application",
+                "browser_search",
+                "scroll_window",
                 "close_application",
                 "open_folder",
                 "open_file",

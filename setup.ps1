@@ -174,7 +174,7 @@ if (-not (Test-Path (Join-Path $Root "config.toml"))) {
 
 # Ask only in a real interactive terminal; redirected setup remains unattended-safe.
 if (-not [Console]::IsInputRedirected) {
-    $OwnerName = Read-Host "What name should HINATA use for you? (optional)"
+    $OwnerName = Read-Host "What name should HINATA use for you? (Enter keeps current name; default: Darling)"
     if (-not [string]::IsNullOrWhiteSpace($OwnerName)) {
         Invoke-Native $VenvPython @("-m", "hinata", "setup-owner", "--name", $OwnerName.Trim())
     }

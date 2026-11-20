@@ -86,11 +86,22 @@ class ConversationView(QTextBrowser):
         safe_role = html.escape(role)
         safe_text = html.escape(text).replace("\n", "<br>")
         timestamp = datetime.now().strftime("%H:%M")
+        scrollbar = self.verticalScrollBar()
+        position = scrollbar.value()
+        following = position == scrollbar.maximum()
         self.append(
             f'<div style="margin:8px 0 2px 0;color:{color};font-weight:600">'
             f'{safe_role} <span style="color:#64798d;font-weight:400">{timestamp}</span></div>'
             f'<div style="margin:0 0 12px 0;color:#dce7f2;line-height:145%">{safe_text}</div>'
         )
+        scrollbar.setValue(scrollbar.maximum() if following else position)
+
+    def scroll_history(self, pages: int) -> None:
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setValue(scrollbar.value() + scrollbar.pageStep() * pages)
+
+    @Slot()
+    def jump_to_latest(self) -> None:
         scrollbar = self.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 

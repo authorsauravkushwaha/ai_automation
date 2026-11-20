@@ -184,6 +184,14 @@ Set a PIN before sensitive operations or voice enrollment:
 
 > Setup downloads packages and models. Once those downloads finish, normal chat, speech recognition, speech output, memory, and automation do not require internet. Structured commands also work when Ollama is stopped.
 
+### Hands-free voice, browser search, and scrolling
+
+- **Greeting:** HINATA calls you **Darling** by default. A name you chose during setup or in Settings takes precedence.
+- **Voice:** In the desktop app, click **Start hands-free voice** once. Speak a request and pause for about a second. Under **Settings → Voice**, you can change the pause to 0.75–2.5 seconds or tune mic sensitivity for a quiet voice or noisy room. HINATA transcribes it locally, handles the request, and starts listening again after the task and spoken reply finish. Click or say **Pause voice** to stop listening. **Emergency stop** also requests cancellation of active work. The mic is off on launch and this session ends when you close the app.
+- **Search in chat:** Say or type `search for train times` to look up public web results in HINATA. If sources are unavailable, HINATA labels the fallback and offers **Try in browser**. Nothing opens until you click.
+- **Search in your browser:** Try `search in browser for train times` for your system default, `search in Firefox for train times` for a named Windows-registered browser, or `google train times in Chrome` to use Google in Chrome. The results open in the browser rather than in chat, and Ollama is not required. Search sends the query to a public search provider; both search routes respect the web-search setting and strict offline mode.
+- **Scroll:** Put the Windows app or browser in the foreground, leave the pointer over the area you want to scroll, and say `scroll down`, `scroll up`, or `scroll down two notches`. HINATA won't send the scroll to an app in the background. The target app must support mouse-wheel scrolling in that area. To read HINATA’s own chat, say or type `scroll chat up` or `scroll chat down`. New replies leave you at your current reading position. Click **Latest message** or say `go to the latest message` to return to the bottom.
+
 ## Local document search and question answering
 
 For lexical search without an embedding model, import a text file within an
