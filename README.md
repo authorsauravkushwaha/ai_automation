@@ -4,7 +4,7 @@
 assistant for local conversation, document search, memory and permission-aware
 automation.
 
-[![Tests](https://github.com/authorsauravkushwaha/ai_automation/actions/workflows/tests.yml/badge.svg)](https://github.com/authorsauravkushwaha/ai_automation/actions/workflows/tests.yml)
+[![Tests](https://github.com/authorsauravkushwaha/ai_automation/actions/workflows/tests.yml/badge.svg?branch=main&event=push)](https://github.com/authorsauravkushwaha/ai_automation/actions/workflows/tests.yml?query=branch%3Amain+event%3Apush)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
