@@ -207,12 +207,30 @@ class BatchRenameTests(FileWizardTestBase):
         self.assertEqual(Path(pref["planned"][0]["to"]).name, "2024_MixedCase.TXT")
 
     def test_collision_aborts_instead_of_overwriting(self) -> None:
-        self._write("Report.txt")          # will lower-case to report.txt
-        self._write("report.txt.keep")     # placeholder to occupy the folder
-        (self.documents / "report.txt").mkdir()
+        # A genuine collision must be found via a rename that maps one file onto
+        # another existing file. (Case-only renames cannot be used here: on a
+        # case-insensitive volume "Report.txt" and "report.txt" are one file,
+        # so "report.txt" could never be occupied separately.)
+        self._write("a1.txt", "one")
+        self._write("b1.txt", "two")
+        before = {path.name: path.read_text(encoding="utf-8") for path in self.documents.iterdir()}
         with self.assertRaises(AutomationError):
-            self.wizard.batch_rename("", "lowercase", dry_run=False)
-        self.assertTrue((self.documents / "Report.txt").exists())
+            self.wizard.batch_rename("", "find_replace", replacement="a=b", dry_run=False)
+        after = {path.name: path.read_text(encoding="utf-8") for path in self.documents.iterdir()}
+        self.assertEqual(before, after, "a refused batch must change nothing")
+
+    def test_case_only_rename_is_not_treated_as_a_collision(self) -> None:
+        # "lowercase" is the single most common rename; on Windows/macOS the
+        # target is the same file as the source, which used to raise
+        # "Refusing to overwrite".
+        self._write("Report.txt", "payload")
+        result = self.wizard.batch_rename("", "lowercase", dry_run=False)
+        self.assertEqual(result["count"], 1)
+        survivors = sorted(path.name for path in self.documents.iterdir())
+        self.assertIn("report.txt", [name.lower() for name in survivors])
+        self.assertEqual(
+            (self.documents / survivors[0]).read_text(encoding="utf-8"), "payload"
+        )
 
     def test_unknown_pattern_is_rejected(self) -> None:
         self._write("x.txt")
@@ -252,7 +270,9 @@ class ConvertFileTests(FileWizardTestBase):
             self.wizard.convert_file("scalar.json", "scalar.csv")
 
     def test_text_cleanup_normalises_whitespace(self) -> None:
-        (self.documents / "messy.txt").write_text("line one   \r\nline two  \r\n", encoding="utf-8")
+        # Written as bytes on purpose: text mode would translate the "\n" in
+        # "\r\n" again on Windows, producing "\r\r\n" and a blank line.
+        (self.documents / "messy.txt").write_bytes(b"line one   \r\nline two  \r\n")
         self.wizard.convert_file("messy.txt", "clean.txt")
         self.assertEqual(
             (self.documents / "clean.txt").read_text(encoding="utf-8"), "line one\nline two\n"

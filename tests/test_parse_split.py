@@ -9,10 +9,18 @@ from __future__ import annotations
 
 import ast
 import inspect
+import pathlib
 import unittest
 
 from hinata.core.intent_parser import IntentParser
 from hinata.security.action_validator import ActionValidator
+
+# Resolve against this file, not the process CWD, and read as UTF-8: the module
+# contains non-ASCII text, and a Windows runner decodes with cp1252 by default,
+# which raised UnicodeDecodeError while parsing the AST.
+_MAIN_WINDOW = (
+    pathlib.Path(__file__).resolve().parents[1] / "hinata" / "interface" / "main_window.py"
+)
 
 #: Inputs covering every branch section of the old monolithic parse().
 CORPUS = (
@@ -147,9 +155,8 @@ class MainWindowHandlerSplitTests(unittest.TestCase):
     def test_handle_response_is_a_short_dispatcher(self) -> None:
         """Checked via AST so this runs without a working Qt install."""
         import ast
-        import pathlib
 
-        source = pathlib.Path("hinata/interface/main_window.py").read_text()
+        source = _MAIN_WINDOW.read_text(encoding="utf-8")
         tree = ast.parse(source)
         # handle_response lives in the ResponseHandlingMixin slice.
         handle = next(
@@ -171,9 +178,8 @@ class MainWindowHandlerSplitTests(unittest.TestCase):
 
     def test_each_extracted_handler_exists(self) -> None:
         import ast
-        import pathlib
 
-        source = pathlib.Path("hinata/interface/main_window.py").read_text()
+        source = _MAIN_WINDOW.read_text(encoding="utf-8")
         tree = ast.parse(source)
         # These handlers live in the ResponseHandlingMixin slice and are inherited
         # by MainWindow, so scan every class in the module rather than one body.
@@ -269,9 +275,8 @@ if __name__ == "__main__":
 
 
 def _module_classes() -> dict:
-    import pathlib
 
-    tree = ast.parse(pathlib.Path("hinata/interface/main_window.py").read_text())
+    tree = ast.parse(_MAIN_WINDOW.read_text(encoding="utf-8"))
     return {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
 
 

@@ -43,6 +43,21 @@ CATEGORY_MAP: dict[str, str] = {
 TEMP_SUFFIXES = frozenset({".tmp", ".temp", ".cache", ".bak", ".part", ".crdownload", ".log"})
 
 
+def _is_same_file(a: Path, b: Path) -> bool:
+    """True when both paths already point at one file (case-only rename, hardlink).
+
+    ``Path.exists()`` is not enough on a case-insensitive filesystem: renaming
+    ``Report.txt`` to ``report.txt`` would look like an overwrite of an existing
+    file when in fact it is the source.
+    """
+    try:
+        if not (a.exists() and b.exists()):
+            return False
+        return a.samefile(b)
+    except OSError:
+        return False
+
+
 class FileWizard:
     def __init__(self, files=None) -> None:
         self.files = files
@@ -222,11 +237,19 @@ class FileWizard:
             if new_name == fp.name:
                 continue
             dest = root / new_name
-            renames.append({"from": str(fp), "to": str(dest)})
+            # A case-only rename ("Report.txt" -> "report.txt") targets the same
+            # file on a case-insensitive volume (Windows, default macOS), so the
+            # overwrite check below must not treat it as a collision.
+            case_only = _is_same_file(fp, dest)
+            renames.append({"from": str(fp), "to": str(dest), "case_only": "true" if case_only else "false"})
         if not dry_run:
             for r in renames:
                 src = Path(r["from"])
                 dst = Path(r["to"])
+                if _is_same_file(src, dst):
+                    # Already the same file: nothing to move, and failing here
+                    # would make "lowercase" unusable on Windows.
+                    continue
                 if dst.exists():
                     raise AutomationError(f"Refusing to overwrite: {dst}")
                 src.rename(dst)

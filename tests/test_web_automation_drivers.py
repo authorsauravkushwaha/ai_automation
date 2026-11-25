@@ -257,7 +257,12 @@ class UrlPolicyInAutomationTests(LocalServerTestBase):
             self.web.open_website("file:///etc/passwd")
 
     def test_open_website_surfaces_browser_refusal(self) -> None:
-        with mock.patch("webbrowser.open", return_value=False):
+        # On Windows the default path is ``os.startfile``, which bypasses
+        # webbrowser entirely -- so the refusal has to be simulated on the
+        # platform-specific launcher too, not just on webbrowser.open.
+        with mock.patch("webbrowser.open", return_value=False), \
+             mock.patch("hinata.automation.web_automation.os.startfile", create=True,
+                        side_effect=OSError("no handler"), ):
             with self.assertRaises(AutomationError):
                 self.web.open_website(self.base)
 
