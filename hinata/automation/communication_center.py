@@ -6,17 +6,14 @@ Templates and reminders are stored in the local DB.
 
 from __future__ import annotations
 
-import json
 import re
 import time
 import uuid
 from email.message import EmailMessage
-from pathlib import Path
 from typing import Any
 
 from hinata.automation.app_control import AutomationError
 from hinata.database.database import Database
-
 
 TEMPLATES: dict[str, str] = {
     "job_application": "Subject: Application for {position} at {company}\n\nDear Hiring Manager,\n\nI am writing to apply for the {position} role at {company}. {intro}\n\nKey highlights:\n{highlights}\n\nI have attached my resume and would love to discuss how I can contribute to {company}.\n\nWarm regards,\n{full_name}\n{email} | {phone}",
@@ -176,7 +173,34 @@ class CommunicationCenter:
             )
         return {"reminder_id": rid, "title": title, "remind_at": epoch, "remind_at_human": time.ctime(epoch), "message": message[:200]}
 
+    _WEEKDAYS = {
+        "monday": 0, "mon": 0, "tuesday": 1, "tue": 1, "tues": 1,
+        "wednesday": 2, "wed": 2, "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
+        "friday": 4, "fri": 4, "saturday": 5, "sat": 5, "sunday": 6, "sun": 6,
+    }
+
+    @staticmethod
+    def _clock(hr: int, mn: int, ap: str) -> tuple[int, int] | None:
+        """Normalise a 12/24-hour clock pair; ``None`` when out of range."""
+        if ap == "pm" and hr < 12:
+            hr += 12
+        if ap == "am" and hr == 12:
+            hr = 0
+        if not (0 <= hr <= 23 and 0 <= mn <= 59):
+            return None
+        return hr, mn
+
     def _parse_when(self, s: str) -> float:
+        """Parse a human time expression into a local epoch timestamp.
+
+        Supported (case-insensitive):
+
+        * ``in 2 hours`` / ``in 30 minutes`` / ``in 3 days`` / ``in 1 week``
+        * ``tomorrow 9am`` / ``tomorrow`` / ``today 18:30`` / ``tonight``
+        * ``next monday 10am`` / ``monday 14:00`` (next occurrence)
+        * ``friday 17:00``
+        * ``2026-12-01 10:00`` / ``2026-12-01`` / ``01/12/2026 10:00``
+        """
         s = s.strip().lower()
         now = time.time()
         # in X hours/minutes/days
@@ -186,31 +210,136 @@ class CommunicationCenter:
             unit = m.group(2)
             mult = 60 if "min" in unit else 3600 if "hour" in unit or "hr" in unit else 86400 if "day" in unit else 604800
             return now + n * mult
-        m = re.match(r"tomorrow\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*$", s)
+
+        # tomorrow [time] | tomorrow | today [time] | tonight
+        m = re.match(
+            r"(tomorrow|today|tonight)\s*(?:at\s*)?(?:(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?\s*$",
+            s,
+        )
         if m:
-            hr = int(m.group(1))
-            mn = int(m.group(2) or 0)
-            ap = m.group(3)
-            if ap == "pm" and hr < 12:
-                hr += 12
-            if ap == "am" and hr == 12:
-                hr = 0
-            # Next day at that time
-            t = time.localtime(now + 86400)
-            return time.mktime((t.tm_year, t.tm_mon, t.tm_mday, hr, mn, 0, 0, 0, -1))
-        # Try ISO datetime
-        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d", "%d/%m/%Y %H:%M"):
+            word = m.group(1)
+            hr = int(m.group(2)) if m.group(2) else None
+            mn = int(m.group(3) or 0)
+            ap = m.group(4)
+            if word == "tomorrow" or hr is not None:
+                base = time.localtime(now + 86400) if word == "tomorrow" else time.localtime(now)
+                if hr is None:
+                    hr, mn = 9, 0  # default morning start
+                clock = self._clock(hr, mn, ap or "")
+                if clock is None:
+                    raise AutomationError(f"Invalid time in '{s}'")
+                epoch = time.mktime((base.tm_year, base.tm_mon, base.tm_mday, clock[0], clock[1], 0, 0, 0, -1))
+                # "today 9am" said in the afternoon means *tomorrow* 9am -- the
+                # next time that clock reading actually occurs. Returning the
+                # past instant made create_reminder fail with a confusing
+                # "time is in the past" error for a perfectly reasonable request.
+                if word != "tomorrow" and epoch <= now:
+                    epoch += 86400
+                return epoch
+            # today / tonight without an explicit hour
+            base = time.localtime(now)
+            clock = self._clock(21, 0, "") if word == "tonight" else self._clock(9, 0, "")
+            assert clock is not None
+            candidate = time.mktime((base.tm_year, base.tm_mon, base.tm_mday, clock[0], clock[1], 0, 0, 0, -1))
+            return candidate if candidate > now else candidate + 86400
+
+        # next <weekday> [time] | <weekday> [time]
+        m = re.match(
+            r"(?:next\s+|this\s+|on\s+)?(" + "|".join(self._WEEKDAYS) + r")\s*(?:at\s*)?(?:(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?\s*$",
+            s,
+        )
+        if m:
+            target = self._WEEKDAYS[m.group(1)]
+            hr = int(m.group(2)) if m.group(2) else 9
+            mn = int(m.group(3) or 0)
+            clock = self._clock(hr, mn, m.group(4) or "")
+            if clock is None:
+                raise AutomationError(f"Invalid time in '{s}'")
+            local = time.localtime(now)
+            days_ahead = (target - local.tm_wday) % 7
+            if days_ahead == 0:
+                days_ahead = 7  # "monday" always means the next Monday
+            base = time.localtime(now + days_ahead * 86400)
+            return time.mktime((base.tm_year, base.tm_mon, base.tm_mday, clock[0], clock[1], 0, 0, 0, -1))
+
+        # Try ISO/absolute datetime. The 'T' separator is the standard ISO-8601
+        # spelling and ``strptime`` handles it through the literal, so it needs no
+        # special case here; a trailing 'Z' (UTC) is normalised first.
+        iso = s[:-1].strip() if s.endswith("z") else s
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
             try:
-                return time.mktime(time.strptime(s, fmt))
+                return time.mktime(time.strptime(iso, fmt))
             except ValueError:
                 continue
-        raise AutomationError(f"Could not parse time '{s}': try 'in 2 hours', 'tomorrow 3pm', or '2026-12-01 10:00'")
+        raise AutomationError(
+            f"Could not parse time '{s}': try 'in 2 hours', 'tomorrow 3pm', 'next monday 10am', or '2026-12-01 10:00'"
+        )
 
-    def list_reminders(self, limit: int = 20) -> dict[str, Any]:
+    def list_reminders(self, limit: int = 20, *, pending_only: bool = True) -> dict[str, Any]:
+        """List reminders, newest-due first.
+
+        Only ``pending`` reminders are returned by default: once a reminder has
+        fired it is marked ``done`` (or advanced if it repeats), and showing it
+        as though it were still waiting would be a lie.
+        """
         if not self.db:
             return {"reminders": []}
-        rows = self.db.fetch_all("SELECT * FROM reminders ORDER BY remind_at_epoch ASC LIMIT ?", (limit,))
+        if pending_only:
+            rows = self.db.fetch_all(
+                "SELECT * FROM reminders WHERE status = 'pending' ORDER BY remind_at_epoch ASC LIMIT ?",
+                (limit,),
+            )
+        else:
+            rows = self.db.fetch_all(
+                "SELECT * FROM reminders ORDER BY remind_at_epoch ASC LIMIT ?", (limit,)
+            )
         return {"reminders": rows, "count": len(rows)}
+
+    def due_reminders(self, *, now_epoch: float | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Reminders whose time has arrived and that have not yet been fired.
+
+        Nothing else in the codebase read this table, so a reminder was written,
+        listed forever, and never actually went off. This is the query that makes
+        the feature real; :meth:`fire_due_reminders` consumes it.
+        """
+        if not self.db:
+            return []
+        now = time.time() if now_epoch is None else float(now_epoch)
+        return self.db.fetch_all(
+            "SELECT * FROM reminders WHERE status = 'pending' AND remind_at_epoch <= ? "
+            "ORDER BY remind_at_epoch ASC LIMIT ?",
+            (now, limit),
+        )
+
+    def fire_due_reminders(self, *, now_epoch: float | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Claim every reminder that is due; repeating ones advance, others finish.
+
+        Returns the reminders that fired. A repeating reminder moves to its next
+        occurrence (skipping past anything already missed, so a reminder that was
+        due while HINATA was closed does not fire in a burst); a one-shot
+        reminder is marked ``done``.
+        """
+        if self.db is None:
+            return []
+        now = time.time() if now_epoch is None else float(now_epoch)
+        fired: list[dict[str, Any]] = []
+        for row in self.due_reminders(now_epoch=now, limit=limit):
+            interval = float(row["repeat_interval"] or 0)
+            if interval > 0:
+                next_at = float(row["remind_at_epoch"])
+                while next_at <= now:
+                    next_at += interval
+                self.db.execute(
+                    "UPDATE reminders SET remind_at_epoch = ?, status = 'pending' WHERE reminder_id = ?",
+                    (next_at, row["reminder_id"]),
+                )
+            else:
+                self.db.execute(
+                    "UPDATE reminders SET status = 'done' WHERE reminder_id = ?",
+                    (row["reminder_id"],),
+                )
+            fired.append(dict(row))
+        return fired
 
     def broadcast(self, message: str, channels: list[str] | None = None) -> dict[str, Any]:
         """Mock broadcast — writes a notification file and returns what would be sent."""

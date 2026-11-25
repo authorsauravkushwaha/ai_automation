@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import random
+from typing import Any
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (
@@ -48,7 +49,29 @@ def _build_stars(count: int = 64) -> tuple[tuple[float, float, float, float], ..
     return tuple(stars)
 
 
-class SceneCanvas(QWidget):
+class _AnimationLifecycleMixin:
+    """Start the frame timer when visible, stop it when hidden or closing.
+
+    Both animated widgets need exactly this lifecycle. It used to be copy-pasted
+    into each class, which meant a fix (for example "also stop while minimised")
+    had to be applied twice or it silently applied to only one widget. Subclasses
+    must provide ``self._timer``.
+    """
+
+    _timer: Any  # provided by the concrete widget
+
+    def showEvent(self, event: object) -> None:
+        super().showEvent(event)  # type: ignore[arg-type,misc]
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def hideEvent(self, event: object) -> None:
+        super().hideEvent(event)  # type: ignore[arg-type,misc]
+        # Never burn CPU while hidden, minimised, or closing.
+        self._timer.stop()
+
+
+class SceneCanvas(_AnimationLifecycleMixin, QWidget):
     """Deep-space gradient, receding 3D floor grid, orbs, stars, and vignette."""
 
     FRAME_MS = 40  # ~25 fps: calm to watch and cheap to paint.
@@ -71,15 +94,6 @@ class SceneCanvas(QWidget):
         self._phase = (self._phase + 0.007) % 1.0
         self._time += 0.04
         self.update()
-
-    def showEvent(self, event: object) -> None:  # noqa: D401 - Qt callback
-        super().showEvent(event)  # type: ignore[arg-type]
-        if not self._timer.isActive():
-            self._timer.start()
-
-    def hideEvent(self, event: object) -> None:
-        super().hideEvent(event)  # type: ignore[arg-type]
-        self._timer.stop()  # Never burn CPU while minimised or closing.
 
     # --------------------------------------------------------------- painting
     def paintEvent(self, event: object) -> None:
@@ -195,7 +209,7 @@ class SceneCanvas(QWidget):
         painter.fillRect(0, 0, width, height, vignette)
 
 
-class OrbLogo(QWidget):
+class OrbLogo(_AnimationLifecycleMixin, QWidget):
     """Glossy 3D sphere with a slow travelling sheen for the header."""
 
     SIZE = 38
@@ -212,15 +226,6 @@ class OrbLogo(QWidget):
     def _advance(self) -> None:
         self._sheen = (self._sheen + 0.05) % math.tau
         self.update()
-
-    def hideEvent(self, event: object) -> None:
-        super().hideEvent(event)  # type: ignore[arg-type]
-        self._timer.stop()
-
-    def showEvent(self, event: object) -> None:
-        super().showEvent(event)  # type: ignore[arg-type]
-        if not self._timer.isActive():
-            self._timer.start()
 
     def paintEvent(self, event: object) -> None:
         painter = QPainter(self)

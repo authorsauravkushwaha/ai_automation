@@ -16,15 +16,12 @@ from __future__ import annotations
 
 import json
 import re
-import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from hinata.database.database import Database
 from hinata.security.redaction import contains_secrets
-
 
 # Canonical field definitions — the "strong" set that covers 99% of web forms.
 CANONICAL_FIELDS: dict[str, dict[str, Any]] = {
@@ -91,6 +88,35 @@ for canonical, meta in CANONICAL_FIELDS.items():
     for alias in meta.get("aliases", []):
         _ALIAS_TO_CANONICAL[alias.lower()] = canonical
         _ALIAS_TO_CANONICAL[alias.lower().replace("_", "").replace("-", "")] = canonical
+
+#: Field-name fragments that always mean "a credential", never "autofill data".
+#: Matched against the normalised key, so user_pin / OTP-code / myPasswd all hit.
+SECRET_FIELD_NAME_TOKENS = frozenset(
+    {
+        "password", "passwd", "pwd", "secret", "token", "apikey", "api_key",
+        "pin", "passcode", "otp", "cvv", "cvc", "securitycode", "security_code",
+        "securityanswer", "security_answer", "mfa", "2fa", "totp", "recoverycode",
+        "recovery_code", "privatekey", "private_key", "seedphrase", "seed_phrase",
+    }
+)
+_SECRET_FIELD_SUBSTRINGS = ("password", "passwd", "secret", "apikey", "privatekey",
+                            "passcode", "securitycode", "recoverycode", "seedphrase")
+
+
+def _is_secret_field_name(key: str) -> bool:
+    """True when a field name looks like a credential that must not be stored."""
+    normalized = re.sub(r"[^a-z0-9]", "", key.lower())
+    if not normalized:
+        return False
+    if normalized in {t.replace("_", "") for t in SECRET_FIELD_NAME_TOKENS}:
+        return True
+    if any(fragment in normalized for fragment in _SECRET_FIELD_SUBSTRINGS):
+        return True
+    # Short, ambiguous tokens only match as a delimited word: "user_pin" and
+    # "otp_code" are credentials, "pinned_post" and "spinning" are not.
+    tokens = {t for t in re.split(r"[^a-z0-9]+", key.lower()) if t}
+    return bool(tokens & {"pin", "otp", "cvv", "cvc", "totp", "mfa", "2fa", "pwd"})
+
 
 SENSITIVE_FIELDS = {"pan", "aadhaar", "passport_number", "driving_license", "ssn", "national_id", "card_number", "card_cvv"}
 
@@ -181,10 +207,21 @@ class IdentityVault:
             # Refuse to store raw secrets as autofill — guide to secure storage
             # We allow IDs like PAN/Aadhaar but flag them; still block generic secrets
             # Only block obvious tokens/passwords for canonical password fields
-            if ck in {"password", "passwd", "pwd", "secret", "token", "api_key", "apikey"}:
+            # Blocklist by *normalised* name and by substring, so "user_pin",
+            # "otp_code" and "Passwd" cannot slip past an exact-match check.
+            if _is_secret_field_name(ck):
                 raise ValueError(f"Refusing to store sensitive field '{ck}' as plain autofill data. Use a password manager.")
             if "\x00" in cv:
                 raise ValueError("Field value contains null byte")
+            # A secret can hide in an innocuous-looking field ("note": "sk-proj-...").
+            # The module promises it refuses to store raw credentials, so scan the
+            # value too, not just the field name. IDs such as PAN/Aadhaar/SSN are
+            # deliberately still allowed (flagged sensitive, never logged).
+            if contains_secrets(cv):
+                raise ValueError(
+                    f"Refusing to store a credential-like value in field '{ck}' "
+                    "(detected key/token material). Use a password manager."
+                )
             clean_fields[ck] = cv
 
         if not clean_fields:

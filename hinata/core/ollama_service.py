@@ -26,6 +26,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from hinata.config import OllamaConfig
+from hinata.security.net_guards import build_loopback_opener
 
 LOGGER = logging.getLogger(__name__)
 
@@ -49,13 +50,6 @@ _WINDOWS_INSTALL_CANDIDATES: tuple[tuple[str, str], ...] = (
     ("ProgramW6432", "Ollama/ollama.exe"),
     ("ProgramFiles(x86)", "Ollama/ollama.exe"),
 )
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Do not let a loopback service redirect local prompts elsewhere."""
-
-    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
-        return None
 
 
 def find_ollama_executable() -> str | None:
@@ -93,7 +87,7 @@ class OllamaService:
         self.config = config
         self.base_url = config.host.rstrip("/")
         # Ignore environment proxies and refuse redirects, matching the chat client.
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        self._opener = build_loopback_opener()
         self._lock = threading.Lock()
         self._state: dict[str, Any] | None = None
         self._last_attempt: float | None = None

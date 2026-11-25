@@ -107,14 +107,14 @@ class HinataAssistant:
         self.files = FileManager(self.config.security)
         self.cockpit = DesktopCockpit(self.files)
         # Identity vault + web automation (local, no cloud)
-        from hinata.core.identity_vault import IdentityVault
-        from hinata.automation.web_automation import WebAutomation
-        from hinata.automation.smart_scraper import SmartScraper
-        from hinata.automation.file_wizard import FileWizard
         from hinata.automation.communication_center import CommunicationCenter
-        from hinata.automation.system_tuner import SystemTuner
-        from hinata.automation.research_synthesizer import ResearchSynthesizer
         from hinata.automation.dev_assistant import DevAssistant
+        from hinata.automation.file_wizard import FileWizard
+        from hinata.automation.research_synthesizer import ResearchSynthesizer
+        from hinata.automation.smart_scraper import SmartScraper
+        from hinata.automation.system_tuner import SystemTuner
+        from hinata.automation.web_automation import WebAutomation
+        from hinata.core.identity_vault import IdentityVault
         self.identity_vault = IdentityVault(self.database)
         self.web_automation = WebAutomation(files=self.files, windows=WindowsControl(), vault=self.vault)
         self.smart_scraper = SmartScraper(files=self.files)
@@ -455,6 +455,22 @@ class HinataAssistant:
             "metrics": self.tracer.metrics_snapshot(),
             "wake_word_enabled": self.config.wake_word.enabled,
         }
+
+    def fire_due_reminders(self, *, now_epoch: float | None = None) -> list[dict[str, Any]]:
+        """Claim reminders whose time has arrived and report them.
+
+        A reminder used to be written to the database and then never looked at
+        again: no query selected due rows, so repeating reminders never repeated
+        and one-shot reminders never fired. This is the single entry point the
+        desktop window and the CLI poll.
+        """
+        fired = self.comm_center.fire_due_reminders(now_epoch=now_epoch)
+        for reminder in fired:
+            message = f"Reminder: {reminder['title']}"
+            if reminder.get("message"):
+                message += f" — {reminder['message']}"
+            self.memory.add_message("assistant", message, "reminder")
+        return fired
 
     def close(self) -> None:
         self.knowledge_watcher.stop()

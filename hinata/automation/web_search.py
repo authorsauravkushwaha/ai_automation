@@ -17,14 +17,14 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import parse_qs, unquote, urljoin, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from hinata.automation.app_control import AutomationError
 from hinata.automation.browser_search import open_browser_search
+from hinata.security.net_guards import build_public_web_opener
 from hinata.security.offline_guard import OfflineGuard, OfflinePolicyError
 
 USER_AGENT = (
@@ -102,6 +102,11 @@ class _ReadableHTMLParser(HTMLParser):
 class _DuckDuckGoHTMLParser(HTMLParser):
     """Extract organic search result titles, decoded URLs, and snippets from DuckDuckGo HTML."""
 
+    #: Hard ceiling on collected results. The caller only ever keeps ``limit``
+    #: (at most 12), but a hostile or runaway page could otherwise make the
+    #: parser buffer thousands of full result objects before that slice.
+    MAX_RESULTS = 50
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.results: list[WebSearchResult] = []
@@ -164,7 +169,7 @@ class _DuckDuckGoHTMLParser(HTMLParser):
         self._current_url = ""
         self._title_buf = []
         self._snippet_buf = []
-        if title and url.startswith(("http://", "https://")):
+        if title and url.startswith(("http://", "https://")) and len(self.results) < self.MAX_RESULTS:
             self.results.append(
                 WebSearchResult(
                     title=title[:200],
@@ -258,21 +263,6 @@ def is_safe_public_url(url: str) -> bool:
     return True
 
 
-class _SafePublicRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Follow HTTP redirects only to validated public HTTP/HTTPS targets."""
-
-    def __init__(self, check_url: Callable[[str], None]) -> None:
-        super().__init__()
-        self._check_url = check_url
-
-    def redirect_request(
-        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
-    ) -> Any:
-        resolved = urljoin(req.full_url, newurl)
-        self._check_url(resolved)
-        return super().redirect_request(req, fp, code, msg, headers, resolved)
-
-
 class WebSearchEngine:
     """Multi-source concurrent internet search and readable webpage fetcher."""
 
@@ -288,7 +278,7 @@ class WebSearchEngine:
         self.strict_offline = strict_offline
         self.offline_guard = offline_guard
         self.timeout_seconds = max(1.5, min(float(timeout_seconds), 20.0))
-        self._opener = urllib.request.build_opener(_SafePublicRedirectHandler(self._check_policy))
+        self._opener = build_public_web_opener(self._check_policy)
 
     def _check_web_enabled(self) -> None:
         if self.strict_offline:

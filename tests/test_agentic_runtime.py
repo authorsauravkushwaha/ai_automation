@@ -177,10 +177,19 @@ class ReliabilityAndObservabilityTests(unittest.TestCase):
         self.assertEqual(by_id[sid_online], "blocked_offline")
         self.assertEqual(by_id[sid_local], "completed")
         self.assertEqual(executed, ["system info:SUGGEST_ONLY"])
-        # Completed max_runs=1 -> local schedule does not execute again; online remains blocked
+        # Completed max_runs=1 -> the local schedule does not execute again.
+        # The online-only schedule is pushed forward instead of being reported
+        # as blocked on every single tick: a task parked at the head of the due
+        # queue would otherwise be re-selected forever and could crowd out work
+        # that *can* run while offline.
         second_tick = sched.tick(lambda row: executed.append("unexpected") or {"status": "completed"}, now_epoch=20.0)
         self.assertEqual(executed, ["system info:SUGGEST_ONLY"])
-        self.assertEqual([r["status"] for r in second_tick], ["blocked_offline"])
+        self.assertEqual(second_tick, [])
+        # ...and it comes back once the network is available again.
+        third_tick = sched.tick(
+            lambda row: {"status": "completed"}, online_mode_enabled=True, now_epoch=200.0
+        )
+        self.assertEqual([r["status"] for r in third_tick], ["completed"])
 
 
 class ModelRouterPlannerAndMultiAgentTests(unittest.TestCase):

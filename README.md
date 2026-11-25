@@ -49,8 +49,9 @@ model-backed specialist preflight, and Windows automation. Specialist reports ar
 strictly scoped and all side effects still pass through the central permission
 manager; this is not an uncontrolled autonomous system. Some components require
 separately installed models or hardware. See the [feature details](#local-document-search-and-question-answering),
-[capability matrix and gap register](docs/JARVIS_GAP_REGISTER.md), and
-[roadmap](docs/STAGE_STATUS.md).
+[capability matrix and gap register](docs/JARVIS_GAP_REGISTER.md),
+[roadmap](docs/STAGE_STATUS.md), and the [100-finding weakness audit](docs/WEAKNESS_AUDIT.md)
+that records every defect reproduced against this tree, its evidence, and its status.
 
 ## Try the core without a model
 

@@ -41,3 +41,11 @@ ui-preview.png
 
 # Generated sandbox configurations contain local host paths
 *.wsb
+
+# Coverage artefacts
+.coverage
+.coverage.*
+htmlcov/
+
+# Generated headless-Qt stub libraries (scripts/build_qt_shim.py)
+qt-shim/

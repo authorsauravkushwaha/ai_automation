@@ -18,6 +18,7 @@ Architecture: single class WebAutomation with pure helpers extracted for testabi
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
@@ -28,7 +29,6 @@ import urllib.request
 import webbrowser
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from pathlib import Path
 from typing import Any
 
 from hinata.automation.app_control import AutomationError
@@ -330,7 +330,14 @@ AUTOCOMPLETE_MAP: dict[str, str] = {
 }
 
 # Heuristic weights for text signals
+#: Relative trust in each HTML signal. Raw weights are normalised to 0..1 before
+#: leaving ``heuristic_canonical_for_field``: callers treat "confidence" as a
+#: probability, and a raw weight of 8 (or 20 after the type boost) is not one.
 SIGNAL_WEIGHTS = {"autocomplete": 10, "name": 8, "id": 7, "label": 6, "placeholder": 5, "aria_label": 4}
+
+#: Highest score the loop can produce: the largest weight, doubled by the
+#: autocomplete direct-map branch.
+MAX_CANONICAL_SCORE = max(SIGNAL_WEIGHTS.values()) * 2
 
 
 def heuristic_canonical_for_field(field: dict[str, Any]) -> tuple[str | None, float, str]:
@@ -350,11 +357,12 @@ def heuristic_canonical_for_field(field: dict[str, Any]) -> tuple[str | None, fl
             # autocomplete can be space-separated tokens; take last token
             tokens = raw.lower().split()
             for token in reversed(tokens):
-                if token in AUTOCOMPLETE_MAP:
-                    return AUTOCOMPLETE_MAP[token], float(weight * 2), signal
+                direct = AUTOCOMPLETE_MAP.get(token)
+                if direct:
+                    return direct, 1.0, signal  # strongest signal: a declared hint
                 canon = canonicalize_field(token)
                 if canon:
-                    return canon, float(weight * 2), signal
+                    return canon, 1.0, signal
         canon = canonicalize_field(raw)
         if canon:
             # Boost if field type matches (e.g., type=email -> email field)
@@ -387,15 +395,39 @@ def heuristic_canonical_for_field(field: dict[str, Any]) -> tuple[str | None, fl
                             best = fallback_canon
                             best_score = score
                             best_signal = signal
-    return best, best_score, best_signal
+    confidence = round(min(1.0, best_score / MAX_CANONICAL_SCORE), 2) if best else 0.0
+    return best, confidence, best_signal
+
+
+#: Input types that are credentials by definition.
+_CREDENTIAL_INPUT_TYPES = frozenset({"password", "hidden"})
+
+
+def _is_credential_field(field: dict[str, Any]) -> bool:
+    """True when an HTML field must never be autofilled with stored data."""
+    from hinata.core.identity_vault import _is_secret_field_name
+
+    if (field.get("type") or "").strip().lower() in _CREDENTIAL_INPUT_TYPES:
+        return True
+    for signal in ("name", "id", "autocomplete", "label", "placeholder", "aria_label"):
+        raw = str(field.get(signal) or "")
+        if raw and _is_secret_field_name(raw):
+            return True
+    return False
 
 
 def map_fields_to_profile(fields: list[dict[str, Any]], profile_fields: dict[str, str]) -> list[dict[str, Any]]:
     """Map parsed HTML fields to profile values with confidence scores."""
-    from hinata.core.identity_vault import canonicalize_field, normalize_key, SENSITIVE_FIELDS
+    from hinata.core.identity_vault import SENSITIVE_FIELDS
 
     mappings: list[dict[str, Any]] = []
     for field in fields:
+        # Never type a credential, whatever the profile happens to contain and
+        # however confidently the name matches: autofill is for identity data.
+        # The last-ditch fuzzy match below would otherwise map a profile key
+        # straight onto a password/PIN/OTP input.
+        if _is_credential_field(field):
+            continue
         canon, score, signal = heuristic_canonical_for_field(field)
         if not canon:
             # Last-ditch: try any profile key that appears in any signal
@@ -406,7 +438,7 @@ def map_fields_to_profile(fields: list[dict[str, Any]], profile_fields: dict[str
                 for pk in profile_fields.keys():
                     if pk.lower().replace("_", "") in raw.replace("_", "").replace("-", "") or raw.replace("_", "").replace("-", "") in pk.lower().replace("_", ""):
                         canon = pk
-                        score = 1.5
+                        score = 0.2  # fuzzy match: below any exact-signal score
                         signal = sig_key + "+fuzzy"
                         break
                 if canon:
@@ -513,6 +545,22 @@ def build_fill_plan(inspection: dict[str, Any], profile_fields: dict[str, str], 
     )
 
 
+def _js_payload(value: Any) -> str:
+    """Serialise ``value`` for embedding inside a JS string/expression.
+
+    ``json.dumps`` already escapes quotes and backslashes, but it leaves
+    ``</script>`` intact, which terminates an inline ``<script>`` block and lets
+    the following HTML execute. Replace the sequence with its JSON-safe
+    equivalent so the snippet is safe as a bookmarklet *or* as embedded script.
+    """
+    return (
+        json.dumps(value, ensure_ascii=False, indent=2)
+        .replace("</", "<\\/")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def generate_js_snippet(plan: FillPlan) -> str:
     """Generate a robust pure-JS snippet — works as bookmarklet, console paste, or userscript."""
     lines = [
@@ -520,7 +568,7 @@ def generate_js_snippet(plan: FillPlan) -> str:
         "// Works on any website: Chrome, Edge, Firefox, Brave",
         "// Tip: Save as bookmark with prefix `javascript:` to reuse on any form",
         "(async function(){",
-        "  const actions = " + json.dumps(plan.actions, ensure_ascii=False, indent=2) + ";",
+        "  const actions = " + _js_payload(plan.actions) + ";",
         "  const submitSelector = " + json.dumps(plan.submit_selector) + ";",
         "  let filled=0, failed=0;",
         "  // Deep query that pierces open shadow DOM + iframes (best-effort)",
@@ -600,14 +648,11 @@ class WebAutomation:
         if headless:
             return {"url": target, "browser": "headless", "opened": False, "note": "Validated URL for headless autofill; no window opened."}
         # Try to use browser_search helper for named browsers, else webbrowser
-        opened_via = "webbrowser"
         try:
             if browser and browser.lower() not in {"default", "system", "os"} and open_browser_search is not None:
                 # Use generic search with browser parameter to open URL directly via subprocess
                 # Fallback: just call browser-specific launch
-                from hinata.automation.browser_search import open_browser_search as obs  # type: ignore
-                # We abuse open_browser_search to open a URL? Instead directly use subprocess for known browsers
-                # For now, try webbrowser with browser name
+                # Try webbrowser's registered browser for the requested name first.
                 try:
                     br = webbrowser.get(browser)
                     br.open(target, new=2)
@@ -699,7 +744,6 @@ class WebAutomation:
         backend = self._detect_backend()
         execution_report: dict[str, Any] = {"backend": backend, "executed": False}
 
-        js_snippet_path = ""
         # Always generate JS snippet as an artifact (works everywhere, user can paste)
         js_snippet = generate_js_snippet(plan)
 
@@ -740,17 +784,13 @@ class WebAutomation:
         }
 
     def _detect_backend(self) -> str:
-        # Prefer playwright because it handles Shadow DOM, SPA waits, and is more reliable
-        try:
-            import playwright  # type: ignore
+        # Prefer playwright because it handles Shadow DOM, SPA waits, and is more reliable.
+        # find_spec checks availability without importing (importing playwright can
+        # take seconds and is only needed once a driver is actually used).
+        if importlib.util.find_spec("playwright") is not None:
             return "playwright"
-        except ImportError:
-            pass
-        try:
-            import selenium  # type: ignore
+        if importlib.util.find_spec("selenium") is not None:
             return "selenium"
-        except ImportError:
-            pass
         return "native"
 
     # --- Playwright driver ---
@@ -808,8 +848,8 @@ class WebAutomation:
     def _execute_via_selenium(self, url: str, plan: FillPlan, wait_seconds: float) -> dict[str, Any]:
         try:
             from selenium import webdriver  # type: ignore
-            from selenium.webdriver.common.by import By  # type: ignore
             from selenium.webdriver.chrome.options import Options  # type: ignore
+            from selenium.webdriver.common.by import By  # type: ignore
         except ImportError as exc:
             return {"backend": "selenium", "executed": False, "error": f"Selenium not installed: {exc}"}
         driver = None
@@ -874,6 +914,15 @@ class WebAutomation:
         target = normalize_url(url, allow_private=allow_private)
         # For now, synthesize a plan with one action and run via best backend
         inspection = self.inspect_url(target)
+        # Reuse the inspection: report whether the selector matches a detected
+        # field instead of throwing the fetched document away.
+        known_selectors: set[str] = set()
+        for form in inspection.get("forms") or []:
+            for field in form.get("fields") or []:
+                known_selectors.update(str(s).strip() for s in field.get("selectors") or [])
+                if field.get("id"):
+                    known_selectors.add(f"#{field['id']}")
+        selector_present = selector.strip() in known_selectors if known_selectors else None
         plan = FillPlan(url=target, total_fields=1, mappable=1, missing=0, actions=[{"selector": selector, "value": value, "canonical": "custom", "confidence": 10, "field_meta": {}, "action": "fill"}], submit_selector=None)
         backend = self._detect_backend()
         if backend == "playwright":
@@ -889,9 +938,20 @@ class WebAutomation:
                 opened = False
                 LOGGER.info("Native fill fallback could not open browser: %s", exc)
             prefix = f"Opened {target}. " if opened else ""
-            js_code = f"document.querySelector('{selector}').value='{value}'"
+            # json.dumps produces a valid single-line JS string literal, so values
+            # containing quotes, apostrophes, backslashes or newlines stay intact.
+            js_code = (
+                f"document.querySelector({json.dumps(selector)}).value="
+                f"{json.dumps(value)}"
+            )
             res = {"backend": "native", "executed": False, "browser_opened": opened, "js": js_code, "note": prefix + f"Paste into console: {js_code}"}
-        return {"url": target, "selector": selector, "value_preview": value[:40], "result": res}
+        return {
+            "url": target,
+            "selector": selector,
+            "selector_present_on_page": selector_present,
+            "value_preview": value[:40],
+            "result": res,
+        }
 
     def click_element(self, url: str, selector: str, *, wait_seconds: float = 1.0, allow_private: bool = True) -> dict[str, Any]:
         target = normalize_url(url, allow_private=allow_private)
@@ -913,8 +973,8 @@ class WebAutomation:
         elif backend == "selenium":
             try:
                 from selenium import webdriver  # type: ignore
-                from selenium.webdriver.common.by import By
                 from selenium.webdriver.chrome.options import Options
+                from selenium.webdriver.common.by import By
 
                 opts = Options()
                 driver = webdriver.Chrome(options=opts)

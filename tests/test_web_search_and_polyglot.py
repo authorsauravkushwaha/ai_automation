@@ -10,8 +10,10 @@ from unittest.mock import patch
 from hinata.agents.coder import PolyglotCoder, resolve_language
 from hinata.automation.app_control import AppControl, AutomationError
 from hinata.automation.file_manager import FileManager
+from hinata.automation.smart_scraper import PriceParser, TableParser
 from hinata.automation.web_search import (
     WebSearchEngine,
+    _DuckDuckGoHTMLParser,
     extract_core_search_query,
     is_safe_public_url,
 )
@@ -169,6 +171,51 @@ class WebSearchAndPolyglotTests(unittest.TestCase):
     def test_static_app_catalog_lists_configured_apps_without_platform_launch(self):
         control = AppControl({}, discover_installed=False)
         self.assertEqual(control.list_installed_apps()["count"], 0)
+
+
+class HostilePageParsingTests(unittest.TestCase):
+    """Parsers must stay bounded and must not invent results on bad markup."""
+
+    def test_ddg_parser_caps_collected_results(self):
+        page = "<a class='result__a' href='https://x.com/'>t</a>" * 5000
+        parser = _DuckDuckGoHTMLParser()
+        parser.feed(page)
+        parser.close()
+        self.assertEqual(len(parser.results), _DuckDuckGoHTMLParser.MAX_RESULTS)
+
+    def test_ddg_parser_rejects_unsafe_schemes(self):
+        for href in (
+            "javascript:alert(1)",
+            "data:text/html,<script>",
+            "http://127.0.0.1/admin",
+            "//duckduckgo.com/l/?uddg=javascript%3Aalert(1)",
+        ):
+            parser = _DuckDuckGoHTMLParser()
+            parser.feed(f"<a class='result__a' href='{href}'>title</a>")
+            parser.close()
+            self.assertEqual(parser.results, [], href)
+
+    def test_table_parser_is_bounded_but_keeps_normal_tables(self):
+        rows = "".join(f"<tr><td>r{i}</td><td>{'x' * 200}</td></tr>" for i in range(5000))
+        parser = TableParser()
+        parser.feed(f"<table><tr><th>a</th><th>b</th></tr>{rows}</table>")
+        parser.close()
+        self.assertEqual(len(parser.tables), 1)
+        self.assertEqual(len(parser.tables[0]["rows"]), parser.max_rows)
+        self.assertEqual(parser.tables[0]["headers"], ["a", "b"])
+
+    def test_price_parser_reads_symbol_and_labelled_bare_amounts(self):
+        parser = PriceParser()
+        parser.feed("<span>$49.99</span><span>Price: 1,299.00 USD</span>")
+        parser.close()
+        self.assertIn("$49.99", parser.prices)
+        self.assertIn("1,299.00", parser.prices)
+
+    def test_price_parser_ignores_unlabelled_numbers(self):
+        parser = PriceParser()
+        parser.feed("<span>4.5 stars from 120 reviews</span><span>Version 2.1.30</span>")
+        parser.close()
+        self.assertEqual(parser.prices, [])
 
 
 if __name__ == "__main__":

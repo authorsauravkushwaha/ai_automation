@@ -465,7 +465,14 @@ def main(argv: list[str] | None = None) -> int:
                     _run_sched,
                     online_mode_enabled=assistant.config.security.online_mode_enabled,
                 )
-                print(json.dumps({"executed_jobs": ran}, indent=2, ensure_ascii=False))
+                due_reminders = [
+                    {"title": r["title"], "message": r["message"]}
+                    for r in assistant.fire_due_reminders()
+                ]
+                print(json.dumps(
+                    {"executed_jobs": ran, "due_reminders": due_reminders},
+                    indent=2, ensure_ascii=False,
+                ))
                 return 0
             print(json.dumps(assistant.scheduler.list_schedules(), indent=2, ensure_ascii=False))
             return 0

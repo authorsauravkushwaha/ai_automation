@@ -75,6 +75,22 @@ jobs:
             exit 1
           }
 
+  # These tests pin the security boundaries (sandbox containment, secret
+  # redaction, offline DNS blocking, audit-chain integrity). They run on their
+  # own so a regression fails fast and cannot be lost among 300 other results.
+  security-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install zero-dependency core
+        run: python -m pip install -e .
+      - name: Sandbox, redaction, and audit-boundary regressions
+        run: python -m unittest tests.test_weakness_regressions -v
+
   quality:
     runs-on: ubuntu-latest
     steps:
@@ -91,6 +107,27 @@ jobs:
         run: mypy hinata
       - name: Build wheel without dependencies
         run: python -m pip wheel . --no-deps --wheel-dir /tmp/hinata-wheel
+
+  desktop-headless-linux:
+    # Proves the GUI constructs and behaves under Qt's offscreen platform on a
+    # bare Linux runner, using scripts/build_qt_shim.py for the GL/DBus stubs
+    # that a minimal image lacks.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install desktop and light numerical test dependencies
+        run: python -m pip install -e ".[gui]" numpy
+      - name: Build headless Qt shim
+        run: python scripts/build_qt_shim.py --out qt-shim
+      - name: Desktop tests under the offscreen platform
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LD_LIBRARY_PATH: ${{ github.workspace }}/qt-shim
+        run: python scripts/run_tests.py > test-output.txt 2>&1 || (python scripts/github_test_report.py test-output.txt && exit 1)
 
   desktop:
     runs-on: windows-latest

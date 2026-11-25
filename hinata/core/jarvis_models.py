@@ -24,6 +24,7 @@ import base64
 import html
 import json
 import keyword
+import logging
 import re
 import urllib.error
 import urllib.request
@@ -38,7 +39,10 @@ from hinata.automation.app_control import AutomationError
 from hinata.automation.file_manager import FileManager
 from hinata.automation.workspace import WorkspaceManager
 from hinata.core.llm_manager import LLMManager
+from hinata.security.net_guards import build_loopback_opener
 from hinata.security.redaction import redact_text
+
+LOGGER = logging.getLogger(__name__)
 
 RECOMMENDED_OLLAMA_VERSION = "0.6.2"
 
@@ -291,13 +295,6 @@ def render_fleet_toml_snippet(pack: FleetPack) -> str:
     )
 
 
-class _LoopbackNoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(
-        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
-    ) -> None:
-        return None
-
-
 def _validate_loopback_url(url: str) -> str:
     parsed = urlsplit(url.strip())
     if (
@@ -345,9 +342,7 @@ class VisualStudioEngine:
         self.llm = llm
         self.image_model_dir = image_model_dir
         self.image_backend_url = _validate_loopback_url(image_backend_url) if image_backend_url else ""
-        self._opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}), _LoopbackNoRedirect()
-        )
+        self._opener = build_loopback_opener()
 
     def expand_prompt_with_qwen(self, prompt: str, style: str = "jarvis_hud") -> dict[str, str]:
         """Use Qwen (vision/chat role) to craft a studio-grade image prompt & negative prompt."""
@@ -386,7 +381,8 @@ class VisualStudioEngine:
                     "director": self.llm.last_model_identity or "qwen_local",
                 }
         except Exception:
-            pass
+            LOGGER.info("Image prompt director unavailable; using the template prompt.",
+                        exc_info=True)
         return {"positive_prompt": base_positive, "negative_prompt": base_negative, "director": "fallback_template"}
 
     def _try_loopback_diffusion(
@@ -906,7 +902,10 @@ class ProjectArchitectEngine:
                 )
                 implementation_plan = strip_reasoning_traces(plan_raw)[:1200]
             except Exception:
-                pass  # A missing planner never authorizes writes or fabricates a plan.
+                # A missing planner never authorizes writes or fabricates a plan;
+                # the build simply proceeds without an implementation checklist.
+                LOGGER.info("Planner checklist unavailable for %s; continuing without it.",
+                            project_name, exc_info=True)
             try:
                 raw = self.llm.chat(
                     [
@@ -950,7 +949,13 @@ class ProjectArchitectEngine:
                     if validated:
                         return validated, f"local_coder:{self.llm.last_model_identity or 'local'}"
             except Exception:
-                pass
+                # Fall through to the deterministic scaffold. Logged because the
+                # reported provenance ("hinata_clean_scaffold") then differs from
+                # the model-generated one the user might expect.
+                LOGGER.warning(
+                    "Local coder output was rejected for %s; using the deterministic "
+                    "scaffold instead.", project_name, exc_info=True,
+                )
 
         return self._deterministic_scaffold(project_name, slug, specification, template), "hinata_clean_scaffold"
 

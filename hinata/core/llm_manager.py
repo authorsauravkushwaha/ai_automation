@@ -33,6 +33,7 @@ from hinata.core.providers import (
     ModelRouter,
     StructuredObservation,
 )
+from hinata.security.net_guards import build_loopback_opener
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,13 +44,6 @@ class OllamaError(RuntimeError):
 
 class ModelUnavailableError(OllamaError):
     """The runtime is reachable but the configured model is not downloaded."""
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Do not let a loopback service redirect private prompts elsewhere."""
-
-    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
-        return None
 
 
 class LLMManager:
@@ -69,7 +63,7 @@ class LLMManager:
             config.vision_model = config.vision_model or pack.vision_model
         self.config = config
         # Ignore environment proxies and refuse every redirect, including loopback redirects.
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        self._opener = build_loopback_opener()
         self.base_url = config.host.rstrip("/")
         self._response_lock = threading.Lock()
         self._active_response: Any = None

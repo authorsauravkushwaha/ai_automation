@@ -20,6 +20,8 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -56,7 +58,7 @@ from hinata.core.llm_manager import LLMManager, OllamaError
 from hinata.core.memory import Memory
 from hinata.core.observability import TraceRecorder
 from hinata.core.ollama_service import MODEL_MISSING
-from hinata.core.permissions import PermissionManager
+from hinata.core.permissions import PermissionLevel, PermissionManager
 from hinata.core.personality import PersonalityManager
 from hinata.core.planner import AUTONOMY_MODES, ExecutionPlan, Planner, PlanningError, PlanNode
 from hinata.core.providers import HardwareCapabilityService
@@ -115,6 +117,8 @@ class Orchestrator:
         self.memory = memory
         self.personality = personality
         self.permissions = permissions
+        # >0 while a call stack has already been authorised by PermissionManager.
+        self._authorization_depth = 0
         self.apps = apps
         self.files = files
         self.web_search = web_search or WebSearchEngine()
@@ -193,12 +197,14 @@ class Orchestrator:
         else:
             from hinata.automation.dev_assistant import DevAssistant as _DA
             self.dev_assistant = _DA(files=files, workspace_manager=workspace_manager)
-        # Ensure researcher always has current web_search/llm
+        # Keep the researcher pointed at the current web_search/llm instances.
         try:
             self.researcher.web_search = self.web_search
             self.researcher.llm = llm
         except Exception:
-            pass
+            # A custom researcher without these attributes is still usable; note
+            # it so stale-research bugs are not silent.
+            LOGGER.warning("Researcher does not accept refreshed web_search/llm.", exc_info=True)
 
     def set_autonomy_mode(self, mode: str) -> str:
         if mode not in AUTONOMY_MODES:
@@ -1068,7 +1074,9 @@ class Orchestrator:
         try:
             result = self.workers.execute(
                 action,
-                self._run_tool,
+                # PermissionManager has just approved this action, so the
+                # authorised dispatcher may proceed for confirm/PIN tiers too.
+                self._run_authorized_tool,
                 run_id=run_id,
                 task_id=task_id,
                 step_id=step_id,
@@ -1240,17 +1248,488 @@ class Orchestrator:
             {"matches": matches, "claim_verification": claim_verdict},
         )
 
+    def _is_safe_tool(self, tool: str) -> bool:
+        """True when the tool needs neither confirmation nor a PIN."""
+        try:
+            return self.permissions.level(tool) is PermissionLevel.SAFE
+        except Exception:  # an unclassifiable tool must never be treated as safe
+            LOGGER.debug("Could not classify tool %s; treating as unsafe", tool, exc_info=True)
+            return False
+
     def _run_tool(self, action: ActionRequest) -> ActionResult:
+        """Dispatch one action, refusing anything that needs authorisation.
+
+        This method is the *mechanism*; authorisation belongs to the caller and
+        is performed by :meth:`_execute` through ``PermissionManager`` (confirm
+        and PIN tiers). Because the raw method is reachable from anywhere in the
+        process, it refuses every tool above the ``safe`` tier. Without that
+        guard a single direct call could wipe memory, delete files or power off
+        the machine with no confirmation and no PIN — the exact bypass that
+        ``clear_memory`` demonstrated.
+
+        The signature stays ``(action)`` deliberately: callers, tests and
+        monkeypatched stand-ins all use that one shape, and the authorised path
+        is a separate method rather than an extra keyword argument.
+        """
+        if not self._is_safe_tool(action.tool) and not self._authorization_depth:
+            return ActionResult.failure(
+                action.tool,
+                f"Refusing '{action.tool}' without authorisation: it is a "
+                f"{self.permissions.level(action.tool).value}-tier tool and must be "
+                "dispatched through the confirmed/PIN-checked path.",
+            )
+        return self._dispatch_tool(action)
+
+    @contextmanager
+    def _authorized_dispatch(self) -> Iterator[None]:
+        """Mark the current call stack as already approved by ``PermissionManager``.
+
+        ``_run_authorized_tool`` still routes *through* ``_run_tool`` so that the
+        single dispatch seam stays observable (and monkeypatchable). The guard in
+        ``_run_tool`` reads this depth to tell "called by the approved executor"
+        apart from "called directly by something that skipped the gate".
+        """
+        self._authorization_depth += 1
+        try:
+            yield
+        finally:
+            self._authorization_depth -= 1
+
+    def _run_authorized_tool(self, action: ActionRequest) -> ActionResult:
+        """Dispatch after :meth:`_execute` has already approved this exact action."""
+        with self._authorized_dispatch():
+            return self._run_tool(action)
+
+    def _dispatch_tool(self, action: ActionRequest) -> ActionResult:
         args = action.arguments
         tool = action.tool
+        if tool == "browser_search":
+            return self._handle_web(action, tool, args)
+        if tool == "scroll_window":
+            return self._handle_automation(action, tool, args)
+        if tool == "web_search":
+            return self._handle_web(action, tool, args)
+        if tool == "fetch_webpage":
+            return self._handle_web(action, tool, args)
+        if tool == "list_installed_apps":
+            return self._handle_automation(action, tool, args)
+        if tool == "write_code":
+            return self._handle_media(action, tool, args)
+        if tool == "set_owner_name":
+            return self._handle_memory(action, tool, args)
+        if tool == "owner_name":
+            return self._handle_memory(action, tool, args)
+        if tool == "code_inspect":
+            return self._handle_checks(action, tool, args)
+        if tool == "inspect_repository_imports":
+            return self._handle_checks(action, tool, args)
+        if tool in {
+            "knowledge_list",
+            "knowledge_sync",
+            "knowledge_index",
+            "knowledge_index_semantic",
+            "knowledge_remove",
+            "knowledge_search",
+            "knowledge_semantic_search",
+            "knowledge_hybrid_search",
+            "knowledge_answer",
+        }:
+            return self._handle_knowledge(action, tool, args)
+        if tool == "open_application":
+            return self._handle_automation(action, tool, args)
+        if tool == "close_application":
+            return self._handle_automation(action, tool, args)
+        if tool == "open_folder":
+            return self._handle_automation(action, tool, args)
+        if tool == "open_file":
+            return self._handle_automation(action, tool, args)
+        if tool == "list_directory":
+            return self._handle_files(action, tool, args)
+        if tool == "search_files":
+            return self._handle_files(action, tool, args)
+        if tool == "search_file_content":
+            return self._handle_files(action, tool, args)
+        if tool == "create_folder":
+            return self._handle_files(action, tool, args)
+        if tool == "read_text_file":
+            return self._handle_files(action, tool, args)
+        if tool == "write_text_file":
+            return self._handle_files(action, tool, args)
+        if tool == "copy_file":
+            return self._handle_files(action, tool, args)
+        if tool == "move_file":
+            return self._handle_files(action, tool, args)
+        if tool == "compare_files":
+            return self._handle_files(action, tool, args)
+        if tool == "archive_files":
+            return self._handle_files(action, tool, args)
+        if tool == "quarantine_delete_file":
+            return self._handle_files(action, tool, args)
+        if tool == "type_text":
+            return self._handle_automation(action, tool, args)
+        if tool == "volume":
+            return self._handle_automation(action, tool, args)
+        if tool == "system_info":
+            return self._handle_system(action, tool, args)
+        if tool == "ai_fleet_profile":
+            return self._handle_system(action, tool, args)
+        if tool == "generate_image":
+            return self._handle_media(action, tool, args)
+        if tool == "build_project":
+            return self._handle_media(action, tool, args)
+        if tool == "hardware_profile":
+            return self._handle_system(action, tool, args)
+        if tool == "memory_search":
+            return self._handle_memory(action, tool, args)
+        if tool == "remember_preference":
+            return self._handle_memory(action, tool, args)
+        if tool == "list_preferences":
+            return self._handle_memory(action, tool, args)
+        if tool == "set_personality_mode":
+            return self._handle_memory(action, tool, args)
+        if tool == "clear_memory":
+            return self._handle_memory(action, tool, args)
+        if tool == "workspace_list":
+            return self._handle_workspace(action, tool, args)
+        if tool == "workspace_read":
+            return self._handle_workspace(action, tool, args)
+        if tool == "workspace_search":
+            return self._handle_workspace(action, tool, args)
+        if tool == "workspace_diff":
+            return self._handle_workspace(action, tool, args)
+        if tool == "workspace_propose_patch":
+            return self._handle_workspace(action, tool, args)
+        if tool == "workspace_apply_patch":
+            return self._handle_workspace(action, tool, args)
+        if tool == "workspace_revert_patch":
+            return self._handle_workspace(action, tool, args)
+        if tool == "run_project_tests":
+            return self._handle_checks(action, tool, args)
+        if tool == "run_linter":
+            return self._handle_checks(action, tool, args)
+        if tool == "run_type_checker":
+            return self._handle_checks(action, tool, args)
+        if tool == "workspace_symbol_index":
+            return self._handle_workspace(action, tool, args)
+        if tool == "executive_briefing":
+            return self._handle_system(action, tool, args)
+        if tool == "list_windows":
+            return self._handle_automation(action, tool, args)
+        if tool == "focus_window":
+            return self._handle_automation(action, tool, args)
+        if tool == "snap_window":
+            return self._handle_automation(action, tool, args)
+        if tool == "send_hotkey":
+            return self._handle_automation(action, tool, args)
+        if tool == "read_clipboard":
+            return self._handle_automation(action, tool, args)
+        if tool == "write_clipboard":
+            return self._handle_automation(action, tool, args)
+        if tool == "capture_screen":
+            return self._handle_automation(action, tool, args)
+        if tool == "list_processes":
+            return self._handle_automation(action, tool, args)
+        if tool == "open_website":
+            return self._handle_web(action, tool, args)
+        if tool == "inspect_forms":
+            return self._handle_web(action, tool, args)
+        if tool == "save_identity":
+            return self._handle_identity(action, tool, args)
+        if tool == "list_identities":
+            return self._handle_identity(action, tool, args)
+        if tool == "get_identity":
+            return self._handle_identity(action, tool, args)
+        if tool == "delete_identity":
+            return self._handle_identity(action, tool, args)
+        if tool == "web_autofill":
+            return self._handle_web(action, tool, args)
+        if tool == "web_fill_field":
+            return self._handle_web(action, tool, args)
+        if tool == "web_click":
+            return self._handle_web(action, tool, args)
+        if tool == "power_control":
+            return self._handle_automation(action, tool, args)
+        if tool == "scrape_tables":
+            return self._handle_web(action, tool, args)
+        if tool == "scrape_lists":
+            return self._handle_web(action, tool, args)
+        if tool == "monitor_price":
+            return self._handle_web(action, tool, args)
+        if tool == "crawl_pages":
+            return self._handle_web(action, tool, args)
+        if tool == "scrape_export":
+            return self._handle_web(action, tool, args)
+        if tool == "analyze_storage":
+            return self._handle_files(action, tool, args)
+        if tool == "find_duplicates":
+            return self._handle_files(action, tool, args)
+        if tool == "organize_folder":
+            return self._handle_files(action, tool, args)
+        if tool == "batch_rename":
+            return self._handle_files(action, tool, args)
+        if tool == "convert_file":
+            return self._handle_files(action, tool, args)
+        if tool == "clean_temp":
+            return self._handle_files(action, tool, args)
+        if tool == "draft_email":
+            return self._handle_communications(action, tool, args)
+        if tool == "list_drafts":
+            return self._handle_communications(action, tool, args)
+        if tool == "email_template_info":
+            return self._handle_communications(action, tool, args)
+        if tool == "create_reminder":
+            return self._handle_communications(action, tool, args)
+        if tool == "list_reminders":
+            return self._handle_communications(action, tool, args)
+        if tool == "broadcast_message":
+            return self._handle_communications(action, tool, args)
+        if tool == "health_check":
+            return self._handle_system(action, tool, args)
+        if tool == "network_diag":
+            return self._handle_system(action, tool, args)
+        if tool == "backup_create":
+            return self._handle_system(action, tool, args)
+        if tool == "quick_cleanup":
+            return self._handle_system(action, tool, args)
+        if tool == "process_search":
+            return self._handle_system(action, tool, args)
+        if tool == "deep_research":
+            return self._handle_research(action, tool, args)
+        if tool == "compare_topics":
+            return self._handle_research(action, tool, args)
+        if tool == "summarize_url":
+            return self._handle_research(action, tool, args)
+        if tool == "git_status":
+            return self._handle_devtools(action, tool, args)
+        if tool == "git_diff":
+            return self._handle_devtools(action, tool, args)
+        if tool == "git_commit":
+            return self._handle_devtools(action, tool, args)
+        if tool == "code_review":
+            return self._handle_devtools(action, tool, args)
+        if tool == "dependency_audit":
+            return self._handle_devtools(action, tool, args)
+        if tool == "dev_run_tests":
+            return self._handle_devtools(action, tool, args)
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ automation
+    def _handle_automation(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
+        if tool == "scroll_window":
+            data = self.windows.scroll(args["direction"], steps=args.get("steps", 3))
+            return ActionResult(tool, True, f"Sent scroll {data['direction']} to the active window.", data)
+        if tool == "list_installed_apps":
+            data = self.apps.list_installed(args.get("query", ""), args.get("limit", 60))
+            lines = [f"{item['name']} ({item['source']})" for item in data["applications"]]
+            return ActionResult(tool, True, "Installed applications:\n" + "\n".join(lines), data)
+        if tool == "open_application":
+            data = self.apps.open(args["name"])
+            return ActionResult(tool, True, f"Launched {data['application']} (PID {data['pid']}).", data)
+        if tool == "close_application":
+            data = self.apps.close(args["name"])
+            message = (
+                f"{data['application']} was not running."
+                if data["already_closed"]
+                else f"Close requested for {data['application']}."
+            )
+            if data["warnings"]:
+                message += " Some processes could not be closed: " + "; ".join(data["warnings"])
+            return ActionResult(tool, not data["warnings"], message, data)
+        if tool == "open_folder":
+            data = self.files.open_folder(args["path"])
+            return ActionResult(tool, True, f"Asked Windows to open folder: {data['path']}", data)
+        if tool == "open_file":
+            data = self.files.open_file(args["path"])
+            return ActionResult(tool, True, f"Asked Windows to open file: {data['path']}", data)
+        if tool == "type_text":
+            data = self.windows.type_text(
+                args["text"], target_window=args.get("target_window", "")
+            )
+            return ActionResult(
+                tool, True, f"Typed {data['characters']} character(s) into the active application.", data
+            )
+        if tool == "volume":
+            data = self.windows.volume(args["action"], args.get("value"))
+            message = (
+                f"Volume set to {data['value']}%."
+                if args["action"] == "set"
+                else f"Volume {args['action']} key sent."
+            )
+            return ActionResult(tool, True, message, data)
+        if tool == "list_windows":
+            data = self.cockpit.list_windows(
+                filter_text=args.get("filter", ""),
+                limit=args.get("limit", 40),
+            )
+            lines = [
+                f"{'* ' if w.get('active') else '  '}[PID {w['pid']}] {w['title']}"
+                for w in data["windows"][:30]
+            ]
+            msg = "\n".join(lines) or str(data.get("note") or "No visible windows matched.")
+            return ActionResult(tool, True, msg, data)
+        if tool == "focus_window":
+            data = self.cockpit.focus_window(args["title"])
+            return ActionResult(
+                tool, True, f"Focused window: {data['window']['title']}.", data
+            )
+        if tool == "snap_window":
+            data = self.cockpit.snap_window(args["title"], args["layout"])
+            return ActionResult(
+                tool,
+                True,
+                f"Arranged '{data['window']['title']}' -> {data['layout']}.",
+                data,
+            )
+        if tool == "send_hotkey":
+            data = self.cockpit.send_hotkey(
+                args["shortcut"],
+                target_window=args.get("target_window", ""),
+            )
+            return ActionResult(
+                tool,
+                True,
+                f"Sent shortcut '{data['shortcut']}' to {data['target_window']}.",
+                data,
+            )
+        if tool == "read_clipboard":
+            data = self.cockpit.read_clipboard(max_chars=args.get("max_chars", 4000))
+            note = " (secrets redacted)" if data["secrets_redacted"] else ""
+            return ActionResult(
+                tool,
+                True,
+                f"Clipboard ({data['length']} chars{note}):\n{data['content']}",
+                data,
+            )
+        if tool == "write_clipboard":
+            data = self.cockpit.write_clipboard(args["text"])
+            return ActionResult(
+                tool, True, f"Copied {data['written_chars']} character(s) to clipboard.", data
+            )
+        if tool == "capture_screen":
+            data = self.cockpit.capture_screen(args["path"])
+            prompt = args.get("analyze_prompt", "").strip()
+            if prompt:
+                from hinata.speech.multimodal import LocalVisionAdapter
+
+                vision = LocalVisionAdapter(self.files, self.llm if self.llm_enabled else None)
+                try:
+                    analysis = vision.inspect_image(data["path"], prompt=prompt)
+                    data["vision_analysis"] = analysis
+                except AutomationError as exc:
+                    data["vision_note"] = str(exc)
+            return ActionResult(
+                tool,
+                True,
+                f"Captured screen to {data['path']} ({data['bytes']} bytes)."
+                + (f"\nVision: {data['vision_analysis']['text']}" if "vision_analysis" in data else ""),
+                data,
+            )
+        if tool == "list_processes":
+            data = self.cockpit.list_processes(
+                filter_name=args.get("filter", ""),
+                limit=args.get("limit", 25),
+            )
+            lines = [f"Top {data['count']} process(es) by memory:"] + [
+                f"  PID {p['pid']:>6} | {p['rss_mb']:>7.1f} MB | {p['name']}"
+                for p in data["processes"][:25]
+            ]
+            return ActionResult(tool, True, "\n".join(lines), data)
+        if tool == "power_control":
+            data = self.cockpit.power_control(args["action"])
+            return ActionResult(
+                tool, True, f"Executed workstation power command: {data['action']}.", data
+            )
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ files
+    def _handle_files(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
+        if tool == "list_directory":
+            data = self.files.list_directory(args.get("path", ""), args.get("max_entries", 100))
+            summary = "\n".join(f"[{e['kind']}] {e['name']}" for e in data["entries"][:30])
+            return ActionResult(tool, True, summary or "Folder is empty.", data)
+        if tool == "search_files":
+            data = self.files.search(args["query"], args.get("root", ""), args.get("max_results", 20))
+            matches = data["matches"]
+            lines = [f"Found {len(matches)} matching file(s).", *matches[:10]]
+            if data["truncated"]:
+                lines.append("Search stopped at a configured bound; narrow the query for more results.")
+            return ActionResult(tool, True, "\n".join(lines), data)
+        if tool == "search_file_content":
+            data = self.files.search_content(
+                args["query"], args.get("root", ""), args.get("max_results", 20)
+            )
+            lines = [f"Found {len(data['matches'])} content match(es)."] + [
+                f"{m['path']}:{m['line']}: {m['snippet']}" for m in data["matches"][:10]
+            ]
+            return ActionResult(tool, True, "\n".join(lines), data)
+        if tool == "create_folder":
+            data = self.files.create_folder(args["path"])
+            return ActionResult(tool, True, f"Created folder: {data['path']}", data)
+        if tool == "read_text_file":
+            data = self.files.read_text(args["path"], args.get("max_chars", 12000))
+            suffix = "\n\n[Content truncated at a configured limit]" if data["truncated"] else ""
+            return ActionResult(
+                tool, True, f"Contents of {data['path']}:\n\n{data['content']}{suffix}", data
+            )
+        if tool == "write_text_file":
+            data = self.files.write_text_file(
+                args["path"], args["content"], overwrite=bool(args.get("overwrite", False))
+            )
+            return ActionResult(
+                tool, True, f"Wrote {data['bytes_written']} bytes to {data['path']}.", data
+            )
+        if tool == "copy_file":
+            data = self.files.copy_file(args["source"], args["destination"])
+            return ActionResult(
+                tool, True, f"Copied {data['source']} -> {data['destination']}.", data
+            )
+        if tool == "move_file":
+            data = self.files.move_or_rename(args["source"], args["destination"])
+            return ActionResult(tool, True, f"Moved {data['source']} -> {data['destination']}.", data)
+        if tool == "compare_files":
+            data = self.files.compare_files(args["first"], args["second"])
+            msg = "Files are identical." if data["identical"] else f"Unified diff:\n{data['diff']}"
+            return ActionResult(tool, True, msg, data)
+        if tool == "archive_files":
+            data = self.files.create_archive(args["source"], args["archive_path"])
+            return ActionResult(
+                tool, True, f"Archived {data['files_archived']} file(s) into {data['archive']}.", data
+            )
+        if tool == "quarantine_delete_file":
+            data = self.files.quarantine_delete(args["path"], self.quarantine_dir)
+            return ActionResult(
+                tool,
+                True,
+                f"Moved {data['deleted_from']} to reversible quarantine ({data['quarantined_to']}).",
+                data,
+            )
+        if tool == "analyze_storage":
+            data = self.file_wizard.analyze_storage(args.get("path",""), top_n=args.get("top_n",20))
+            return ActionResult(tool, True, f"Storage for {data['root']}: {data['total_files']} files, {data['total_mb']} MB. Largest: {data['largest'][0]['path'] if data['largest'] else 'none'}", data)
+        if tool == "find_duplicates":
+            data = self.file_wizard.find_duplicates(args.get("path",""), max_groups=args.get("max_groups",20), min_size_kb=args.get("min_size_kb",1))
+            return ActionResult(tool, True, f"Found {data['groups_found']} duplicate group(s) in {data['root']}.", data)
+        if tool == "organize_folder":
+            data = self.file_wizard.organize_folder(args["path"], mode=args.get("mode","by_type"), dry_run=args.get("dry_run", True))
+            return ActionResult(tool, True, f"Organize {data['mode']} for {data['root']}: {data['count']} file(s) {'(dry-run)' if data['dry_run'] else 'moved'}.", data)
+        if tool == "batch_rename":
+            data = self.file_wizard.batch_rename(args["folder"], args["pattern"], replacement=args.get("replacement",""), start_num=args.get("start_num",1), dry_run=args.get("dry_run", True))
+            return ActionResult(tool, True, f"Batch rename {data['pattern']} in {data['folder']}: {data['count']} file(s) {'(dry-run)' if data['dry_run'] else 'renamed'}.", data)
+        if tool == "convert_file":
+            data = self.file_wizard.convert_file(args["source"], args["dest"])
+            return ActionResult(tool, True, f"Converted {data['converter']}: {data['from']} → {data['to']}", data)
+        if tool == "clean_temp":
+            data = self.file_wizard.clean_temp(args.get("path",""), min_age_days=args.get("min_age_days",7), dry_run=args.get("dry_run", True))
+            return ActionResult(tool, True, f"Found {data['total_candidates']} temp candidate(s) ({data['total_bytes']} bytes) {'(dry-run)' if data['dry_run'] else 'cleaned'}.", data)
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ web
+    def _handle_web(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
         if tool == "browser_search":
             data = self.web_search.search_in_browser(
                 args["query"], browser=args.get("browser", "default"), engine=args.get("engine", "duckduckgo")
             )
             return ActionResult(tool, True, f"Sent the search to {data['browser']}. Results appear there, not in this chat.", data)
-        if tool == "scroll_window":
-            data = self.windows.scroll(args["direction"], steps=args.get("steps", 3))
-            return ActionResult(tool, True, f"Sent scroll {data['direction']} to the active window.", data)
         if tool == "web_search":
             search_data = self.web_search.search(args["query"], max_results=args.get("max_results", 8))
             results = search_data.get("results", [])
@@ -1362,51 +1841,174 @@ class Orchestrator:
             data = self.web_search.fetch_webpage(args["url"], max_chars=args.get("max_chars", 4000))
             message = f"{data['title']}\n{data['url']}\n\n{data['content']}"
             return ActionResult(tool, True, message, data)
-        if tool == "list_installed_apps":
-            data = self.apps.list_installed(args.get("query", ""), args.get("limit", 60))
-            lines = [f"{item['name']} ({item['source']})" for item in data["applications"]]
-            return ActionResult(tool, True, "Installed applications:\n" + "\n".join(lines), data)
-        if tool == "write_code":
-            data = self.polyglot_coder.generate_code(
-                task=args["task"], language=args.get("language", "python"),
-                output_path=args.get("output_path", ""), overwrite=args.get("overwrite", False),
-                llm_enabled=self.llm_enabled,
+        if tool == "open_website":
+            data = self.web_automation.open_website(
+                args["url"], browser=args.get("browser", "default"), headless=bool(args.get("headless", False))
             )
-            return ActionResult(tool, True, data["formatted"], data)
-        if tool == "set_owner_name":
-            name = self.personality.set_owner_name(args["name"])
-            # Also sync to identity vault so future autofills use this name automatically
+            return ActionResult(tool, True, f"Opened {data['url']} in {data.get('browser','browser')}." + (f" via {data.get('via','')}" if data.get("via") else ""), data)
+        if tool == "inspect_forms":
+            data = self.web_automation.inspect_url(args["url"])
+            form_lines = []
+            for idx, form in enumerate(data["forms"]):
+                form_lines.append(f"Form {idx}: action='{form.get('action','')}' method={form.get('method','')} fields={len(form.get('fields',[]))}")
+                for f in form.get("fields", [])[:10]:
+                    form_lines.append(f"  - [{f.get('type')}] name='{f.get('name')}' id='{f.get('id')}' label='{f.get('label')}' placeholder='{f.get('placeholder')}' sel={f.get('selectors')}")
+            msg = f"Found {data['form_count']} form(s) with {data['field_count']} field(s) at {data['url']}.\n" + "\n".join(form_lines) if form_lines else f"No forms detected at {data['url']}."
+            return ActionResult(tool, True, msg, data)
+        if tool == "web_autofill":
+            import json as _json
+            url = args["url"]
+            prof_name = args.get("profile", "").strip().lower() or None
+            # Resolve profile fields (prefer explicit name, else default)
+            prof = self.identity_vault.get_profile(prof_name) if prof_name else self.identity_vault.get_default()
+            if not prof:
+                raise AutomationError(f"No identity profile found{' for ' + prof_name if prof_name else ''}. Save one first: save my identity as personal: first_name=John, email=john@example.com")
+            overrides = {}
+            if args.get("field_overrides_json"):
+                try:
+                    overrides = _json.loads(args["field_overrides_json"])
+                    if not isinstance(overrides, dict):
+                        overrides = {}
+                except Exception:
+                    overrides = {}
+            submit = bool(args.get("submit", False))
+            open_browser = args.get("open_browser", True)
+            if isinstance(open_browser, str):
+                open_browser = open_browser.lower() not in {"false","0","no"}
+            # Security: payment/card fields must never be blindly auto-submitted
+            payment_canonicals = {"card_number", "card_cvv", "card_expiry", "card_holder", "pan", "aadhaar", "passport_number"}
+            # Check if profile would contribute payment data to this form
+            has_payment = any(k in payment_canonicals for k in prof.fields.keys())
+            if has_payment and submit:
+                # Disable auto-submit for payment forms; user must review in browser
+                # (PIN-gated full auto-submit can be enabled by explicitly passing payment consent)
+                submit = False
+                # We'll add a warning to the final message
+            data = self.web_automation.autofill(
+                url,
+                profile_fields=prof.fields,
+                profile_name=prof.name,
+                field_overrides=overrides,
+                submit=submit,
+                open_browser=bool(open_browser),
+                browser=args.get("browser", "default"),
+                headless=bool(args.get("headless", False)),
+            )
+            plan = data["plan"]
+            # Post-process: if payment fields were mapped, warn and ensure no silent submit
+            payment_mapped = any(a.get("canonical") in payment_canonicals for a in plan.get("actions", []))
+            exec_info = data["execution"]
+            msg_lines = [
+                f"Autofill prepared for {data['url']} using profile '{prof.name}'.",
+                f"Detected {plan['total_fields']} field(s), {plan['mappable']} mapped from your profile, {plan['missing_in_profile']} missing.",
+            ]
+            for act in plan["actions"][:15]:
+                msg_lines.append(f"  → {act['canonical']} ({act['confidence']}) -> {act['selector']} = '{act['value'][:40]}'")
+            if exec_info.get("backend") == "native":
+                msg_lines.append("Browser opened. A JS autofill snippet is ready — paste it in DevTools Console (F12) to fill instantly.")
+                if plan.get("submit_selector"):
+                    msg_lines.append(f"Submit button: {plan['submit_selector']} (click after reviewing).")
+            else:
+                msg_lines.append(f"Executed via {exec_info.get('backend')}: filled {exec_info.get('filled',0)}/{exec_info.get('total',0)}.")
+                if exec_info.get("submitted"):
+                    msg_lines.append("Form submitted.")
+            if payment_mapped:
+                msg_lines.append("⚠️ Payment/ID fields were filled — for your safety, review in the browser before submitting. Auto-submit is disabled for payment forms.")
+                if has_payment and args.get("submit"):
+                    msg_lines.append("Tip: Remove payment details from the profile or confirm manually in the browser to submit.")
+            if data.get("js_snippet"):
+                msg_lines.append("JS snippet generated (see data.js_snippet — copy it to your clipboard with 'write clipboard <snippet>').")
+            return ActionResult(tool, True, "\n".join(msg_lines), data)
+        if tool == "web_fill_field":
+            data = self.web_automation.fill_field(args["url"], args["selector"], args["value"])
+            ok = data.get("result", {}).get("executed") or data.get("result", {}).get("clicked")
+            return ActionResult(tool, bool(ok) or data.get("result", {}).get("backend")=="native", f"Fill field {args['selector']} at {args['url']}: {data}", data)
+        if tool == "web_click":
+            data = self.web_automation.click_element(args["url"], args["selector"])
+            return ActionResult(tool, bool(data.get("clicked")), f"Click {args['selector']} at {args['url']}: {data}", data)
+        if tool == "scrape_tables":
+            data = self.smart_scraper.scrape_tables(args["url"], max_tables=args.get("max_tables", 5))
+            lines = [f"Scraped {data['table_count']} table(s) from {args['url']}."]
+            for idx, t in enumerate(data["tables"]):
+                lines.append(f"Table {idx}: {len(t.get('headers',[]))} cols, {len(t.get('rows',[]))} rows — headers: {t.get('headers',[])[:5]}")
+            return ActionResult(tool, True, "\n".join(lines), data)
+        if tool == "scrape_lists":
+            data = self.smart_scraper.scrape_lists(args["url"], selector_hint=args.get("selector_hint",""))
+            return ActionResult(tool, True, f"Found {data['total_li']} list items and {data['total_headings']} headings at {args['url']}.", data)
+        if tool == "monitor_price":
+            data = self.smart_scraper.monitor_price(args["url"])
+            msg = f"Price monitor for {args['url']}: primary={data.get('primary_price')} availability={data.get('availability')} prices={data.get('prices_found')[:3]}"
+            return ActionResult(tool, True, msg, data)
+        if tool == "crawl_pages":
+            data = self.smart_scraper.crawl_pages(args["url"], max_pages=args.get("max_pages",5), link_pattern=args.get("link_pattern",""))
+            return ActionResult(tool, True, f"Crawled {data['visited']} page(s) from {args['url']}.", data)
+        if tool == "scrape_export":
+            # Export last scrape — if source_url provided, scrape then export
+            if args.get("source_url"):
+                html_data = self.smart_scraper.scrape_tables(args["source_url"])
+                data_to_export = html_data
+            else:
+                data_to_export = {"note": "Exporting provided context", "args": args}
+            data = self.smart_scraper.export_data(data_to_export, args["dest_path"], fmt=args.get("format","json"))
+            return ActionResult(tool, True, f"Exported {data['format']} to {data['path']} ({data['bytes']} bytes).", data)
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ identity
+    def _handle_identity(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
+        if tool == "save_identity":
+            import json as _json
+            profile = args["profile"].strip().lower()
+            fields_raw = args["fields_json"].strip()
             try:
-                parts = name.split()
-                fields: dict[str, str] = {"full_name": name}
-                if len(parts) >= 2:
-                    fields["first_name"] = parts[0]
-                    fields["last_name"] = parts[-1]
-                elif len(parts) == 1:
-                    fields["first_name"] = parts[0]
-                self.identity_vault.save_profile("personal", fields, display_name="Personal")
-            except Exception:
-                pass  # personality name is primary; vault sync is best-effort
-            message = f"I'll remember to address you as {name}."
-            return ActionResult(tool, True, message, {"owner_names": list(self.personality.owner_names)})
-        if tool == "owner_name":
-            name = self.personality.owner_name
-            message = f"Your name is {name}." if name else "I don't know your name yet. Tell me 'My name is ...' or add it in Settings."
-            return ActionResult(tool, True, message, {"owner_names": list(self.personality.owner_names)})
-        if tool == "code_inspect":
-            data = self.code_inspector.inspect(args["path"])
-            message = "Static Python analysis (heuristic; not a security audit):\n" + json.dumps(
-                data, indent=2, ensure_ascii=False
+                fields = _json.loads(fields_raw)
+                if not isinstance(fields, dict):
+                    raise ValueError("fields_json must decode to an object")
+                # normalize keys/values to strings
+                clean = {str(k).strip().lower(): str(v).strip() for k, v in fields.items() if str(v).strip()}
+            except Exception as exc:
+                raise AutomationError(f"Invalid fields_json: {exc}") from exc
+            saved = self.identity_vault.save_profile(
+                profile, clean,
+                display_name=args.get("display_name", "") or profile.title(),
+                make_default=bool(args.get("make_default", False)),
             )
-            return ActionResult(tool, True, message, data)
-        if tool == "inspect_repository_imports":
-            data = self.code_inspector.inspect_repository_imports(args.get("workspace", ""))
-            return ActionResult(
-                tool,
-                True,
-                f"Analyzed {data['python_files_analyzed']} Python file(s) across workspace.",
-                data,
-            )
+            return ActionResult(tool, True, f"Saved identity '{saved.name}' with {len(saved.fields)} field(s): {', '.join(sorted(saved.fields.keys()))}.", saved.to_dict())
+        if tool == "list_identities":
+            profiles = self.identity_vault.list_profiles()
+            if not profiles:
+                return ActionResult(tool, True, "No identity profiles saved yet. Save one with: save my identity as personal: first_name=..., email=...", {"profiles": []})
+            lines = []
+            for p in profiles:
+                star = "★" if p.is_default else " "
+                preview = ", ".join(f"{k}={('*' + v[-4:] if k in {'pan','aadhaar','card_number','card_cvv'} and len(v)>4 else v[:30])}" for k,v in list(p.fields.items())[:6])
+                lines.append(f"{star} {p.name} ({p.display_name}): {len(p.fields)} fields — {preview}")
+            return ActionResult(tool, True, "Saved identities:\n" + "\n".join(lines), {"profiles": [p.to_dict() for p in profiles]})
+        if tool == "get_identity":
+            name = args.get("profile", "").strip().lower()
+            prof = self.identity_vault.get_profile(name) if name else self.identity_vault.get_default()
+            if not prof:
+                hint = f" '{name}'" if name else ""
+                return ActionResult(tool, False, f"No identity profile{hint} found. List with 'list identities'.", {"found": False})
+            # Mask sensitive for display
+            from hinata.core.identity_vault import SENSITIVE_FIELDS
+            masked = {}
+            for k,v in prof.fields.items():
+                if k in SENSITIVE_FIELDS and len(v) > 4:
+                    masked[k] = "***" + v[-4:]
+                elif k in SENSITIVE_FIELDS:
+                    masked[k] = "***"
+                else:
+                    masked[k] = v
+            return ActionResult(tool, True, f"Identity '{prof.name}' ({prof.display_name}, default={prof.is_default}):\n" + "\n".join(f"  {k}: {v}" for k,v in masked.items()), {"profile": prof.to_dict(), "masked": masked})
+        if tool == "delete_identity":
+            ok = self.identity_vault.delete_profile(args["profile"])
+            if not ok:
+                return ActionResult(tool, False, f"No profile named '{args['profile']}' to delete.", {"deleted": False})
+            return ActionResult(tool, True, f"Deleted identity profile '{args['profile']}'.", {"deleted": True})
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ knowledge
+    def _handle_knowledge(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
         if tool in {
             "knowledge_list",
             "knowledge_sync",
@@ -1481,131 +2083,33 @@ class Orchestrator:
             return ActionResult(
                 tool, True, message or "No matching indexed passages found.", {"matches": matches}
             )
-        if tool == "open_application":
-            data = self.apps.open(args["name"])
-            return ActionResult(tool, True, f"Launched {data['application']} (PID {data['pid']}).", data)
-        if tool == "close_application":
-            data = self.apps.close(args["name"])
-            message = (
-                f"{data['application']} was not running."
-                if data["already_closed"]
-                else f"Close requested for {data['application']}."
-            )
-            if data["warnings"]:
-                message += " Some processes could not be closed: " + "; ".join(data["warnings"])
-            return ActionResult(tool, not data["warnings"], message, data)
-        if tool == "open_folder":
-            data = self.files.open_folder(args["path"])
-            return ActionResult(tool, True, f"Asked Windows to open folder: {data['path']}", data)
-        if tool == "open_file":
-            data = self.files.open_file(args["path"])
-            return ActionResult(tool, True, f"Asked Windows to open file: {data['path']}", data)
-        if tool == "list_directory":
-            data = self.files.list_directory(args.get("path", ""), args.get("max_entries", 100))
-            summary = "\n".join(f"[{e['kind']}] {e['name']}" for e in data["entries"][:30])
-            return ActionResult(tool, True, summary or "Folder is empty.", data)
-        if tool == "search_files":
-            data = self.files.search(args["query"], args.get("root", ""), args.get("max_results", 20))
-            matches = data["matches"]
-            lines = [f"Found {len(matches)} matching file(s).", *matches[:10]]
-            if data["truncated"]:
-                lines.append("Search stopped at a configured bound; narrow the query for more results.")
-            return ActionResult(tool, True, "\n".join(lines), data)
-        if tool == "search_file_content":
-            data = self.files.search_content(
-                args["query"], args.get("root", ""), args.get("max_results", 20)
-            )
-            lines = [f"Found {len(data['matches'])} content match(es)."] + [
-                f"{m['path']}:{m['line']}: {m['snippet']}" for m in data["matches"][:10]
-            ]
-            return ActionResult(tool, True, "\n".join(lines), data)
-        if tool == "create_folder":
-            data = self.files.create_folder(args["path"])
-            return ActionResult(tool, True, f"Created folder: {data['path']}", data)
-        if tool == "read_text_file":
-            data = self.files.read_text(args["path"], args.get("max_chars", 12000))
-            suffix = "\n\n[Content truncated at a configured limit]" if data["truncated"] else ""
-            return ActionResult(
-                tool, True, f"Contents of {data['path']}:\n\n{data['content']}{suffix}", data
-            )
-        if tool == "write_text_file":
-            data = self.files.write_text_file(
-                args["path"], args["content"], overwrite=bool(args.get("overwrite", False))
-            )
-            return ActionResult(
-                tool, True, f"Wrote {data['bytes_written']} bytes to {data['path']}.", data
-            )
-        if tool == "copy_file":
-            data = self.files.copy_file(args["source"], args["destination"])
-            return ActionResult(
-                tool, True, f"Copied {data['source']} -> {data['destination']}.", data
-            )
-        if tool == "move_file":
-            data = self.files.move_or_rename(args["source"], args["destination"])
-            return ActionResult(tool, True, f"Moved {data['source']} -> {data['destination']}.", data)
-        if tool == "compare_files":
-            data = self.files.compare_files(args["first"], args["second"])
-            msg = "Files are identical." if data["identical"] else f"Unified diff:\n{data['diff']}"
-            return ActionResult(tool, True, msg, data)
-        if tool == "archive_files":
-            data = self.files.create_archive(args["source"], args["archive_path"])
-            return ActionResult(
-                tool, True, f"Archived {data['files_archived']} file(s) into {data['archive']}.", data
-            )
-        if tool == "quarantine_delete_file":
-            data = self.files.quarantine_delete(args["path"], self.quarantine_dir)
-            return ActionResult(
-                tool,
-                True,
-                f"Moved {data['deleted_from']} to reversible quarantine ({data['quarantined_to']}).",
-                data,
-            )
-        if tool == "type_text":
-            data = self.windows.type_text(
-                args["text"], target_window=args.get("target_window", "")
-            )
-            return ActionResult(
-                tool, True, f"Typed {data['characters']} character(s) into the active application.", data
-            )
-        if tool == "volume":
-            data = self.windows.volume(args["action"], args.get("value"))
-            message = (
-                f"Volume set to {data['value']}%."
-                if args["action"] == "set"
-                else f"Volume {args['action']} key sent."
-            )
-            return ActionResult(tool, True, message, data)
-        if tool == "system_info":
-            data = self.system.snapshot()
-            return ActionResult(tool, True, json.dumps(data, indent=2), data)
-        if tool == "ai_fleet_profile":
-            pack = select_optimal_fleet_pack(self.hardware_profiler.detect())
-            data = pack.to_dict()
-            return ActionResult(tool, True, json.dumps(data, indent=2), data)
-        if tool == "generate_image":
-            data = self.visual_studio.generate_image(
-                args["prompt"], args["output_path"],
-                style=args.get("style", "jarvis_hud"),
-                width=args.get("width", 1024), height=args.get("height", 768),
-                llm_enabled=self.llm_enabled,
-            )
-            return ActionResult(tool, True, f"Created {data['format'].upper()} image: {data['path']}", data)
-        if tool == "build_project":
-            data = self.project_architect.build_project(
-                project_dir=args["project_dir"], specification=args["specification"],
-                template=args.get("template", "python_cli"),
-                run_verification=args.get("run_verification", True), llm_enabled=self.llm_enabled,
-            )
-            lifecycle = str(data.get("status", "UNKNOWN_OUTCOME"))
-            success = lifecycle == "SUCCESS"
-            message = (
-                f"Project lifecycle status: {lifecycle}. Root: {data['project_root']}. "
-                f"Verification evidence: {data.get('sandbox_verification', {})}"
-            )
-            return ActionResult(tool, success, message, data, status=lifecycle.lower())
-        if tool == "hardware_profile":
-            data = self.hardware_profiler.detect()
-            return ActionResult(tool, True, json.dumps(data, indent=2), data)
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ memory
+    def _handle_memory(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
+        if tool == "set_owner_name":
+            name = self.personality.set_owner_name(args["name"])
+            # Also sync to identity vault so future autofills use this name automatically
+            try:
+                parts = name.split()
+                fields: dict[str, str] = {"full_name": name}
+                if len(parts) >= 2:
+                    fields["first_name"] = parts[0]
+                    fields["last_name"] = parts[-1]
+                elif len(parts) == 1:
+                    fields["first_name"] = parts[0]
+                self.identity_vault.save_profile("personal", fields, display_name="Personal")
+            except Exception:
+                # The personality name is authoritative; the vault copy is a
+                # convenience for autofill, so log and continue.
+                LOGGER.warning("Owner name saved, but identity-vault sync failed.",
+                               exc_info=True)
+            message = f"I'll remember to address you as {name}."
+            return ActionResult(tool, True, message, {"owner_names": list(self.personality.owner_names)})
+        if tool == "owner_name":
+            name = self.personality.owner_name
+            message = f"Your name is {name}." if name else "I don't know your name yet. Tell me 'My name is ...' or add it in Settings."
+            return ActionResult(tool, True, message, {"owner_names": list(self.personality.owner_names)})
         if tool == "memory_search":
             rows = self.memory.search(args["query"], args.get("limit", 20))
             message = (
@@ -1638,7 +2142,90 @@ class Orchestrator:
                 f"Deleted {deleted} local memory record(s) from scope '{args['scope']}'.",
                 {"deleted": deleted},
             )
-        # Coding workspace & sandbox tools
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ system
+    def _handle_system(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
+        if tool == "system_info":
+            data = self.system.snapshot()
+            return ActionResult(tool, True, json.dumps(data, indent=2), data)
+        if tool == "ai_fleet_profile":
+            pack = select_optimal_fleet_pack(self.hardware_profiler.detect())
+            data = pack.to_dict()
+            return ActionResult(tool, True, json.dumps(data, indent=2), data)
+        if tool == "hardware_profile":
+            data = self.hardware_profiler.detect()
+            return ActionResult(tool, True, json.dumps(data, indent=2), data)
+        if tool == "executive_briefing":
+            hw = self.hardware_profiler.detect()
+            t_sum = self.tasks.dashboard_summary() if self.tasks else {"counts_by_state": {}}
+            p_rows = self.memory.database.fetch_all("SELECT * FROM procedural_playbooks ORDER BY name")
+            s_rows = self.memory.database.fetch_all("SELECT * FROM scheduled_tasks WHERE enabled = 1")
+            k_stats = self.knowledge.index_stats() if self.knowledge else {"documents": 0, "chunks": 0, "stored_vectors": 0}
+            procs = self.cockpit.list_processes(limit=5)["processes"]
+            data = build_executive_briefing(
+                hardware=hw,
+                tasks_summary=t_sum,
+                playbooks=p_rows,
+                scheduled_jobs=s_rows,
+                audit_integrity=self.tracer.verify_integrity(),
+                override_status=self.permissions.override.status(),
+                offline_status={"mode": "consented_online" if self.online_mode_enabled else "offline_guarded"},
+                knowledge_stats=k_stats,
+                top_processes=procs,
+            )
+            return ActionResult(tool, True, data["summary_text"], data)
+        if tool == "health_check":
+            data = self.system_tuner.health_check()
+            return ActionResult(tool, True, f"Health: {data['status']} — issues: {data['issues'] or 'none'}", data)
+        if tool == "network_diag":
+            data = self.system_tuner.network_diag()
+            return ActionResult(tool, True, f"Network online={data['online']} checks={data['checks']}", data)
+        if tool == "backup_create":
+            data = self.system_tuner.backup_create(args["source"], args["dest_dir"], max_age_days=args.get("max_age_days",30))
+            return ActionResult(tool, True, f"Backup {data['source']} → {data['archive']} ({data['files']} files, {data['bytes']} bytes, pruned {data['pruned_old']})", data)
+        if tool == "quick_cleanup":
+            data = self.system_tuner.quick_cleanup(args.get("path",""), dry_run=args.get("dry_run", True))
+            return ActionResult(tool, True, f"Cleanup scan: {data['empty_count']} empty dirs, {data['temp_count']} temp files ({data['temp_mb']} MB) {'dry-run' if data['dry_run'] else 'cleaned'}", data)
+        if tool == "process_search":
+            data = self.system_tuner.process_killer(args["name"], dry_run=args.get("dry_run", True))
+            return ActionResult(tool, True, f"Found {data['count']} process(es) matching '{data['query']}'", data)
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ media
+    def _handle_media(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
+        if tool == "write_code":
+            data = self.polyglot_coder.generate_code(
+                task=args["task"], language=args.get("language", "python"),
+                output_path=args.get("output_path", ""), overwrite=args.get("overwrite", False),
+                llm_enabled=self.llm_enabled,
+            )
+            return ActionResult(tool, True, data["formatted"], data)
+        if tool == "generate_image":
+            data = self.visual_studio.generate_image(
+                args["prompt"], args["output_path"],
+                style=args.get("style", "jarvis_hud"),
+                width=args.get("width", 1024), height=args.get("height", 768),
+                llm_enabled=self.llm_enabled,
+            )
+            return ActionResult(tool, True, f"Created {data['format'].upper()} image: {data['path']}", data)
+        if tool == "build_project":
+            data = self.project_architect.build_project(
+                project_dir=args["project_dir"], specification=args["specification"],
+                template=args.get("template", "python_cli"),
+                run_verification=args.get("run_verification", True), llm_enabled=self.llm_enabled,
+            )
+            lifecycle = str(data.get("status", "UNKNOWN_OUTCOME"))
+            success = lifecycle == "SUCCESS"
+            message = (
+                f"Project lifecycle status: {lifecycle}. Root: {data['project_root']}. "
+                f"Verification evidence: {data.get('sandbox_verification', {})}"
+            )
+            return ActionResult(tool, success, message, data, status=lifecycle.lower())
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ workspace
+    def _handle_workspace(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
         if tool == "workspace_list":
             data = self.workspace_manager.inventory(
                 args.get("workspace", ""), args.get("max_files", 200)
@@ -1686,6 +2273,39 @@ class Orchestrator:
             return ActionResult(
                 tool, True, f"Reverted patch {data['patch_id']} ({', '.join(data['reverted_files'])}).", data
             )
+        if tool == "workspace_symbol_index":
+            data = self.workspace_manager.ast_symbol_index(
+                args.get("workspace", ""),
+                query=args.get("query", ""),
+                max_symbols=args.get("max_symbols", 200),
+            )
+            preview = "\n".join(
+                f"[{s['kind']}] {s['name']} ({s['path']}:{s['line']})" for s in data["symbols"][:25]
+            )
+            return ActionResult(
+                tool,
+                True,
+                preview or "No Python symbols matched in workspace.",
+                data,
+            )
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ checks
+    def _handle_checks(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
+        if tool == "code_inspect":
+            data = self.code_inspector.inspect(args["path"])
+            message = "Static Python analysis (heuristic; not a security audit):\n" + json.dumps(
+                data, indent=2, ensure_ascii=False
+            )
+            return ActionResult(tool, True, message, data)
+        if tool == "inspect_repository_imports":
+            data = self.code_inspector.inspect_repository_imports(args.get("workspace", ""))
+            return ActionResult(
+                tool,
+                True,
+                f"Analyzed {data['python_files_analyzed']} Python file(s) across workspace.",
+                data,
+            )
         if tool == "run_project_tests":
             data = self.workspace_manager.run_tests(
                 args.get("workspace", ""), args.get("target", "")
@@ -1712,306 +2332,23 @@ class Orchestrator:
                 f"Type checker ({data['tool']}) {'clean' if data['clean'] else 'reported issues'}:\n{data['stdout']}\n{data['stderr']}".strip(),
                 data,
             )
-        if tool == "workspace_symbol_index":
-            data = self.workspace_manager.ast_symbol_index(
-                args.get("workspace", ""),
-                query=args.get("query", ""),
-                max_symbols=args.get("max_symbols", 200),
-            )
-            preview = "\n".join(
-                f"[{s['kind']}] {s['name']} ({s['path']}:{s['line']})" for s in data["symbols"][:25]
-            )
-            return ActionResult(
-                tool,
-                True,
-                preview or "No Python symbols matched in workspace.",
-                data,
-            )
-        # J.A.R.V.I.S. desktop cockpit & tactical situational awareness tools
-        if tool == "executive_briefing":
-            hw = self.hardware_profiler.detect()
-            t_sum = self.tasks.dashboard_summary() if self.tasks else {"counts_by_state": {}}
-            p_rows = self.memory.database.fetch_all("SELECT * FROM procedural_playbooks ORDER BY name")
-            s_rows = self.memory.database.fetch_all("SELECT * FROM scheduled_tasks WHERE enabled = 1")
-            k_stats = self.knowledge.index_stats() if self.knowledge else {"documents": 0, "chunks": 0, "stored_vectors": 0}
-            procs = self.cockpit.list_processes(limit=5)["processes"]
-            data = build_executive_briefing(
-                hardware=hw,
-                tasks_summary=t_sum,
-                playbooks=p_rows,
-                scheduled_jobs=s_rows,
-                audit_integrity=self.tracer.verify_integrity(),
-                override_status=self.permissions.override.status(),
-                offline_status={"mode": "consented_online" if self.online_mode_enabled else "offline_guarded"},
-                knowledge_stats=k_stats,
-                top_processes=procs,
-            )
-            return ActionResult(tool, True, data["summary_text"], data)
-        if tool == "list_windows":
-            data = self.cockpit.list_windows(
-                filter_text=args.get("filter", ""),
-                limit=args.get("limit", 40),
-            )
-            lines = [
-                f"{'* ' if w.get('active') else '  '}[PID {w['pid']}] {w['title']}"
-                for w in data["windows"][:30]
-            ]
-            msg = "\n".join(lines) or str(data.get("note") or "No visible windows matched.")
-            return ActionResult(tool, True, msg, data)
-        if tool == "focus_window":
-            data = self.cockpit.focus_window(args["title"])
-            return ActionResult(
-                tool, True, f"Focused window: {data['window']['title']}.", data
-            )
-        if tool == "snap_window":
-            data = self.cockpit.snap_window(args["title"], args["layout"])
-            return ActionResult(
-                tool,
-                True,
-                f"Arranged '{data['window']['title']}' -> {data['layout']}.",
-                data,
-            )
-        if tool == "send_hotkey":
-            data = self.cockpit.send_hotkey(
-                args["shortcut"],
-                target_window=args.get("target_window", ""),
-            )
-            return ActionResult(
-                tool,
-                True,
-                f"Sent shortcut '{data['shortcut']}' to {data['target_window']}.",
-                data,
-            )
-        if tool == "read_clipboard":
-            data = self.cockpit.read_clipboard(max_chars=args.get("max_chars", 4000))
-            note = " (secrets redacted)" if data["secrets_redacted"] else ""
-            return ActionResult(
-                tool,
-                True,
-                f"Clipboard ({data['length']} chars{note}):\n{data['content']}",
-                data,
-            )
-        if tool == "write_clipboard":
-            data = self.cockpit.write_clipboard(args["text"])
-            return ActionResult(
-                tool, True, f"Copied {data['written_chars']} character(s) to clipboard.", data
-            )
-        if tool == "capture_screen":
-            data = self.cockpit.capture_screen(args["path"])
-            prompt = args.get("analyze_prompt", "").strip()
-            if prompt:
-                from hinata.speech.multimodal import LocalVisionAdapter
+        raise AutomationError(f"No executor is registered for {tool}")
 
-                vision = LocalVisionAdapter(self.files, self.llm if self.llm_enabled else None)
-                try:
-                    analysis = vision.inspect_image(data["path"], prompt=prompt)
-                    data["vision_analysis"] = analysis
-                except AutomationError as exc:
-                    data["vision_note"] = str(exc)
-            return ActionResult(
-                tool,
-                True,
-                f"Captured screen to {data['path']} ({data['bytes']} bytes)."
-                + (f"\nVision: {data['vision_analysis']['text']}" if "vision_analysis" in data else ""),
-                data,
-            )
-        if tool == "list_processes":
-            data = self.cockpit.list_processes(
-                filter_name=args.get("filter", ""),
-                limit=args.get("limit", 25),
-            )
-            lines = [f"Top {data['count']} process(es) by memory:"] + [
-                f"  PID {p['pid']:>6} | {p['rss_mb']:>7.1f} MB | {p['name']}"
-                for p in data["processes"][:25]
-            ]
-            return ActionResult(tool, True, "\n".join(lines), data)
-        # ── HINATA Web Automation — open + inspect + identity + autofill ──
-        if tool == "open_website":
-            data = self.web_automation.open_website(
-                args["url"], browser=args.get("browser", "default"), headless=bool(args.get("headless", False))
-            )
-            return ActionResult(tool, True, f"Opened {data['url']} in {data.get('browser','browser')}." + (f" via {data.get('via','')}" if data.get("via") else ""), data)
-        if tool == "inspect_forms":
-            data = self.web_automation.inspect_url(args["url"])
-            form_lines = []
-            for idx, form in enumerate(data["forms"]):
-                form_lines.append(f"Form {idx}: action='{form.get('action','')}' method={form.get('method','')} fields={len(form.get('fields',[]))}")
-                for f in form.get("fields", [])[:10]:
-                    form_lines.append(f"  - [{f.get('type')}] name='{f.get('name')}' id='{f.get('id')}' label='{f.get('label')}' placeholder='{f.get('placeholder')}' sel={f.get('selectors')}")
-            msg = f"Found {data['form_count']} form(s) with {data['field_count']} field(s) at {data['url']}.\n" + "\n".join(form_lines) if form_lines else f"No forms detected at {data['url']}."
-            return ActionResult(tool, True, msg, data)
-        if tool == "save_identity":
-            import json as _json
-            profile = args["profile"].strip().lower()
-            fields_raw = args["fields_json"].strip()
-            try:
-                fields = _json.loads(fields_raw)
-                if not isinstance(fields, dict):
-                    raise ValueError("fields_json must decode to an object")
-                # normalize keys/values to strings
-                clean = {str(k).strip().lower(): str(v).strip() for k, v in fields.items() if str(v).strip()}
-            except Exception as exc:
-                raise AutomationError(f"Invalid fields_json: {exc}") from exc
-            saved = self.identity_vault.save_profile(
-                profile, clean,
-                display_name=args.get("display_name", "") or profile.title(),
-                make_default=bool(args.get("make_default", False)),
-            )
-            return ActionResult(tool, True, f"Saved identity '{saved.name}' with {len(saved.fields)} field(s): {', '.join(sorted(saved.fields.keys()))}.", saved.to_dict())
-        if tool == "list_identities":
-            profiles = self.identity_vault.list_profiles()
-            if not profiles:
-                return ActionResult(tool, True, "No identity profiles saved yet. Save one with: save my identity as personal: first_name=..., email=...", {"profiles": []})
-            lines = []
-            for p in profiles:
-                star = "★" if p.is_default else " "
-                preview = ", ".join(f"{k}={('*' + v[-4:] if k in {'pan','aadhaar','card_number','card_cvv'} and len(v)>4 else v[:30])}" for k,v in list(p.fields.items())[:6])
-                lines.append(f"{star} {p.name} ({p.display_name}): {len(p.fields)} fields — {preview}")
-            return ActionResult(tool, True, "Saved identities:\n" + "\n".join(lines), {"profiles": [p.to_dict() for p in profiles]})
-        if tool == "get_identity":
-            name = args.get("profile", "").strip().lower()
-            prof = self.identity_vault.get_profile(name) if name else self.identity_vault.get_default()
-            if not prof:
-                hint = f" '{name}'" if name else ""
-                return ActionResult(tool, False, f"No identity profile{hint} found. List with 'list identities'.", {"found": False})
-            # Mask sensitive for display
-            from hinata.core.identity_vault import SENSITIVE_FIELDS
-            masked = {}
-            for k,v in prof.fields.items():
-                if k in SENSITIVE_FIELDS and len(v) > 4:
-                    masked[k] = "***" + v[-4:]
-                elif k in SENSITIVE_FIELDS:
-                    masked[k] = "***"
-                else:
-                    masked[k] = v
-            return ActionResult(tool, True, f"Identity '{prof.name}' ({prof.display_name}, default={prof.is_default}):\n" + "\n".join(f"  {k}: {v}" for k,v in masked.items()), {"profile": prof.to_dict(), "masked": masked})
-        if tool == "delete_identity":
-            ok = self.identity_vault.delete_profile(args["profile"])
-            if not ok:
-                return ActionResult(tool, False, f"No profile named '{args['profile']}' to delete.", {"deleted": False})
-            return ActionResult(tool, True, f"Deleted identity profile '{args['profile']}'.", {"deleted": True})
-        if tool == "web_autofill":
-            import json as _json
-            url = args["url"]
-            prof_name = args.get("profile", "").strip().lower() or None
-            # Resolve profile fields (prefer explicit name, else default)
-            prof = self.identity_vault.get_profile(prof_name) if prof_name else self.identity_vault.get_default()
-            if not prof:
-                raise AutomationError(f"No identity profile found{' for ' + prof_name if prof_name else ''}. Save one first: save my identity as personal: first_name=John, email=john@example.com")
-            overrides = {}
-            if args.get("field_overrides_json"):
-                try:
-                    overrides = _json.loads(args["field_overrides_json"])
-                    if not isinstance(overrides, dict):
-                        overrides = {}
-                except Exception:
-                    overrides = {}
-            submit = bool(args.get("submit", False))
-            open_browser = args.get("open_browser", True)
-            if isinstance(open_browser, str):
-                open_browser = open_browser.lower() not in {"false","0","no"}
-            # Security: payment/card fields must never be blindly auto-submitted
-            payment_canonicals = {"card_number", "card_cvv", "card_expiry", "card_holder", "pan", "aadhaar", "passport_number"}
-            # Check if profile would contribute payment data to this form
-            has_payment = any(k in payment_canonicals for k in prof.fields.keys())
-            if has_payment and submit:
-                # Disable auto-submit for payment forms; user must review in browser
-                # (PIN-gated full auto-submit can be enabled by explicitly passing payment consent)
-                submit = False
-                # We'll add a warning to the final message
-            data = self.web_automation.autofill(
-                url,
-                profile_fields=prof.fields,
-                profile_name=prof.name,
-                field_overrides=overrides,
-                submit=submit,
-                open_browser=bool(open_browser),
-                browser=args.get("browser", "default"),
-                headless=bool(args.get("headless", False)),
-            )
-            plan = data["plan"]
-            # Post-process: if payment fields were mapped, warn and ensure no silent submit
-            payment_mapped = any(a.get("canonical") in payment_canonicals for a in plan.get("actions", []))
-            exec_info = data["execution"]
-            msg_lines = [
-                f"Autofill prepared for {data['url']} using profile '{prof.name}'.",
-                f"Detected {plan['total_fields']} field(s), {plan['mappable']} mapped from your profile, {plan['missing_in_profile']} missing.",
-            ]
-            for act in plan["actions"][:15]:
-                msg_lines.append(f"  → {act['canonical']} ({act['confidence']}) -> {act['selector']} = '{act['value'][:40]}'")
-            if exec_info.get("backend") == "native":
-                msg_lines.append("Browser opened. A JS autofill snippet is ready — paste it in DevTools Console (F12) to fill instantly.")
-                if plan.get("submit_selector"):
-                    msg_lines.append(f"Submit button: {plan['submit_selector']} (click after reviewing).")
-            else:
-                msg_lines.append(f"Executed via {exec_info.get('backend')}: filled {exec_info.get('filled',0)}/{exec_info.get('total',0)}.")
-                if exec_info.get("submitted"):
-                    msg_lines.append("Form submitted.")
-            if payment_mapped:
-                msg_lines.append("⚠️ Payment/ID fields were filled — for your safety, review in the browser before submitting. Auto-submit is disabled for payment forms.")
-                if has_payment and args.get("submit"):
-                    msg_lines.append("Tip: Remove payment details from the profile or confirm manually in the browser to submit.")
-            if data.get("js_snippet"):
-                msg_lines.append("JS snippet generated (see data.js_snippet — copy it to your clipboard with 'write clipboard <snippet>').")
-            return ActionResult(tool, True, "\n".join(msg_lines), data)
-        if tool == "web_fill_field":
-            data = self.web_automation.fill_field(args["url"], args["selector"], args["value"])
-            ok = data.get("result", {}).get("executed") or data.get("result", {}).get("clicked")
-            return ActionResult(tool, bool(ok) or data.get("result", {}).get("backend")=="native", f"Fill field {args['selector']} at {args['url']}: {data}", data)
-        if tool == "web_click":
-            data = self.web_automation.click_element(args["url"], args["selector"])
-            return ActionResult(tool, bool(data.get("clicked")), f"Click {args['selector']} at {args['url']}: {data}", data)
-        if tool == "power_control":
-            data = self.cockpit.power_control(args["action"])
-            return ActionResult(
-                tool, True, f"Executed workstation power command: {data['action']}.", data
-            )
-        # ── Smart Scraper
-        if tool == "scrape_tables":
-            data = self.smart_scraper.scrape_tables(args["url"], max_tables=args.get("max_tables", 5))
-            lines = [f"Scraped {data['table_count']} table(s) from {args['url']}."]
-            for idx, t in enumerate(data["tables"]):
-                lines.append(f"Table {idx}: {len(t.get('headers',[]))} cols, {len(t.get('rows',[]))} rows — headers: {t.get('headers',[])[:5]}")
-            return ActionResult(tool, True, "\n".join(lines), data)
-        if tool == "scrape_lists":
-            data = self.smart_scraper.scrape_lists(args["url"], selector_hint=args.get("selector_hint",""))
-            return ActionResult(tool, True, f"Found {data['total_li']} list items and {data['total_headings']} headings at {args['url']}.", data)
-        if tool == "monitor_price":
-            data = self.smart_scraper.monitor_price(args["url"])
-            msg = f"Price monitor for {args['url']}: primary={data.get('primary_price')} availability={data.get('availability')} prices={data.get('prices_found')[:3]}"
-            return ActionResult(tool, True, msg, data)
-        if tool == "crawl_pages":
-            data = self.smart_scraper.crawl_pages(args["url"], max_pages=args.get("max_pages",5), link_pattern=args.get("link_pattern",""))
-            return ActionResult(tool, True, f"Crawled {data['visited']} page(s) from {args['url']}.", data)
-        if tool == "scrape_export":
-            # Export last scrape — if source_url provided, scrape then export
-            if args.get("source_url"):
-                html_data = self.smart_scraper.scrape_tables(args["source_url"])
-                data_to_export = html_data
-            else:
-                data_to_export = {"note": "Exporting provided context", "args": args}
-            data = self.smart_scraper.export_data(data_to_export, args["dest_path"], fmt=args.get("format","json"))
-            return ActionResult(tool, True, f"Exported {data['format']} to {data['path']} ({data['bytes']} bytes).", data)
-        # ── File Wizard
-        if tool == "analyze_storage":
-            data = self.file_wizard.analyze_storage(args.get("path",""), top_n=args.get("top_n",20))
-            return ActionResult(tool, True, f"Storage for {data['root']}: {data['total_files']} files, {data['total_mb']} MB. Largest: {data['largest'][0]['path'] if data['largest'] else 'none'}", data)
-        if tool == "find_duplicates":
-            data = self.file_wizard.find_duplicates(args.get("path",""), max_groups=args.get("max_groups",20), min_size_kb=args.get("min_size_kb",1))
-            return ActionResult(tool, True, f"Found {data['groups_found']} duplicate group(s) in {data['root']}.", data)
-        if tool == "organize_folder":
-            data = self.file_wizard.organize_folder(args["path"], mode=args.get("mode","by_type"), dry_run=args.get("dry_run", True))
-            return ActionResult(tool, True, f"Organize {data['mode']} for {data['root']}: {data['count']} file(s) {'(dry-run)' if data['dry_run'] else 'moved'}.", data)
-        if tool == "batch_rename":
-            data = self.file_wizard.batch_rename(args["folder"], args["pattern"], replacement=args.get("replacement",""), start_num=args.get("start_num",1), dry_run=args.get("dry_run", True))
-            return ActionResult(tool, True, f"Batch rename {data['pattern']} in {data['folder']}: {data['count']} file(s) {'(dry-run)' if data['dry_run'] else 'renamed'}.", data)
-        if tool == "convert_file":
-            data = self.file_wizard.convert_file(args["source"], args["dest"])
-            return ActionResult(tool, True, f"Converted {data['converter']}: {data['from']} → {data['to']}", data)
-        if tool == "clean_temp":
-            data = self.file_wizard.clean_temp(args.get("path",""), min_age_days=args.get("min_age_days",7), dry_run=args.get("dry_run", True))
-            return ActionResult(tool, True, f"Found {data['total_candidates']} temp candidate(s) ({data['total_bytes']} bytes) {'(dry-run)' if data['dry_run'] else 'cleaned'}.", data)
-        # ── Communication
+    # ------------------------------------------------------------------ research
+    def _handle_research(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
+        if tool == "deep_research":
+            data = self.researcher.deep_research(args["topic"], max_results_per_query=args.get("max_results_per_query",5), max_sources=args.get("max_sources",12))
+            return ActionResult(tool, True, data["answer"] + "\n\nSources:\n" + data["sources"], data)
+        if tool == "compare_topics":
+            data = self.researcher.compare_topics(args["topic_a"], args["topic_b"])
+            return ActionResult(tool, True, data["comparison"] + "\n\nSee data for full A/B results", data)
+        if tool == "summarize_url":
+            data = self.researcher.summarize_url(args["url"], max_chars=args.get("max_chars",4000))
+            return ActionResult(tool, True, f"Summary of {data['url']} ({data['title']}):\n{data['summary']}", data)
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ communications
+    def _handle_communications(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
         if tool == "draft_email":
             import json as _json
             vars_map: dict[str, str] = {}
@@ -2053,33 +2390,10 @@ class Orchestrator:
                     chans = None
             data = self.comm_center.broadcast(args["message"], channels=chans)
             return ActionResult(tool, True, f"Broadcast to {data['channels']}: {data['message'][:80]}", data)
-        # ── System
-        if tool == "health_check":
-            data = self.system_tuner.health_check()
-            return ActionResult(tool, True, f"Health: {data['status']} — issues: {data['issues'] or 'none'}", data)
-        if tool == "network_diag":
-            data = self.system_tuner.network_diag()
-            return ActionResult(tool, True, f"Network online={data['online']} checks={data['checks']}", data)
-        if tool == "backup_create":
-            data = self.system_tuner.backup_create(args["source"], args["dest_dir"], max_age_days=args.get("max_age_days",30))
-            return ActionResult(tool, True, f"Backup {data['source']} → {data['archive']} ({data['files']} files, {data['bytes']} bytes, pruned {data['pruned_old']})", data)
-        if tool == "quick_cleanup":
-            data = self.system_tuner.quick_cleanup(args.get("path",""), dry_run=args.get("dry_run", True))
-            return ActionResult(tool, True, f"Cleanup scan: {data['empty_count']} empty dirs, {data['temp_count']} temp files ({data['temp_mb']} MB) {'dry-run' if data['dry_run'] else 'cleaned'}", data)
-        if tool == "process_search":
-            data = self.system_tuner.process_killer(args["name"], dry_run=args.get("dry_run", True))
-            return ActionResult(tool, True, f"Found {data['count']} process(es) matching '{data['query']}'", data)
-        # ── Research
-        if tool == "deep_research":
-            data = self.researcher.deep_research(args["topic"], max_results_per_query=args.get("max_results_per_query",5), max_sources=args.get("max_sources",12))
-            return ActionResult(tool, True, data["answer"] + "\n\nSources:\n" + data["sources"], data)
-        if tool == "compare_topics":
-            data = self.researcher.compare_topics(args["topic_a"], args["topic_b"])
-            return ActionResult(tool, True, data["comparison"] + "\n\nSee data for full A/B results", data)
-        if tool == "summarize_url":
-            data = self.researcher.summarize_url(args["url"], max_chars=args.get("max_chars",4000))
-            return ActionResult(tool, True, f"Summary of {data['url']} ({data['title']}):\n{data['summary']}", data)
-        # ── Dev
+        raise AutomationError(f"No executor is registered for {tool}")
+
+    # ------------------------------------------------------------------ devtools
+    def _handle_devtools(self, action: ActionRequest, tool: str, args: dict[str, Any]) -> ActionResult:
         if tool == "git_status":
             data = self.dev_assistant.git_status(workspace=args.get("workspace",""))
             return ActionResult(tool, True, f"Git status for {data['root']} branch={data['branch']}\n{data['porcelain'][:500]}", data)

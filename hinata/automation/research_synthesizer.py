@@ -93,8 +93,8 @@ class ResearchSynthesizer:
             try:
                 prompt = (
                     f"Compare '{topic_a}' vs '{topic_b}' using the evidence below. Be fair, cite sources like [A1], [B1].\n\n"
-                    f"A sources:\n" + "\n".join(f"[A{i}] {r['title']} — {r['snippet'][:300]}" for i, r in enumerate(a["raw_results"][:6], 1)) +
-                    f"\n\nB sources:\n" + "\n".join(f"[B{i}] {r['title']} — {r['snippet'][:300]}" for i, r in enumerate(b["raw_results"][:6], 1))
+                    "A sources:\n" + "\n".join(f"[A{i}] {r['title']} — {r['snippet'][:300]}" for i, r in enumerate(a["raw_results"][:6], 1)) +
+                    "\n\nB sources:\n" + "\n".join(f"[B{i}] {r['title']} — {r['snippet'][:300]}" for i, r in enumerate(b["raw_results"][:6], 1))
                 )
                 comparison = self.llm.chat([{"role": "user", "content": prompt}], "You compare two topics fairly with citations.").strip()
             except Exception:

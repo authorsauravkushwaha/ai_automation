@@ -235,13 +235,64 @@ class TaskStore:
                 raise TaskStateError("Concurrent task claim conflict")
 
     def heartbeat(self, task_id: str, lease_owner: str = "main_worker", lease_seconds: float = 120.0) -> bool:
+        """Extend a lease, but never revive one that has already lapsed.
+
+        ``lease_expires_at`` is stored as a text float (epoch seconds). Comparing
+        it to the text ``datetime('now')`` would cast the column to 0 and let a
+        dead worker's lease be silently renewed forever, so the comparison is
+        numeric via :func:`sqlite_epoch_compare`.
+        """
         lease_exp = str(round(time.time() + max(5.0, lease_seconds), 3))
+        now = str(round(time.time(), 3))
         with self.database.connect() as conn:
             res = conn.execute(
-                "UPDATE agent_tasks SET lease_expires_at = ?, updated_at=datetime('now') WHERE id = ? AND state = 'RUNNING' AND lease_owner = ?",
-                (lease_exp, task_id, lease_owner),
+                "UPDATE agent_tasks SET lease_expires_at = ?, updated_at=datetime('now')"
+                " WHERE id = ? AND state = 'RUNNING' AND lease_owner = ?"
+                " AND (lease_expires_at = '' OR CAST(lease_expires_at AS REAL) > CAST(? AS REAL))",
+                (lease_exp, task_id, lease_owner, now),
             )
             return res.rowcount == 1
+
+    def lease_expired(self, task_id: str) -> bool:
+        """True when the stored lease has passed; an empty lease never expires."""
+        row = self.database.fetch_one(
+            "SELECT lease_expires_at FROM agent_tasks WHERE id = ?", (task_id,)
+        )
+        if row is None:
+            return False
+        raw = str(row["lease_expires_at"] or "")
+        if not raw:
+            return False
+        try:
+            expires = float(raw)
+        except (TypeError, ValueError):
+            return True  # unreadable lease is treated as expired, never as valid
+        return expires <= time.time()
+
+    def reclaim_expired_leases(self) -> list[str]:
+        """Move RUNNING tasks with a lapsed lease to PAUSED for explicit recovery.
+
+        A worker that dies mid-run leaves its task RUNNING with a lease that is
+        never refreshed. Without this sweep the task is stuck forever and
+        :meth:`reconcile_interrupted_task` can never be reached, because it needs
+        a decision about steps whose outcome is unknown.
+        """
+        now = str(round(time.time(), 3))
+        with self.database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT id FROM agent_tasks WHERE state = 'RUNNING'"
+                " AND lease_expires_at <> '' AND CAST(lease_expires_at AS REAL) <= CAST(? AS REAL)",
+                (now,),
+            ).fetchall()
+            ids = [str(row["id"]) for row in rows]
+            for task_id in ids:
+                conn.execute(
+                    "UPDATE agent_tasks SET state = 'PAUSED', version = version + 1,"
+                    " error_code = 'LEASE_EXPIRED', updated_at = datetime('now') WHERE id = ?",
+                    (task_id,),
+                )
+            return ids
 
     def pause_task(self, task_id: str, reason: str = "User paused at safe boundary") -> bool:
         """Pause a claimed RUNNING task only at a boundary with no in-flight step."""
