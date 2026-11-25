@@ -1,6 +1,6 @@
 # Defect hunt — verified findings
 
-33 defects found and fixed, each re-verified by an executable probe, plus one
+34 defects found and fixed, each re-verified by an executable probe, plus one
 candidate investigated and **rejected as sound** (see the end). Every entry below
 names the observable symptom, the fix and the check that proves the fix.
 
@@ -39,6 +39,7 @@ names the observable symptom, the fix and the check that proves the fix.
 | D31 | dev_assistant | `git_status` crashed on a repo with **no commits yet** |
 | D32 | dev_assistant | git failures printed an empty reason (stderr was never captured) |
 | D33 | dev_assistant | an unborn repo's branch was reported as `"No"` |
+| D34 | dev_assistant | workspace manager was never injected, so every `workspace=<id>` call failed |
 
 ---
 
@@ -198,3 +199,10 @@ names the observable symptom, the fix and the check that proves the fix.
 - **Verified:** `git init -b trunk` → `branch == "trunk"`; after the first commit, still `trunk`.
 
 **Regression tests:** `GitErrorReportingTests` (3, skipped when git is absent).
+
+## D34 — `DevAssistant` never received the workspace manager, so workspace ids never worked
+- **Evidence:** `assistant.py:125` built `DevAssistant(files=…, workspace_manager=None)` with the comment *"workspace_manager injected via orchestrator"*. Nothing injects it: the orchestrator receives the **already-built** object (`if dev_assistant is not None: self.dev_assistant = dev_assistant`), so its own default branch never runs. Result: `assistant.dev_assistant.workspaces is None`, and `git_status`/`code_review`/`dependency_audit` all failed with `Workspace '<id>' is not inside an approved folder` for ids handed out by `register_workspace`.
+- **Fix:** `assistant.py` now assigns `self.dev_assistant.workspaces = self.workspaces` right after constructing the `WorkspaceManager` (which happens on the following lines).
+- **Verified:** `code_review(workspace=<registered id>)` scans the project (4 findings on a fixture with a bare except, a hardcoded key, a 200-char line and a missing docstring); `dependency_audit(workspace=<id>)` lists `requirements.txt`; the object is shared with `assistant.workspaces`.
+
+**Regression tests:** `DevWorkspaceInjectionTests` (2).

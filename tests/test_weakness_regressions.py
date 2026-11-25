@@ -34,6 +34,7 @@ from hinata.security.net_guards import (
 )
 from hinata.security.offline_guard import OfflineGuard, OfflinePolicyError
 from hinata.security.redaction import REDACTED, redact_text, redact_value
+from tests.helpers import make_assistant
 
 
 def _sandbox(tmp: Path) -> tuple[FileManager, Path]:
@@ -367,6 +368,33 @@ class ReminderAndDraftLimitTests(unittest.TestCase):
     def test_due_reminders_clamps_non_positive_limit(self) -> None:
         self.assertEqual(self.center.due_reminders(limit=-1), [])
 
+
+class DevWorkspaceInjectionTests(unittest.TestCase):
+    """DevAssistant must be able to resolve a registered workspace *id*."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.assistant = make_assistant(self.tmp.name)
+        self.root = Path(self.assistant.config.security.allowed_roots[0])
+
+    def tearDown(self) -> None:
+        self.assistant.close()
+        self.tmp.cleanup()
+
+    def test_workspace_manager_is_injected(self) -> None:
+        # assistant.py used to construct DevAssistant(workspace_manager=None)
+        # with a comment saying the orchestrator would inject it — and nothing
+        # ever did, so every tool taking a workspace id failed.
+        self.assertIsNotNone(self.assistant.dev_assistant.workspaces)
+        self.assertIs(self.assistant.dev_assistant.workspaces, self.assistant.workspaces)
+
+    def test_code_review_accepts_a_workspace_id(self) -> None:
+        project = self.root / "proj"
+        project.mkdir()
+        (project / "bad.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        workspace_id = self.assistant.workspaces.register_workspace(project)["workspace_id"]
+        result = self.assistant.dev_assistant.code_review(workspace=workspace_id)
+        self.assertEqual(result["files_scanned"], 1)
 
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class GitErrorReportingTests(unittest.TestCase):

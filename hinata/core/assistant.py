@@ -122,13 +122,18 @@ class HinataAssistant:
         self.comm_center = CommunicationCenter(database=self.database, files=self.files, vault=self.vault)
         self.system_tuner = SystemTuner(files=self.files, system=SystemInfo())
         self.researcher = ResearchSynthesizer(web_search=None, llm=self.llm)  # web_search injected later via orchestrator if needed
-        self.dev_assistant = DevAssistant(files=self.files, workspace_manager=None)  # workspace_manager injected via orchestrator
+        # ``workspaces`` is created a few lines below; hand it over afterwards so
+        # ``DevAssistant`` can resolve a registered workspace *id*. It used to be
+        # constructed with None ("injected via orchestrator" never happened),
+        # so every ``git_*``/``code_review`` call failed for workspace ids.
+        self.dev_assistant = DevAssistant(files=self.files, workspace_manager=None)
         self.knowledge = KnowledgeIndex(self.database, self.files, self.embeddings)
         self.knowledge_watcher = ThrottledKnowledgeWatcher(self.knowledge)
         self.tasks = TaskStore(self.database, max_revisions=max(1, self.config.agentic.max_replans))
         self.playbooks = PlaybookManager(self.database, self.planner, self.tasks)
         self.scheduler = TaskScheduler(self.database)
         self.workspaces = WorkspaceManager(self.database, self.config.security.allowed_roots)
+        self.dev_assistant.workspaces = self.workspaces
         self.tool_registry = ToolRegistry(self.database)
         self.agent_registry = AgentRegistry(
             self.database,
