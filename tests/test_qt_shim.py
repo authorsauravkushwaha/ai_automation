@@ -48,6 +48,10 @@ class ShimBuilderTests(unittest.TestCase):
         self.assertEqual(mapping["LIBDBUS_1_3"], "libdbus-1.so.3")
         self.assertEqual(mapping["V_0.5.0"], "libxkbcommon.so.0")
 
+    # Windows wheels ship the Qt DLLs next to the extension modules, not in the
+    # POSIX ``Qt/lib`` layout this helper locates, so the assertion only makes
+    # sense where the shim itself is meant to run.
+    @unittest.skipIf(sys.platform == "win32", "POSIX Qt layout required")
     def test_qt_library_dir_exists_when_pyside_is_installed(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
             self.skipTest("PySide6 not installed")
