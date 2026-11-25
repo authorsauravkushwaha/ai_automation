@@ -184,5 +184,24 @@ class QuickCleanupTests(SystemTunerTestBase):
             SystemTuner(None, SystemInfo()).quick_cleanup("")
 
 
+class SameSecondBackupTests(SystemTunerTestBase):
+    """The stamp has second resolution; real callers can collide within it."""
+
+    def test_repeated_backup_in_one_second_picks_a_free_name(self) -> None:
+        self._write("a.txt", "alpha")
+        archives = [self.tuner.backup_create("Documents", "Documents/Backups")["archive"] for _ in range(3)]
+        self.assertEqual(len(set(archives)), 3, archives)
+
+    def test_same_second_backup_into_source_does_not_nest_itself(self) -> None:
+        # Destination == source: the live archive used to be added to itself,
+        # so each run nested the previous ones and grew without bound.
+        self._write("a.txt", "alpha")
+        for _ in range(3):
+            result = self.tuner.backup_create("Documents", "Documents")
+            with zipfile.ZipFile(result["archive"]) as bundle:
+                self.assertEqual(bundle.namelist(), ["a.txt"])
+            self.assertLess(result["bytes"], 1000, "archive must not contain other archives")
+
+
 if __name__ == "__main__":
     unittest.main()

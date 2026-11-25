@@ -109,8 +109,18 @@ class SystemTuner:
         dst_root.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         dst = dst_root / f"backup_{src.name}_{stamp}.zip"
+        # The stamp only has second resolution, so two backups of the same
+        # folder within one second (a scheduled backup plus a user asking for
+        # one, or a retry) collided and the second failed outright. Pick the
+        # next free suffix instead of refusing to back up.
         if dst.exists():
-            raise AutomationError(f"Backup dest exists: {dst}")
+            for index in range(2, 1000):
+                candidate = dst_root / f"backup_{src.name}_{stamp}_{index}.zip"
+                if not candidate.exists():
+                    dst = candidate
+                    break
+            else:
+                raise AutomationError(f"Backup dest exists and no free name was found: {dst}")
         # Use zipfile
         import zipfile
         count = 0
@@ -133,6 +143,7 @@ class SystemTuner:
                         excluded = dst_resolved
                 except (OSError, ValueError):
                     excluded = None
+                dst_self = dst.resolve()
                 for dirpath, dirnames, filenames in os.walk(src):
                     if excluded is not None:
                         dirnames[:] = [
@@ -142,6 +153,16 @@ class SystemTuner:
                         if fn.startswith("."):
                             continue
                         fp = Path(dirpath) / fn
+                        # The archive being written now lives inside the walk
+                        # whenever the destination is the source (or inside it):
+                        # excluding only the destination *directory* still let
+                        # ``zf.write`` add the partially-written zip to itself,
+                        # so each run nested the previous backups and grew
+                        # without bound. Skip the live archive by name.
+                        if fp.resolve() == dst_self:
+                            continue
+                        if fp.parent.resolve() == dst_root.resolve() and fp.name.startswith(f"backup_{src.name}_"):
+                            continue  # an older backup already stored here
                         if fp.is_symlink():
                             continue
                         try:

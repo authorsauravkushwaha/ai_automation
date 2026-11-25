@@ -244,7 +244,7 @@ quotes, backslashes and newlines.
 | A26 | `DevAssistant.dependency_audit` swallowed `OSError` per manifest | still tolerated, but the file list is complete |
 | A27 | `web_automation.fill_field` defaulted `allow_private=True` while `open_website` defaulted `False` | unchanged deliberately (local dev pages); flagged for review |
 
-### A28–A39. Second remediation pass — silent data loss, dead branches, unbounded parsers
+### A28–A41. Second remediation pass — silent data loss, dead branches, unbounded parsers
 
 | ID | Finding | Fix |
 |---|---|---|
@@ -256,6 +256,8 @@ quotes, backslashes and newlines.
 | A33 | `FileWizard.convert_file(fmt=…)` accepted a format and ignored it (`convert_file("a.md","plain",fmt="html")` failed) | explicit `fmt` honoured for extensionless destinations; conflicting known extension now raises |
 | A34 | `deep_research(max_sources=-5)` returned results because a negative bound becomes a negative slice (`[:-5]`); the schema rejected it but the library did not | counts clamped to 1..10 / 1..20 inside the method, so direct callers match the tool contract |
 | A35 | `scrape_tables(max_tables=-1)` on a 4-table page showed **3** tables and printed "Showing 3" | non-positive counts now mean "none": `[:max(0, n)]` |
+| A40 | `backup_create` names archives with one-second resolution, so two backups of the same folder in the same second raised `AutomationError("Backup dest exists")` | on collision the next free `_2`, `_3`, … suffix is used |
+| A41 | `backup_create(src, src)` added the **live, partially written archive to itself**; the destination-directory exclusion did not cover the file, so each run nested all previous backups | the archive being written is skipped by resolved path (and older archives in the destination are skipped by name) |
 | A39 | Tool failure text reached the user unredacted: a filename containing `sk-proj-…` came back verbatim in "Path does not exist: …", while history was already redacted — the response was the only remaining copy of the credential | both recovery boundaries now pass the message through `redact_text` |
 | A37 | `FileManager.search(max_results=0)` returned **1** match: the bound is checked after the append | `max_results <= 0` returns immediately with no matches |
 | A38 | SQLite reads `LIMIT -1` as "no limit", so `list_drafts(-1)`, `list_reminders(-1)` and `due_reminders(-1)` returned the **whole table** | every `LIMIT ?` binding clamped with `max(0, int(limit))`; the remaining `LIMIT` sites were audited and already clamped |
@@ -513,8 +515,8 @@ its evidence, fix and verification in [`docs/REMEDIATION_LOG.md`](REMEDIATION_LO
 ```text
 ruff check .                        -> All checks passed!
 mypy hinata                         -> Success: no issues found in 86 source files
-python scripts/run_tests.py         -> Ran 558 tests, OK (skipped=8)   # with Qt
-python scripts/run_tests.py         -> Ran 558 tests, OK (skipped=50)  # no Qt, degrades cleanly
+python scripts/run_tests.py         -> Ran 560 tests, OK (skipped=8)   # with Qt
+python scripts/run_tests.py         -> Ran 560 tests, OK (skipped=50)  # no Qt, degrades cleanly
 ```
 
 271 tests existed before the audit. Part A added 31 in

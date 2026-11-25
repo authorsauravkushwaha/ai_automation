@@ -1,6 +1,6 @@
 # Defect hunt — verified findings
 
-28 defects found and fixed, each re-verified by an executable probe, plus one
+30 defects found and fixed, each re-verified by an executable probe, plus one
 candidate investigated and **rejected as sound** (see the end). Every entry below
 names the observable symptom, the fix and the check that proves the fix.
 
@@ -34,6 +34,8 @@ names the observable symptom, the fix and the check that proves the fix.
 | D26 | file_manager | `search(max_results=0)` returned exactly one match |
 | D27 | comms | negative SQL `LIMIT` returned the **whole table** from 4 queries |
 | D28 | security | tool failure text reached the user **unredacted** (the last copy of a secret) |
+| D29 | system_tuner | second backup of the same folder within one clock second failed outright |
+| D30 | system_tuner | backing up into the source archived the live zip into itself, nesting every run |
 
 ---
 
@@ -160,3 +162,19 @@ names the observable symptom, the fix and the check that proves the fix.
   call sites cannot leak by that route.
 
 **Regression tests:** `FailureMessageRedactionTests` (3) in `tests/test_dispatch_authorization.py`.
+
+## D29 — two backups of the same folder in one second: the second failed outright
+- **Evidence:** the archive name is `backup_<name>_<YYYYmmdd_HHMMSS>.zip`; a second `backup_create` within the same clock second raised `AutomationError("Backup dest exists: …")`. A scheduled backup plus a user request, or a retry, hits this.
+- **Fix:** on collision, probe `_2`, `_3`, … up to `_999` and use the first free name; only fail if all are taken.
+- **Verified:** 4 back-to-back calls in one second produce 4 distinct archives, all present.
+
+## D30 — backing up into the source archived the live archive into itself
+- **Evidence:** `backup_create("Documents", "Documents")` produced
+  `['x.txt', 'backup_…_190920.zip']` — the partially written zip being added to itself. Each run then nested the previous backups: 115 B → larger → larger. The code comment claimed the walk was pruned, but only the destination **directory** was excluded, and the archive sits in that directory.
+- **Why the existing test missed it:** `test_backup_never_includes_previous_backups` sleeps 1.05 s between runs, so the two archives have different names and never collide within one walk.
+- **Fix:** skip the exact file being written (`fp.resolve() == dst.resolve()`) and, separately, any existing `backup_<src.name>_*` archive that lives in the destination directory.
+- **Verified:** source==destination → three 115 B archives, each containing only `x.txt`; destination inside source → `['data/a.txt']` only; ordinary separate-destination backup unchanged.
+
+**Checked and cleared:** `quick_cleanup` already clamps (`max(0, min_age_days)`) and refuses symlinks.
+
+**Regression tests:** `SameSecondBackupTests` (2).
