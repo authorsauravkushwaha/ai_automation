@@ -362,6 +362,10 @@ class FileManager:
         return {"deleted_from": str(target), "quarantined_to": str(dest), "reversible": True}
 
     def search(self, query: str, root: str = "", max_results: int = 20) -> dict[str, Any]:
+        # The limit is checked *after* appending, so a non-positive value used
+        # to return one match instead of none.
+        if int(max_results) <= 0:
+            return {"matches": [], "truncated": False, "directories_searched": 0}
         roots = [self.resolve(root)] if root.strip() else list(self.roots)
         deadline = time.monotonic() + self.config.search_timeout_seconds
         needle = query.casefold()

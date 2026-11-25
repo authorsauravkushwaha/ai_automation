@@ -244,7 +244,7 @@ quotes, backslashes and newlines.
 | A26 | `DevAssistant.dependency_audit` swallowed `OSError` per manifest | still tolerated, but the file list is complete |
 | A27 | `web_automation.fill_field` defaulted `allow_private=True` while `open_website` defaulted `False` | unchanged deliberately (local dev pages); flagged for review |
 
-### A28–A36. Second remediation pass — silent data loss, dead branches, unbounded parsers
+### A28–A38. Second remediation pass — silent data loss, dead branches, unbounded parsers
 
 | ID | Finding | Fix |
 |---|---|---|
@@ -256,6 +256,8 @@ quotes, backslashes and newlines.
 | A33 | `FileWizard.convert_file(fmt=…)` accepted a format and ignored it (`convert_file("a.md","plain",fmt="html")` failed) | explicit `fmt` honoured for extensionless destinations; conflicting known extension now raises |
 | A34 | `deep_research(max_sources=-5)` returned results because a negative bound becomes a negative slice (`[:-5]`); the schema rejected it but the library did not | counts clamped to 1..10 / 1..20 inside the method, so direct callers match the tool contract |
 | A35 | `scrape_tables(max_tables=-1)` on a 4-table page showed **3** tables and printed "Showing 3" | non-positive counts now mean "none": `[:max(0, n)]` |
+| A37 | `FileManager.search(max_results=0)` returned **1** match: the bound is checked after the append | `max_results <= 0` returns immediately with no matches |
+| A38 | SQLite reads `LIMIT -1` as "no limit", so `list_drafts(-1)`, `list_reminders(-1)` and `due_reminders(-1)` returned the **whole table** | every `LIMIT ?` binding clamped with `max(0, int(limit))`; the remaining `LIMIT` sites were audited and already clamped |
 | A36 | **Four** text-read bounds were unclamped, so a negative `max_chars`/`top_n` sliced from the *end*: `FileManager.read_text(-1)` → 99 of 100 chars, `read_source(-1)` → 3,888 of 3,889, `extracted_text(-1)` → 4,999 of 5,000, `analyze_storage(top_n=-1)` dropped a row while reporting `truncated=True` | all four clamped to `>= 0` (and to the module read ceiling where one exists), matching `list_directory`'s existing contract |
 
 ---
@@ -502,8 +504,8 @@ verified by rendering it rather than inferred from its slots firing.
 ```text
 ruff check .                        -> All checks passed!
 mypy hinata                         -> Success: no issues found in 86 source files
-python scripts/run_tests.py         -> Ran 551 tests, OK (skipped=8)   # with Qt
-python scripts/run_tests.py         -> Ran 551 tests, OK (skipped=50)  # no Qt, degrades cleanly
+python scripts/run_tests.py         -> Ran 555 tests, OK (skipped=8)   # with Qt
+python scripts/run_tests.py         -> Ran 555 tests, OK (skipped=50)  # no Qt, degrades cleanly
 ```
 
 271 tests existed before the audit. Part A added 31 in

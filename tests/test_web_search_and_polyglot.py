@@ -270,6 +270,14 @@ class ReadTextBoundTests(unittest.TestCase):
         self.assertEqual(self.files.read_text("a.txt", max_chars=-1)["content"], "")
         self.assertEqual(len(self.files.read_text("a.txt", max_chars=5)["content"]), 5)
 
+    def test_non_positive_search_limit_returns_no_matches(self) -> None:
+        # The limit was checked after appending, so 0 and negatives returned 1.
+        for index in range(4):
+            (self.root / f"f{index}.txt").write_text("x", encoding="utf-8")
+        self.assertEqual(len(self.files.search("f", max_results=2)["matches"]), 2)
+        self.assertEqual(self.files.search("f", max_results=0)["matches"], [])
+        self.assertEqual(self.files.search("f", max_results=-3)["matches"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

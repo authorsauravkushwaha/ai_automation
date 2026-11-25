@@ -340,5 +340,30 @@ class ScraperHintTests(unittest.TestCase):
         self.assertEqual(_narrow_html_to_hint(self.HTML, ""), self.HTML)
 
 
+class ReminderAndDraftLimitTests(unittest.TestCase):
+    """SQLite reads a negative LIMIT as "no limit", so these must clamp."""
+
+    def setUp(self) -> None:
+        self.db = Database(Path(tempfile.mkdtemp()) / "limits.db")
+        self.center = CommunicationCenter(database=self.db)
+        for index in range(5):
+            self.center.draft_email(f"u{index}@example.com", "s", f"body {index}")
+            self.center.create_reminder(f"r{index}", "msg", when_str="2030-01-01 10:00")
+
+    def test_list_drafts_clamps_non_positive_limit(self) -> None:
+        self.assertEqual(self.center.list_drafts(limit=2)["count"], 2)
+        self.assertEqual(self.center.list_drafts(limit=0)["count"], 0)
+        # limit=-1 used to return all 5 drafts.
+        self.assertEqual(self.center.list_drafts(limit=-1)["count"], 0)
+
+    def test_list_reminders_clamps_non_positive_limit(self) -> None:
+        self.assertEqual(self.center.list_reminders(limit=2)["count"], 2)
+        self.assertEqual(self.center.list_reminders(limit=-1)["count"], 0)
+        self.assertEqual(self.center.list_reminders(limit=-1, pending_only=False)["count"], 0)
+
+    def test_due_reminders_clamps_non_positive_limit(self) -> None:
+        self.assertEqual(self.center.due_reminders(limit=-1), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -145,7 +145,11 @@ class CommunicationCenter:
     def list_drafts(self, limit: int = 20) -> dict[str, Any]:
         if not self.db:
             return {"drafts": []}
-        rows = self.db.fetch_all("SELECT * FROM email_drafts ORDER BY created_at DESC LIMIT ?", (limit,))
+        # SQLite treats a negative LIMIT as "no limit", so limit=-1 returned the
+        # whole table instead of nothing.
+        rows = self.db.fetch_all(
+            "SELECT * FROM email_drafts ORDER BY created_at DESC LIMIT ?", (max(0, int(limit)),)
+        )
         return {"drafts": rows, "count": len(rows)}
 
     def get_template(self, name: str) -> dict[str, Any]:
@@ -287,11 +291,11 @@ class CommunicationCenter:
         if pending_only:
             rows = self.db.fetch_all(
                 "SELECT * FROM reminders WHERE status = 'pending' ORDER BY remind_at_epoch ASC LIMIT ?",
-                (limit,),
+                (max(0, int(limit)),),
             )
         else:
             rows = self.db.fetch_all(
-                "SELECT * FROM reminders ORDER BY remind_at_epoch ASC LIMIT ?", (limit,)
+                "SELECT * FROM reminders ORDER BY remind_at_epoch ASC LIMIT ?", (max(0, int(limit)),)
             )
         return {"reminders": rows, "count": len(rows)}
 
@@ -308,7 +312,7 @@ class CommunicationCenter:
         return self.db.fetch_all(
             "SELECT * FROM reminders WHERE status = 'pending' AND remind_at_epoch <= ? "
             "ORDER BY remind_at_epoch ASC LIMIT ?",
-            (now, limit),
+            (now, max(0, int(limit))),
         )
 
     def fire_due_reminders(self, *, now_epoch: float | None = None, limit: int = 50) -> list[dict[str, Any]]:
