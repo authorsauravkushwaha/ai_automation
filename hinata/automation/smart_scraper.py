@@ -158,9 +158,11 @@ class PriceParser(HTMLParser):
         # branch used to be an ``if`` whose body was just ``pass``, so prices
         # written without a currency symbol were silently never captured.)
         if re.search(r"(?i)\b(?:price|cost|total|now|only|from|mrp|was)\b|:", t):
-            for m in re.finditer(r"\b\d[\d,]*\.\d{2}\b", t):
-                if m.group(0) not in self.prices:
-                    self.prices.append(m.group(0))
+            self.prices.extend(
+                m.group(0)
+                for m in re.finditer(r"\b\d[\d,]*\.\d{2}\b", t)
+                if m.group(0) not in self.prices
+            )
         lower = t.lower()
         if any(w in lower for w in ["out of stock", "sold out", "currently unavailable"]):
             self.availability = "out_of_stock"
@@ -188,7 +190,9 @@ class SmartScraper:
         html = self.fetch(url)
         parser = TableParser()
         parser.feed(html)
-        tables = parser.tables[:max_tables]
+        # A negative count used to slice from the end (4 tables -> 3 "shown");
+        # treat any non-positive request as "none".
+        tables = parser.tables[:max(0, int(max_tables))]
         return {
             "url": url,
             "table_count": len(parser.tables),

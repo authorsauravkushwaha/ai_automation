@@ -10,7 +10,8 @@ from unittest.mock import patch
 from hinata.agents.coder import PolyglotCoder, resolve_language
 from hinata.automation.app_control import AppControl, AutomationError
 from hinata.automation.file_manager import FileManager
-from hinata.automation.smart_scraper import PriceParser, TableParser
+from hinata.automation.research_synthesizer import ResearchSynthesizer
+from hinata.automation.smart_scraper import PriceParser, SmartScraper, TableParser
 from hinata.automation.web_search import (
     WebSearchEngine,
     _DuckDuckGoHTMLParser,
@@ -216,6 +217,35 @@ class HostilePageParsingTests(unittest.TestCase):
         parser.feed("<span>4.5 stars from 120 reviews</span><span>Version 2.1.30</span>")
         parser.close()
         self.assertEqual(parser.prices, [])
+
+
+class ResearchAndScrapeBoundsTests(unittest.TestCase):
+    def test_scrape_tables_treats_non_positive_count_as_none(self) -> None:
+        class _Fixed(SmartScraper):
+            def fetch(self, url: str, **kwargs: object) -> str:  # noqa: D401 - test stub
+                return "<table><tr><th>a</th></tr><tr><td>1</td></tr></table>" * 4
+
+        result = _Fixed().scrape_tables("https://example.com", max_tables=-1)
+        self.assertEqual(result["table_count"], 4)
+        self.assertEqual(result["tables"], [])
+
+    def test_deep_research_clamps_counts_at_the_library_boundary(self) -> None:
+        class _StubSearch:
+            def search(self, query: str, max_results: int = 5) -> dict:
+                return {
+                    "results": [
+                        {"title": f"t{i}", "url": f"https://e.com/{i}/{query}", "snippet": "s"}
+                        for i in range(8)
+                    ]
+                }
+
+            def fetch_webpage(self, url: str, max_chars: int = 4000) -> dict:
+                return {"content": "c"}
+
+        research = ResearchSynthesizer(web_search=_StubSearch(), llm=None)
+        # A negative count used to slice from the end and return results anyway.
+        self.assertEqual(research.deep_research("x", max_sources=-5)["results_count"], 1)
+        self.assertLessEqual(research.deep_research("x", max_sources=99)["results_count"], 20)
 
 
 if __name__ == "__main__":

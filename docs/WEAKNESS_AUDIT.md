@@ -244,7 +244,7 @@ quotes, backslashes and newlines.
 | A26 | `DevAssistant.dependency_audit` swallowed `OSError` per manifest | still tolerated, but the file list is complete |
 | A27 | `web_automation.fill_field` defaulted `allow_private=True` while `open_website` defaulted `False` | unchanged deliberately (local dev pages); flagged for review |
 
-### A28–A33. Second remediation pass — silent data loss, dead branches, unbounded parsers
+### A28–A35. Second remediation pass — silent data loss, dead branches, unbounded parsers
 
 | ID | Finding | Fix |
 |---|---|---|
@@ -254,6 +254,8 @@ quotes, backslashes and newlines.
 | A31 | `PriceParser` could never capture a price written without a currency symbol — the loop body was `if …: pass` | bare amounts captured only with a price cue or colon; ratings/version strings still ignored |
 | A32 | `Memory.record_episode(evidence=…)` accepted evidence and silently dropped it, so episodes were unauditable | evidence folded into the persisted record, then redacted and secret-scanned like any other field |
 | A33 | `FileWizard.convert_file(fmt=…)` accepted a format and ignored it (`convert_file("a.md","plain",fmt="html")` failed) | explicit `fmt` honoured for extensionless destinations; conflicting known extension now raises |
+| A34 | `deep_research(max_sources=-5)` returned results because a negative bound becomes a negative slice (`[:-5]`); the schema rejected it but the library did not | counts clamped to 1..10 / 1..20 inside the method, so direct callers match the tool contract |
+| A35 | `scrape_tables(max_tables=-1)` on a 4-table page showed **3** tables and printed "Showing 3" | non-positive counts now mean "none": `[:max(0, n)]` |
 
 ---
 
@@ -499,8 +501,8 @@ verified by rendering it rather than inferred from its slots firing.
 ```text
 ruff check .                        -> All checks passed!
 mypy hinata                         -> Success: no issues found in 86 source files
-python scripts/run_tests.py         -> Ran 547 tests, OK (skipped=8)   # with Qt
-python scripts/run_tests.py         -> Ran 547 tests, OK (skipped=50)  # no Qt, degrades cleanly
+python scripts/run_tests.py         -> Ran 549 tests, OK (skipped=8)   # with Qt
+python scripts/run_tests.py         -> Ran 549 tests, OK (skipped=50)  # no Qt, degrades cleanly
 ```
 
 271 tests existed before the audit. Part A added 31 in
