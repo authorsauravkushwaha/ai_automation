@@ -113,5 +113,37 @@ class DispatchAuthorizationTests(unittest.TestCase):
         self.assertEqual(missing, [], "unclassified tools silently fall back to SENSITIVE")
 
 
+class FailureMessageRedactionTests(unittest.TestCase):
+    """A user-visible failure must not echo a credential it was handed.
+
+    History was already redacted, so an unredacted response was the single
+    copy of the secret the user could still see (and copy, or screenshot).
+    """
+
+    SECRET = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.assistant = make_assistant(self.temporary.name)
+
+    def tearDown(self) -> None:
+        self.assistant.close()
+        self.temporary.cleanup()
+
+    def test_missing_file_error_does_not_echo_a_credential(self) -> None:
+        response = self.assistant.process_text(f"read file notes {self.SECRET}.txt")
+        self.assertNotIn(self.SECRET, response.text)
+        self.assertIn("does not exist", response.text.lower())
+
+    def test_history_and_response_are_both_clean(self) -> None:
+        self.assistant.process_text(f"read file notes {self.SECRET}.txt")
+        rows = self.assistant.database.fetch_all("SELECT content FROM conversations")
+        self.assertFalse(any(self.SECRET in row["content"] for row in rows))
+
+    def test_ordinary_error_text_is_unchanged(self) -> None:
+        response = self.assistant.process_text("read file definitely_missing_file.txt")
+        self.assertIn("definitely_missing_file.txt", response.text)
+
+
 if __name__ == "__main__":
     unittest.main()

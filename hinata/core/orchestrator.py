@@ -66,7 +66,7 @@ from hinata.core.tool_registry import ToolRegistry
 from hinata.core.types import ActionRequest, ActionResult, AssistantResponse
 from hinata.knowledge.index import KnowledgeIndex, verify_claim_citations
 from hinata.security.action_validator import ActionValidator, ValidationError
-from hinata.security.redaction import redact_value
+from hinata.security.redaction import redact_text, redact_value
 from hinata.tasks.store import TaskStateError, TaskStore
 
 LOGGER = logging.getLogger(__name__)
@@ -1083,10 +1083,16 @@ class Orchestrator:
                 model_id=self.llm.last_model_identity,
             )
         except (AutomationError, OllamaError, ClassifiedError) as exc:
-            result = ActionResult.failure(action.tool, str(exc))
+            # A failing path can echo the user's own text back (a filename such
+            # as "notes sk-proj-…txt" arrives in "Path does not exist: …").
+            # Conversation history is redacted elsewhere, so leaving the
+            # user-visible message raw made the response the one unredacted copy.
+            result = ActionResult.failure(action.tool, redact_text(str(exc)))
         except Exception as exc:  # Last-resort recovery boundary for desktop use.
             LOGGER.exception("Tool %s failed", action.tool)
-            result = ActionResult.failure(action.tool, f"Unexpected {type(exc).__name__}: {exc}")
+            result = ActionResult.failure(
+                action.tool, redact_text(f"Unexpected {type(exc).__name__}: {exc}")
+            )
         dur_ms = (time.monotonic() - t0) * 1000.0
         self.tracer.record_tool_metric(duration_ms=dur_ms, success=result.success)
         if run_id:
