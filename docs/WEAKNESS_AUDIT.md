@@ -244,7 +244,7 @@ quotes, backslashes and newlines.
 | A26 | `DevAssistant.dependency_audit` swallowed `OSError` per manifest | still tolerated, but the file list is complete |
 | A27 | `web_automation.fill_field` defaulted `allow_private=True` while `open_website` defaulted `False` | unchanged deliberately (local dev pages); flagged for review |
 
-### A28–A43. Second remediation pass — silent data loss, dead branches, unbounded parsers
+### A28–A44. Second remediation pass — silent data loss, dead branches, unbounded parsers
 
 | ID | Finding | Fix |
 |---|---|---|
@@ -256,6 +256,7 @@ quotes, backslashes and newlines.
 | A33 | `FileWizard.convert_file(fmt=…)` accepted a format and ignored it (`convert_file("a.md","plain",fmt="html")` failed) | explicit `fmt` honoured for extensionless destinations; conflicting known extension now raises |
 | A34 | `deep_research(max_sources=-5)` returned results because a negative bound becomes a negative slice (`[:-5]`); the schema rejected it but the library did not | counts clamped to 1..10 / 1..20 inside the method, so direct callers match the tool contract |
 | A35 | `scrape_tables(max_tables=-1)` on a 4-table page showed **3** tables and printed "Showing 3" | non-positive counts now mean "none": `[:max(0, n)]` |
+| A44 | CI's first run exposed four cross-platform defects: `batch_rename("lowercase")` aborted on case-insensitive volumes; the "browser refused" path was unreachable on Windows; tests read sources without `encoding="utf-8"` (cp1252 crash); and GUI/shim tests assumed a GNU toolchain, a font database and single-pixel rendering | `samefile` comparison for no-op renames, both launchers mocked, UTF-8 + `__file__`-anchored reads, POSIX-only shim tests and median-band colour sampling with a font-database guard |
 | A43 | `DevAssistant` was built with `workspace_manager=None` and the promised orchestrator injection never happens (the orchestrator receives the finished object), so `git_status`/`code_review`/`dependency_audit` rejected every workspace **id** | `assistant.py` assigns `dev_assistant.workspaces` after building the `WorkspaceManager` |
 | A42 | `DevAssistant.git_status` raised on a repository with no commits (`git log` exits 128 on an unborn branch); `git_commit`/`git_diff`/`git_status` failures printed an **empty** reason because stderr was never captured; and an unborn branch was named `"No"` | `git log` failure tolerated, stderr captured on all guarded calls, `_git_failure()` prefers git's own `fatal:`/`warning:` line, `No commits yet on <branch>` parsed |
 | A40 | `backup_create` names archives with one-second resolution, so two backups of the same folder in the same second raised `AutomationError("Backup dest exists")` | on collision the next free `_2`, `_3`, … suffix is used |
@@ -517,8 +518,8 @@ its evidence, fix and verification in [`docs/REMEDIATION_LOG.md`](REMEDIATION_LO
 ```text
 ruff check .                        -> All checks passed!
 mypy hinata                         -> Success: no issues found in 86 source files
-python scripts/run_tests.py         -> Ran 565 tests, OK (skipped=8)   # with Qt
-python scripts/run_tests.py         -> Ran 565 tests, OK (skipped=50)  # no Qt, degrades cleanly
+python scripts/run_tests.py         -> Ran 566 tests, OK (skipped=8)   # with Qt
+python scripts/run_tests.py         -> Ran 566 tests, OK (skipped=50)  # no Qt, degrades cleanly
 ```
 
 271 tests existed before the audit. Part A added 31 in

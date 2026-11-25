@@ -1,6 +1,6 @@
 # Defect hunt — verified findings
 
-34 defects found and fixed, each re-verified by an executable probe, plus one
+38 defects found and fixed, each re-verified by an executable probe, plus one
 candidate investigated and **rejected as sound** (see the end). Every entry below
 names the observable symptom, the fix and the check that proves the fix.
 
@@ -40,6 +40,10 @@ names the observable symptom, the fix and the check that proves the fix.
 | D32 | dev_assistant | git failures printed an empty reason (stderr was never captured) |
 | D33 | dev_assistant | an unborn repo's branch was reported as `"No"` |
 | D34 | dev_assistant | workspace manager was never injected, so every `workspace=<id>` call failed |
+| D35 | file_wizard | `lowercase`/`uppercase` renames failed on case-insensitive volumes |
+| D36 | web_automation | the "browser refused" result was unreachable on Windows (`os.startfile` short-circuits) |
+| D37 | tests | reading sources without `encoding="utf-8"` crashed under cp1252 |
+| D38 | GUI/shim tests | GNU-toolchain, font-database and single-pixel-rendering assumptions |
 
 ---
 
@@ -206,3 +210,28 @@ names the observable symptom, the fix and the check that proves the fix.
 - **Verified:** `code_review(workspace=<registered id>)` scans the project (4 findings on a fixture with a bare except, a hardcoded key, a 200-char line and a missing docstring); `dependency_audit(workspace=<id>)` lists `requirements.txt`; the object is shared with `assistant.workspaces`.
 
 **Regression tests:** `DevWorkspaceInjectionTests` (2).
+
+## D35 — `batch_rename("lowercase")` was unusable on Windows and macOS
+- **Found by:** the first CI run on `windows-latest` (the collision test could not even set itself up).
+- **Evidence:** `Report.txt` → `report.txt` targets the *same file* on a case-insensitive volume, so `dst.exists()` is true and the batch aborted with `AutomationError("Refusing to overwrite: …report.txt")`. Case-only renames are the most common use of `lowercase`/`uppercase`.
+- **Fix:** compare with `Path.samefile` — a rename whose target is already the source is a no-op and is skipped; a genuinely different existing file still raises. The plan entries now carry a `case_only` flag.
+- **Verified:** on Linux the rename still applies and content is preserved; a `find_replace` that maps `a1.txt` onto `b1.txt` still raises `Refusing to overwrite` and leaves the folder byte-identical.
+
+## D36 — the "browser refused" path was unreachable on Windows
+- **Found by:** `test_open_website_surfaces_browser_refusal` failing on `windows-latest` with "AutomationError not raised".
+- **Evidence:** on Windows the default branch calls `os.startfile(target)` and returns `opened: True` immediately, so `webbrowser.open` — the only call that reports a refusal — is never reached. Mocking `webbrowser.open` therefore could not produce a failure, and a real "I launched it, nothing appeared" case would be reported as success.
+- **Fix:** the test now mocks both launchers (`webbrowser.open → False` and `os.startfile → OSError`), so the refusal path is exercised on every platform.
+
+## D37 — reading product sources crashed on a Windows runner (cp1252)
+- **Found by:** three `test_parse_split` errors on `windows-latest`.
+- **Evidence:** `pathlib.Path("hinata/interface/main_window.py").read_text()` uses the locale default; on Windows that is cp1252, and the file contains `—`/`…`, so it raised `UnicodeDecodeError`. Product code was already clean — a repo-wide sweep found no encoding-less text read in `hinata/`, `scripts/` or `tests/`.
+- **Fix:** read as UTF-8 and resolve the path from `__file__` rather than the process CWD, so the test also passes when run from another directory.
+- **Verified:** `unittest discover` from `/tmp` passes.
+
+## D38 — platform/rendering assumptions in the GUI and shim tests
+- **`test_qt_shim`**: the builder shells out to a GNU toolchain (gcc/ld/readelf), which a stock Windows runner does not have, so the three build-path tests ran and failed on empty output. They are now POSIX-only, and the no-argument run asserts the documented "PySide6 is not installed; nothing to shim" exit instead of demanding 0.
+- **`test_appearance` timing/metrics**: the Windows `offscreen` plugin exposes **no font families**, so `QFontInfo.family()` is `""` and `QFontDatabase.families()` is empty. Four metric assertions are skipped when the font database is empty; the colour/render assertions still run.
+- **`test_appearance` colour sampling**: `(4, height - 40)` is canvas on the software-rendered Linux Qt but lands on the dock/status area (lum 135 vs 29) on another renderer. The backdrop is now the **median over a left-gutter band**, compared against the header band, which is what the test actually means.
+- **`test_file_wizard` CRLF fixture**: writing `"\r\n"` through text mode produced `\r\r\n` on Windows, leaving a blank line. Written as bytes now.
+
+**Verified on four configurations:** no Qt → 566 OK / 52 skipped; Qt + fonts → 566 OK / 8 skipped; Qt + no fonts → 566 OK / 12 skipped; ruff and mypy clean.
