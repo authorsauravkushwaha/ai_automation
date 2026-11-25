@@ -53,6 +53,7 @@ image = [
   "huggingface-hub>=0.23,<1",
   "Pillow>=10,<13",
 ]
+web-automation = ["playwright>=1.49", "selenium>=4.15"]
 dev = ["ruff>=0.6,<1", "mypy>=1.11,<2"]
 
 [project.scripts]

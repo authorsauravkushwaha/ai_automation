@@ -299,6 +299,109 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "action": ("enum", ["lock", "sleep", "hibernate"]),
         },
     },
+    "open_website": {
+        "required": ["url"],
+        "properties": {
+            "url": ("string", 3, 2048),
+            "browser": ("string", 0, 80),
+            "headless": ("boolean",),
+        },
+    },
+    "inspect_forms": {
+        "required": ["url"],
+        "properties": {
+            "url": ("string", 3, 2048),
+        },
+    },
+    "save_identity": {
+        "required": ["profile", "fields_json"],
+        "properties": {
+            "profile": ("string", 1, 64),
+            "fields_json": ("string", 2, 20000),
+            "display_name": ("string", 0, 120),
+            "make_default": ("boolean",),
+        },
+    },
+    "list_identities": {
+        "required": [],
+        "properties": {},
+    },
+    "get_identity": {
+        "required": [],
+        "properties": {
+            "profile": ("string", 0, 64),
+        },
+    },
+    "delete_identity": {
+        "required": ["profile"],
+        "properties": {
+            "profile": ("string", 1, 64),
+        },
+    },
+    "web_autofill": {
+        "required": ["url"],
+        "properties": {
+            "url": ("string", 3, 2048),
+            "profile": ("string", 0, 64),
+            "field_overrides_json": ("string", 0, 5000),
+            "submit": ("boolean",),
+            "browser": ("string", 0, 80),
+            "headless": ("boolean",),
+            "open_browser": ("boolean",),
+        },
+    },
+    "web_fill_field": {
+        "required": ["url", "selector", "value"],
+        "properties": {
+            "url": ("string", 3, 2048),
+            "selector": ("string", 1, 500),
+            "value": ("string", 1, 2000),
+        },
+    },
+    "web_click": {
+        "required": ["url", "selector"],
+        "properties": {
+            "url": ("string", 3, 2048),
+            "selector": ("string", 1, 500),
+        },
+    },
+    # ── Smart Scraper
+    "scrape_tables": {"required": ["url"], "properties": {"url": ("string", 3, 2048), "max_tables": ("integer", 1, 10)}},
+    "scrape_lists": {"required": ["url"], "properties": {"url": ("string", 3, 2048), "selector_hint": ("string", 0, 200)}},
+    "monitor_price": {"required": ["url"], "properties": {"url": ("string", 3, 2048)}},
+    "crawl_pages": {"required": ["url"], "properties": {"url": ("string", 3, 2048), "max_pages": ("integer", 1, 20), "link_pattern": ("string", 0, 200)}},
+    "scrape_export": {"required": ["dest_path"], "properties": {"dest_path": ("string", 1, 1024), "format": ("enum", ["json", "csv"]), "source_url": ("string", 0, 2048)}},
+    # ── File Wizard
+    "analyze_storage": {"required": [], "properties": {"path": ("string", 0, 1024), "top_n": ("integer", 1, 50)}},
+    "find_duplicates": {"required": [], "properties": {"path": ("string", 0, 1024), "max_groups": ("integer", 1, 50), "min_size_kb": ("integer", 1, 102400)}},
+    "organize_folder": {"required": ["path"], "properties": {"path": ("string", 1, 1024), "mode": ("enum", ["by_type", "by_date", "by_ext"]), "dry_run": ("boolean",)}},
+    "batch_rename": {"required": ["folder", "pattern"], "properties": {"folder": ("string", 1, 1024), "pattern": ("enum", ["numbered", "find_replace", "lowercase", "uppercase", "prefix"]), "replacement": ("string", 0, 200), "start_num": ("integer", 1, 10000), "dry_run": ("boolean",)}},
+    "convert_file": {"required": ["source", "dest"], "properties": {"source": ("string", 1, 1024), "dest": ("string", 1, 1024)}},
+    "clean_temp": {"required": [], "properties": {"path": ("string", 0, 1024), "min_age_days": ("integer", 1, 365), "dry_run": ("boolean",)}},
+    # ── Communication
+    "draft_email": {"required": ["to"], "properties": {"to": ("string", 3, 500), "subject": ("string", 0, 500), "body": ("string", 0, 20000), "template": ("string", 0, 64), "template_vars_json": ("string", 0, 5000), "profile": ("string", 0, 64), "save_path": ("string", 0, 1024)}},
+    "list_drafts": {"required": [], "properties": {"limit": ("integer", 1, 50)}},
+    "email_template_info": {"required": ["name"], "properties": {"name": ("string", 1, 64)}},
+    "create_reminder": {"required": ["title"], "properties": {"title": ("string", 1, 160), "message": ("string", 0, 1000), "when_str": ("string", 0, 200), "when_epoch": ("integer", 0, 9999999999), "repeat_seconds": ("integer", 0, 1000000), "channel": ("string", 0, 40)}},
+    "list_reminders": {"required": [], "properties": {"limit": ("integer", 1, 50)}},
+    "broadcast_message": {"required": ["message"], "properties": {"message": ("string", 1, 5000), "channels_json": ("string", 0, 500)}},
+    # ── System
+    "health_check": {"required": [], "properties": {}},
+    "network_diag": {"required": [], "properties": {}},
+    "backup_create": {"required": ["source", "dest_dir"], "properties": {"source": ("string", 1, 1024), "dest_dir": ("string", 1, 1024), "max_age_days": ("integer", 1, 365)}},
+    "quick_cleanup": {"required": [], "properties": {"path": ("string", 0, 1024), "dry_run": ("boolean",)}},
+    "process_search": {"required": ["name"], "properties": {"name": ("string", 1, 100), "dry_run": ("boolean",)}},
+    # ── Research
+    "deep_research": {"required": ["topic"], "properties": {"topic": ("string", 2, 500), "max_results_per_query": ("integer", 1, 10), "max_sources": ("integer", 1, 20)}},
+    "compare_topics": {"required": ["topic_a", "topic_b"], "properties": {"topic_a": ("string", 2, 300), "topic_b": ("string", 2, 300)}},
+    "summarize_url": {"required": ["url"], "properties": {"url": ("string", 3, 2048), "max_chars": ("integer", 200, 15000)}},
+    # ── Dev
+    "git_status": {"required": [], "properties": {"workspace": ("string", 0, 512)}},
+    "git_diff": {"required": [], "properties": {"workspace": ("string", 0, 512), "staged": ("boolean",)}},
+    "git_commit": {"required": ["message"], "properties": {"message": ("string", 3, 500), "workspace": ("string", 0, 512), "add_all": ("boolean",)}},
+    "code_review": {"required": [], "properties": {"path": ("string", 0, 512), "workspace": ("string", 0, 512)}},
+    "dependency_audit": {"required": [], "properties": {"workspace": ("string", 0, 512)}},
+    "dev_run_tests": {"required": [], "properties": {"workspace": ("string", 0, 512), "target": ("string", 0, 256)}},
 }
 
 

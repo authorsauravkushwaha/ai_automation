@@ -106,6 +106,23 @@ class HinataAssistant:
         )
         self.files = FileManager(self.config.security)
         self.cockpit = DesktopCockpit(self.files)
+        # Identity vault + web automation (local, no cloud)
+        from hinata.core.identity_vault import IdentityVault
+        from hinata.automation.web_automation import WebAutomation
+        from hinata.automation.smart_scraper import SmartScraper
+        from hinata.automation.file_wizard import FileWizard
+        from hinata.automation.communication_center import CommunicationCenter
+        from hinata.automation.system_tuner import SystemTuner
+        from hinata.automation.research_synthesizer import ResearchSynthesizer
+        from hinata.automation.dev_assistant import DevAssistant
+        self.identity_vault = IdentityVault(self.database)
+        self.web_automation = WebAutomation(files=self.files, windows=WindowsControl(), vault=self.vault)
+        self.smart_scraper = SmartScraper(files=self.files)
+        self.file_wizard = FileWizard(files=self.files)
+        self.comm_center = CommunicationCenter(database=self.database, files=self.files, vault=self.vault)
+        self.system_tuner = SystemTuner(files=self.files, system=SystemInfo())
+        self.researcher = ResearchSynthesizer(web_search=None, llm=self.llm)  # web_search injected later via orchestrator if needed
+        self.dev_assistant = DevAssistant(files=self.files, workspace_manager=None)  # workspace_manager injected via orchestrator
         self.knowledge = KnowledgeIndex(self.database, self.files, self.embeddings)
         self.knowledge_watcher = ThrottledKnowledgeWatcher(self.knowledge)
         self.tasks = TaskStore(self.database, max_revisions=max(1, self.config.agentic.max_replans))
@@ -164,6 +181,14 @@ class HinataAssistant:
             system=SystemInfo(),
             llm_enabled=self.config.ollama.enabled if llm_enabled is None else llm_enabled,
             pull_missing_model=self.config.ollama.auto_pull,
+            web_automation=self.web_automation,
+            identity_vault=self.identity_vault,
+            smart_scraper=self.smart_scraper,
+            file_wizard=self.file_wizard,
+            comm_center=self.comm_center,
+            system_tuner=self.system_tuner,
+            researcher=self.researcher,
+            dev_assistant=self.dev_assistant,
         )
         self.microphone = Microphone(self.config.speech.microphone, self.config.speech.sample_rate)
         self.stt = SpeechToText(self.config.speech)
