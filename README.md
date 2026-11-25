@@ -31,6 +31,13 @@ automation.
 | Save autofill details | `save my identity as personal: first_name=Saurav, last_name=Kushwaha, email=saurav@example.com, phone=9876543210` | Local vault; `list my identities`, `show my profile`, `my city is Kolkata` to update one field. |
 | Inspect & fill any form | `inspect forms on https://example.com` then `autofill https://example.com/form with personal` | Detects every field, maps 50+ aliases (`fname`, `zipcode`, `tel`), works via Playwright/Selenium or one-paste JS snippet. |
 | Fill + submit | `autofill https://example.com/apply with personal and submit` | Fills then clicks submit; payment/ID fields are filled but auto-submit is blocked for safety — review first. |
+| Scrape any site | `scrape tables from https://example.com` / `monitor price for https://amazon.com/dp/xxx` | Tables, lists, price+stock, pagination crawl; export to CSV/JSON. |
+| Organize files | `organize folder Downloads by type` / `find duplicates in Documents` | Auto-categorize, dedup by hash, batch rename, md↔html, clean temp. |
+| Draft emails | `draft email to hr@acme.com using job_application` | Templates auto-filled from identity; `list drafts`. |
+| Reminders | `remind me call mom in 2 hours` / `create reminder standup at tomorrow 9am` | Natural time parsing (`in X hours`, `tomorrow 3pm`). |
+| System health | `health check` / `network diag` / `backup Docs to Backups` | Disk/memory/CPU + backup pruning + cleanup dry-run. |
+| Deep research | `deep research on quantum computing` / `compare X vs Y` | 4 parallel queries, synthesis + citations; `summarize url https://...` |
+| Dev help | `git status` / `code review` / `dependency audit` / `run tests` | Local git, heuristic review (secrets, bare except), pytest. |
 | See your machine's status | `system info` | Deterministic; no model needed. |
 | Search local notes | `index document Documents/notes.txt` then `search knowledge for project` | Indexing requires approval. Files must be under an allowed root. |
 | Remember a preference | `remember that my editor is vim` then `list preferences` | Saving requires approval; memory is stored locally in unencrypted SQLite. |

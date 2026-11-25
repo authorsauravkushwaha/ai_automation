@@ -95,6 +95,43 @@ POLICY = {
     "web_autofill": PermissionLevel.CONFIRM,
     "web_fill_field": PermissionLevel.CONFIRM,
     "web_click": PermissionLevel.CONFIRM,
+    # Smart Scraper
+    "scrape_tables": PermissionLevel.SAFE,
+    "scrape_lists": PermissionLevel.SAFE,
+    "monitor_price": PermissionLevel.SAFE,
+    "crawl_pages": PermissionLevel.SAFE,
+    "scrape_export": PermissionLevel.CONFIRM,
+    # File Wizard
+    "analyze_storage": PermissionLevel.SAFE,
+    "find_duplicates": PermissionLevel.SAFE,
+    "organize_folder": PermissionLevel.CONFIRM,
+    "batch_rename": PermissionLevel.CONFIRM,
+    "convert_file": PermissionLevel.CONFIRM,
+    "clean_temp": PermissionLevel.CONFIRM,
+    # Communication
+    "draft_email": PermissionLevel.CONFIRM,
+    "list_drafts": PermissionLevel.SAFE,
+    "email_template_info": PermissionLevel.SAFE,
+    "create_reminder": PermissionLevel.SAFE,
+    "list_reminders": PermissionLevel.SAFE,
+    "broadcast_message": PermissionLevel.CONFIRM,
+    # System
+    "health_check": PermissionLevel.SAFE,
+    "network_diag": PermissionLevel.SAFE,
+    "backup_create": PermissionLevel.CONFIRM,
+    "quick_cleanup": PermissionLevel.SAFE,
+    "process_search": PermissionLevel.SAFE,
+    # Research
+    "deep_research": PermissionLevel.SAFE,
+    "compare_topics": PermissionLevel.SAFE,
+    "summarize_url": PermissionLevel.SAFE,
+    # Dev
+    "git_status": PermissionLevel.SAFE,
+    "git_diff": PermissionLevel.SAFE,
+    "git_commit": PermissionLevel.CONFIRM,
+    "code_review": PermissionLevel.SAFE,
+    "dependency_audit": PermissionLevel.SAFE,
+    "dev_run_tests": PermissionLevel.CONFIRM,
 }
 
 
