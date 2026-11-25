@@ -82,6 +82,13 @@ class CodingSandboxMemoryRagAndSecurityTests(unittest.TestCase):
         with self.assertRaises(AutomationError):
             self.assistant.workspaces.read_source(".env", workspace=ws_id)
 
+        # A negative max_chars used to slice from the end and return the file.
+        big = ws_dir / "big.py"
+        big.write_text("\n".join(f"line{i}" for i in range(500)), encoding="utf-8")
+        bounded = self.assistant.workspaces.read_source("big.py", workspace=ws_id, max_chars=-1)
+        self.assertEqual(bounded["content"], "")
+        self.assertTrue(self.assistant.workspaces.read_source("big.py", workspace=ws_id, max_chars=100)["truncated"])
+
     def test_structured_memory_tiers_contradiction_secret_blocking_and_vault_encryption(self) -> None:
         mem = self.assistant.memory
         # Secret storage rejected

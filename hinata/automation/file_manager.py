@@ -141,6 +141,11 @@ class FileManager:
             raise AutomationError(f"Not a file: {path}")
         if path.suffix.lower() not in self.config.text_extensions:
             raise AutomationError(f"Files with extension '{path.suffix}' are not approved for text reading")
+        # Clamp like ``list_directory`` does: a negative bound would slice from
+        # the end (``decoded[:-1]`` returned everything but the last character)
+        # while still reporting ``truncated=True``, i.e. the opposite of the
+        # caller's intent.
+        max_chars = max(0, min(int(max_chars), self.config.max_read_bytes))
         raw = self._safe_read_bytes(path, self.config.max_read_bytes)
         truncated = len(raw) > self.config.max_read_bytes
         decoded = raw[: self.config.max_read_bytes].decode("utf-8-sig", errors="replace")

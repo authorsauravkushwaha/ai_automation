@@ -18,7 +18,7 @@ from hinata.automation.web_search import (
     extract_core_search_query,
     is_safe_public_url,
 )
-from hinata.config import SecurityConfig
+from hinata.config import HinataConfig, SecurityConfig
 from hinata.core.intent_parser import IntentParser
 from hinata.core.model_reply import plain_text_reply
 from hinata.security.action_validator import ActionValidator
@@ -246,6 +246,29 @@ class ResearchAndScrapeBoundsTests(unittest.TestCase):
         # A negative count used to slice from the end and return results anyway.
         self.assertEqual(research.deep_research("x", max_sources=-5)["results_count"], 1)
         self.assertLessEqual(research.deep_research("x", max_sources=99)["results_count"], 20)
+
+
+class ReadTextBoundTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name) / "root"
+        root.mkdir()
+        config = HinataConfig(
+            data_dir=Path(self.temporary.name) / "data",
+            security=SecurityConfig(allowed_roots=[root]),
+        )
+        config.validate()
+        self.root = root
+        self.files = FileManager(config.security)
+        (root / "a.txt").write_text("0123456789" * 10, encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_negative_max_chars_returns_nothing_not_the_tail(self) -> None:
+        # max_chars=-1 used to return everything except the last character.
+        self.assertEqual(self.files.read_text("a.txt", max_chars=-1)["content"], "")
+        self.assertEqual(len(self.files.read_text("a.txt", max_chars=5)["content"]), 5)
 
 
 if __name__ == "__main__":

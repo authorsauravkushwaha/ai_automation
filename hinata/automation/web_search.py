@@ -92,6 +92,7 @@ class _ReadableHTMLParser(HTMLParser):
         return " ".join("".join(self.title_parts).split())[:200]
 
     def extracted_text(self, max_chars: int = 4000) -> str:
+        max_chars = max(0, int(max_chars))  # negative slices from the end
         raw = "".join(self.chunks)
         lines = [" ".join(line.split()) for line in raw.splitlines()]
         non_empty = [line for line in lines if len(line) >= 2]

@@ -328,6 +328,14 @@ class CleanTempTests(FileWizardTestBase):
         self.assertTrue(outside.exists(), "a symlink must never delete its target")
 
 
+class AnalyzeStorageBoundTests(FileWizardTestBase):
+    def test_non_positive_top_n_returns_no_rows(self) -> None:
+        for index in range(5):
+            self._write(f"f{index}.txt", "x" * ((index + 1) * 50))
+        self.assertEqual(len(self.wizard.analyze_storage("", top_n=2)["largest"]), 2)
+        # A negative bound used to slice from the end of the sorted list.
+        self.assertEqual(self.wizard.analyze_storage("", top_n=-1)["largest"], [])
+
 class ConvertFileFormatTests(FileWizardTestBase):
     def test_extension_drives_conversion_without_fmt(self) -> None:
         self._write("note.md", "# Title\n\nbody\n")

@@ -91,7 +91,7 @@ class FileWizard:
             "total_mb": round(total_bytes / (1024 * 1024), 2),
             "by_ext_count": dict(ext_counter.most_common(20)),
             "by_ext_bytes": {k: round(v / (1024 * 1024), 2) for k, v in ext_bytes.most_common(20)},
-            "largest": largest[:top_n],
+            "largest": largest[: max(0, top_n)],  # negative would slice from the end
         }
 
     def find_duplicates(self, path: str = "", *, max_groups: int = 20, min_size_kb: int = 1) -> dict[str, Any]:
