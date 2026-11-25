@@ -184,11 +184,16 @@ class TraceRecorder:
         seq = self._next_sequence(run_id) if run_id else 0
         sanitized_payload = json.dumps(redact_value(payload or {}), ensure_ascii=False, default=str)[:4000]
         with self._lock:
-            if self._last_hash is None:
-                last_row = self.database.fetch_one(
-                    "SELECT event_hash FROM agent_trace_events ORDER BY id DESC LIMIT 1"
-                )
-                self._last_hash = str(last_row["event_hash"]) if last_row and last_row.get("event_hash") else "GENESIS"
+            # Always read the true chain tip. Caching it optimises a cheap SELECT
+            # but breaks the chain whenever a second writer exists -- another
+            # HINATA instance sharing the data directory (desktop + CLI), or a
+            # restart -- producing false "audit tampered" results on a healthy DB.
+            last_row = self.database.fetch_one(
+                "SELECT event_hash FROM agent_trace_events ORDER BY id DESC LIMIT 1"
+            )
+            self._last_hash = (
+                str(last_row["event_hash"]) if last_row and last_row.get("event_hash") else "GENESIS"
+            )
             prev_hash = self._last_hash
             event_hash = _compute_trace_hash(
                 prev_hash,

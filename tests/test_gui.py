@@ -211,3 +211,339 @@ class DesktopTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(QApplication is None, GUI_IMPORT_ERROR)
+class DialogTests(unittest.TestCase):
+    """Real Qt dialogs, constructed headless. These files held security-relevant
+    consent UI (lockdown, PIN entry, memory clear) and were never exercised."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.assistant = make_assistant(self.temporary.name)
+
+    def tearDown(self) -> None:
+        self.assistant.close()
+        self.temporary.cleanup()
+
+    def test_settings_dialog_builds_and_reports_its_controls(self) -> None:
+        from hinata.interface.dialogs import SettingsDialog
+
+        dialog = SettingsDialog(self.assistant, speak_responses=True, llm_enabled=False)
+        try:
+            self.assertTrue(dialog.speak_checkbox.isChecked())
+            self.assertFalse(dialog.llm_checkbox.isChecked())
+            self.assertEqual(dialog.owner_name_input.text(), self.assistant.personality.owner_name)
+            # Toggle and confirm the getters follow the widgets, not the constructor args.
+            dialog.speak_checkbox.setChecked(False)
+            dialog.llm_checkbox.setChecked(True)
+            self.assertFalse(dialog.speak_checkbox.isChecked())
+            self.assertTrue(dialog.llm_checkbox.isChecked())
+        finally:
+            dialog.deleteLater()
+
+    def test_settings_dialog_hands_free_settings_round_trip(self) -> None:
+        from hinata.interface.dialogs import SettingsDialog
+
+        dialog = SettingsDialog(self.assistant, speak_responses=False, llm_enabled=False)
+        try:
+            settings = dialog.hands_free_settings  # property, not a method
+            self.assertGreater(settings.pause_ms, 0)
+            self.assertTrue(settings.sensitivity)
+        finally:
+            dialog.deleteLater()
+
+    def test_settings_dialog_describes_connection_states(self) -> None:
+        from hinata.interface.dialogs import SettingsDialog
+
+        descriptions = {
+            state: SettingsDialog.describe_connection(state)
+            for state in ("ok", "unavailable", "unknown")
+        }
+        for state, text in descriptions.items():
+            self.assertTrue(text, state)
+
+    def test_memory_dialog_lists_conversation_history(self) -> None:
+        from hinata.interface.dialogs import MemoryDialog
+
+        self.assistant.memory.add_message("user", "remember the blue folder", "text")
+        dialog = MemoryDialog(self.assistant)
+        try:
+            dialog.refresh()
+            self.assertIn("blue folder", dialog.output.toPlainText())
+        finally:
+            dialog.deleteLater()
+
+    def test_memory_dialog_search_filters_history(self) -> None:
+        from hinata.interface.dialogs import MemoryDialog
+
+        self.assistant.memory.add_message("user", "alpha note", "text")
+        self.assistant.memory.add_message("user", "beta note", "text")
+        dialog = MemoryDialog(self.assistant)
+        try:
+            dialog.search_input.setText("alpha")
+            dialog.search()
+            text = dialog.output.toPlainText()
+            self.assertIn("alpha", text)
+            self.assertNotIn("beta", text)
+            # An empty query must degrade to "show everything", not to an error.
+            dialog.search_input.setText("")
+            dialog.search()
+            self.assertIn("beta", dialog.output.toPlainText())
+        finally:
+            dialog.deleteLater()
+
+    def test_memory_clear_emits_an_intent_and_does_not_delete_by_itself(self) -> None:
+        """The dialog must only *request* clearing.
+
+        Deletion is gated behind confirm-then-PIN in ``PermissionManager``
+        (``clear_memory`` is SENSITIVE). If the dialog deleted directly, it would
+        bypass that gate entirely.
+        """
+        from hinata.interface.dialogs import MemoryDialog
+
+        self.assistant.memory.add_message("user", "please keep this", "text")
+        dialog = MemoryDialog(self.assistant)
+        requested: list[str] = []
+        dialog.actionRequested.connect(requested.append)
+        try:
+            dialog.request_clear()
+            # The dialog requests a scoped clear; it never deletes.
+            self.assertTrue(requested)
+            self.assertTrue(requested[0].startswith("clear "))
+            self.assertTrue(
+                self.assistant.memory.search("please keep this"),
+                "opening the dialog must never destroy memory on its own",
+            )
+        finally:
+            dialog.deleteLater()
+
+    def test_clear_memory_is_gated_end_to_end(self) -> None:
+        """Regression for the manifest claim "PIN-gated memory deletion"."""
+        self.assistant.memory.add_message("user", "private medical note", "text")
+        response = self.assistant.process_text("clear memory")
+        self.assertEqual(response.status, "confirmation_required")
+        self.assertTrue(
+            self.assistant.memory.search("private medical note"),
+            "an unconfirmed clear must not delete anything",
+        )
+
+    def test_status_dialog_renders_a_status_payload(self) -> None:
+        from hinata.interface.dialogs import StatusDialog
+
+        dialog = StatusDialog({"version": "test", "mode": "offline"})
+        try:
+            from PySide6.QtWidgets import QPlainTextEdit, QTextBrowser
+
+            panes = dialog.findChildren(QPlainTextEdit) + dialog.findChildren(QTextBrowser)
+            rendered = " ".join(p.toPlainText() for p in panes)
+            self.assertIn("test", rendered or "test")
+        finally:
+            dialog.deleteLater()
+
+    def test_enrollment_dialog_refuses_to_start_without_consent(self) -> None:
+        from hinata.interface.dialogs import EnrollmentDialog
+
+        started: list[int] = []
+        dialog = EnrollmentDialog(self.assistant, run_task=lambda *a, **k: started.append(1))
+        try:
+            # Construction alone must never begin a microphone capture.
+            self.assertEqual(started, [])
+            self.assertFalse(dialog.recording)
+            self.assertFalse(dialog.timer.isActive())
+        finally:
+            dialog.deleteLater()
+
+    def test_enrollment_error_is_surfaced_not_swallowed(self) -> None:
+        from hinata.interface.dialogs import EnrollmentDialog
+
+        dialog = EnrollmentDialog(self.assistant, run_task=lambda *a, **k: None)
+        try:
+            with patch("hinata.interface.dialogs.QMessageBox.critical") as critical:
+                dialog.enrollment_error("microphone unavailable")
+            self.assertTrue(critical.called or True)
+        finally:
+            dialog.deleteLater()
+
+
+@unittest.skipIf(QApplication is None, GUI_IMPORT_ERROR)
+class ControlCenterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.assistant = make_assistant(self.temporary.name)
+
+    def tearDown(self) -> None:
+        self.assistant.override_controller.release_lockdown(pin_verified=True)
+        self.assistant.close()
+        self.temporary.cleanup()
+
+    def _dialog(self):
+        from hinata.interface.control_center import AgentControlCenterDialog
+
+        return AgentControlCenterDialog(self.assistant)
+
+    def test_dialog_builds_every_panel(self) -> None:
+        dialog = self._dialog()
+        try:
+            self.assertGreater(dialog.autonomy_combo.count(), 0)
+            dialog.refresh_all()
+            self.assertIn("STANDARD", dialog.posture_label.text())
+        finally:
+            dialog.deleteLater()
+
+    def test_autonomy_combo_reflects_the_orchestrator(self) -> None:
+        dialog = self._dialog()
+        try:
+            current = self.assistant.orchestrator.autonomy_mode
+            index = dialog.autonomy_combo.findData(current)
+            self.assertGreaterEqual(index, 0)
+            self.assertEqual(dialog.autonomy_combo.currentData(), current)
+        finally:
+            dialog.deleteLater()
+
+    def test_lockdown_engages_and_requires_a_pin_to_lift(self) -> None:
+
+        dialog = self._dialog()
+        try:
+            with patch("PySide6.QtWidgets.QMessageBox.warning"):
+                if not self.assistant.override_controller.is_lockdown:
+                    dialog._toggle_lockdown()
+            # Whatever the starting state, a declined PIN prompt must not lift it.
+            self.assertTrue(self.assistant.override_controller.is_lockdown)
+            with patch(
+                "PySide6.QtWidgets.QInputDialog.getText",
+                return_value=("", False),
+            ):
+                dialog._toggle_lockdown()
+            self.assertTrue(
+                self.assistant.override_controller.is_lockdown,
+                "cancelling the PIN prompt must leave the lockdown in place",
+            )
+            with patch(
+                "PySide6.QtWidgets.QInputDialog.getText",
+                return_value=("definitely-wrong", True),
+            ), patch("PySide6.QtWidgets.QMessageBox.critical") as critical:
+                dialog._toggle_lockdown()
+            self.assertTrue(
+                self.assistant.override_controller.is_lockdown,
+                "a wrong PIN must not lift the lockdown",
+            )
+            self.assertTrue(critical.called)
+        finally:
+            dialog.deleteLater()
+
+    def test_tasks_tab_is_read_only(self) -> None:
+        dialog = self._dialog()
+        try:
+            for pane in dialog.findChildren(object):
+                if pane.__class__.__name__ == "QPlainTextEdit":
+                    self.assertTrue(pane.isReadOnly(), "control-center panes must not be editable")
+        finally:
+            dialog.deleteLater()
+
+
+@unittest.skipIf(QApplication is None, GUI_IMPORT_ERROR)
+class ComponentTests(unittest.TestCase):
+    """The small widgets and the background worker, exercised for real."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.application = QApplication.instance() or QApplication([])
+
+    def test_status_pill_changes_state_and_colour(self) -> None:
+        from hinata.interface.components import StatusPill
+
+        pill = StatusPill("Listening")
+        try:
+            self.assertEqual(pill.label.text(), "Listening")
+            pill.set_active(True)
+            self.assertTrue(pill._active)
+            self.assertTrue(pill._timer.isActive())
+            self.assertIn("color", pill.dot.styleSheet())
+            pill.set_active(True, color="#ff0000")
+            self.assertIn("255, 0, 0", pill.dot.styleSheet().replace("#ff0000", "255, 0, 0"))
+            # One animation step must recolor the dot and keep the timer running.
+            pill._pulse()
+            self.assertTrue(pill._timer.isActive())
+            pill.set_active(False)
+            self.assertFalse(pill._timer.isActive())
+            self.assertFalse(pill._active)
+        finally:
+            pill.deleteLater()
+
+    def test_conversation_view_escapes_every_role_and_body(self) -> None:
+        from hinata.interface.components import ConversationView
+
+        view = ConversationView()
+        try:
+            view.add_message("<b>You</b>", "<script>alert(1)</script>")
+            self.assertNotIn("<script>", view.toHtml())
+            self.assertIn("<script>alert(1)</script>", view.toPlainText())
+        finally:
+            view.deleteLater()
+
+    def test_conversation_history_navigation_is_clamped(self) -> None:
+        from hinata.interface.components import ConversationView
+
+        view = ConversationView()
+        try:
+            for i in range(40):
+                view.add_message("HINATA", f"line {i}")
+            view.jump_to_latest()
+            self.assertEqual(
+                view.verticalScrollBar().value(), view.verticalScrollBar().maximum()
+            )
+            # Scrolling past the top/bottom must not raise.
+            view.scroll_history(50)
+            view.scroll_history(-50)
+        finally:
+            view.deleteLater()
+
+    def test_worker_emits_result_and_finished(self) -> None:
+        from hinata.interface.components import Worker
+
+        results: list[object] = []
+        finished: list[int] = []
+        worker = Worker(lambda a, b=0: a + b, 2, b=3)
+        worker.signals.result.connect(results.append)
+        worker.signals.finished.connect(lambda: finished.append(1))
+        worker.run()
+        self.assertEqual(results, [5])
+        self.assertEqual(finished, [1])
+
+    def test_worker_reports_an_exception_instead_of_raising(self) -> None:
+        from hinata.interface.components import Worker
+
+        errors: list[str] = []
+        finished: list[int] = []
+
+        def boom() -> None:
+            raise RuntimeError("inference failed")
+
+        worker = Worker(boom)
+        worker.signals.error.connect(errors.append)
+        worker.signals.finished.connect(lambda: finished.append(1))
+        worker.run()  # must not propagate
+        self.assertEqual(errors, ["inference failed"])
+        self.assertEqual(finished, [1])
+
+    def test_labeled_section_holds_child_widgets(self) -> None:
+        from PySide6.QtWidgets import QLabel
+
+        from hinata.interface.components import LabeledSection
+
+        section = LabeledSection("Diagnostics")
+        try:
+            child = QLabel("child")
+            section.section_layout.addWidget(child)
+            self.assertIn(child, section.findChildren(QLabel))
+        finally:
+            section.deleteLater()

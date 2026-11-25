@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from hinata.core.memory import Memory
+from hinata.core.memory import Memory, MemoryPolicyError
 from hinata.database.database import Database
 from hinata.security.authentication import Authentication
 from hinata.security.local_protection import (
@@ -70,6 +70,51 @@ class MemoryAndSecurityTests(unittest.TestCase):
         path = self.root / "profiles" / "owner.voice"
         write_private(path, payload)
         self.assertEqual(read_private(path), payload)
+
+
+class EpisodeEvidenceTests(unittest.TestCase):
+    """``evidence`` must reach storage: it used to be accepted and dropped."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.database = Database(Path(self.temporary.name) / "hinata.db")
+        self.memory = Memory(self.database)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_evidence_is_persisted_with_the_episode(self) -> None:
+        memory_id = self.memory.record_episode(
+            task_id="t1",
+            objective="backup created",
+            outcome="COMPLETED",
+            summary="archived Documents",
+            evidence="sha256:abc123 wrote 42 files",
+        )
+        row = self.database.fetch_one(
+            "SELECT content FROM memory_records WHERE memory_id = ?", (memory_id,)
+        )
+        self.assertIn("sha256:abc123", row["content"])
+        self.assertIn("archived Documents", row["content"])
+
+    def test_episode_without_evidence_is_unchanged(self) -> None:
+        memory_id = self.memory.record_episode(
+            task_id="t2", objective="noop", outcome="COMPLETED", summary="nothing"
+        )
+        row = self.database.fetch_one(
+            "SELECT content FROM memory_records WHERE memory_id = ?", (memory_id,)
+        )
+        self.assertNotIn("Evidence:", row["content"])
+
+    def test_secret_material_in_evidence_is_refused(self) -> None:
+        with self.assertRaises(MemoryPolicyError):
+            self.memory.record_episode(
+                task_id="t3",
+                objective="api call",
+                outcome="COMPLETED",
+                summary="called api",
+                evidence="Authorization: Bearer tok_secret_123456",
+            )
 
 
 if __name__ == "__main__":

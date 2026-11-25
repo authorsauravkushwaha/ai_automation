@@ -18,11 +18,65 @@ import time
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
-from pathlib import Path
 from typing import Any
 
 from hinata.automation.app_control import AutomationError
 from hinata.automation.web_automation import normalize_url
+
+
+def _narrow_html_to_hint(html: str, selector_hint: str) -> str:
+    """Best-effort narrowing for a CSS-ish hint such as ``div.cards`` or ``#main``.
+
+    Supported: ``tag``, ``.class``, ``#id``, ``tag.class``, ``tag#id`` and a
+    multi-step hint (the last step is used, e.g. ``table > tbody > tr``). Nested
+    same-name elements are balanced by counting open/close tags.
+
+    A hint never makes the result *smaller* than it should be: if the selector
+    does not match, the full document is returned unchanged so extraction still
+    has data to work with.
+    """
+    hint = selector_hint.strip()
+    if not hint:
+        return html
+    token = hint.split()[-1].split(">")[-1].strip()
+    parts = re.fullmatch(r"([a-zA-Z][\w-]*)?(?:\.([\w-]+))?(?:#([\w-]+))?", token)
+    if not parts:
+        return html
+    tag, cls, ident = parts.group(1) or "", parts.group(2) or "", parts.group(3) or ""
+    if not (tag or cls or ident):
+        return html
+
+    lookaheads = ""
+    if ident:
+        lookaheads += rf'(?=[^>]*\bid\s*=\s*["\']{re.escape(ident)}["\'])'
+    if cls:
+        lookaheads += (
+            rf'(?=[^>]*\bclass\s*=\s*["\'][^"\']*(?<![\w-]){re.escape(cls)}(?![\w-])[^"\']*["\'])'
+        )
+    name = re.escape(tag) if tag else r"[a-zA-Z][\w-]*"
+    match = re.search(rf"<({name})\b{lookaheads}[^>]*>", html, re.I)
+    if not match:
+        return html
+
+    element = match.group(1)
+    open_pat = re.compile(rf"<{re.escape(element)}\b[^>]*>", re.I)
+    close_pat = re.compile(rf"</{re.escape(element)}\s*>", re.I)
+    depth = 1
+    cursor = match.end()
+    while depth:
+        nxt_open = open_pat.search(html, cursor)
+        nxt_close = close_pat.search(html, cursor)
+        if nxt_close is None:
+            return html[match.end():]  # unbalanced markup: keep the remainder
+        if nxt_open is not None and nxt_open.start() < nxt_close.start():
+            depth += 1
+            cursor = nxt_open.end()
+            continue
+        depth -= 1
+        if depth == 0:
+            return html[match.end(): nxt_close.start()]
+        cursor = nxt_close.end()
+    return html[match.end():]
 
 
 class TableParser(HTMLParser):
@@ -30,6 +84,11 @@ class TableParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.tables: list[dict[str, Any]] = []
         self._cur_table: dict[str, Any] | None = None
+        # A page can contain arbitrarily many tables/rows and the download limit
+        # alone allowed a 5 MB page to build 20k+ rows in memory. Callers only
+        # ever report a handful, so stop collecting once that is exceeded.
+        self.max_tables = 10
+        self.max_rows = 500
         self._cur_row: list[str] | None = None
         self._in_th = False
         self._in_td = False
@@ -39,6 +98,9 @@ class TableParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         t = tag.lower()
         if t == "table":
+            if len(self.tables) >= self.max_tables:
+                self._cur_table = None  # already have enough; ignore the rest
+                return
             self._cur_table = {"headers": [], "rows": []}
             self.tables.append(self._cur_table)
             self._headers = []
@@ -56,15 +118,12 @@ class TableParser(HTMLParser):
         elif t == "tr" and self._cur_table is not None and self._cur_row is not None:
             text_row = [c.strip() for c in self._cur_row]
             if any(text_row):
-                if not self._cur_table["headers"] and all(self._in_th or h for h in text_row):
-                    # Check if previous row was headers via th flag — simplified: first non-empty row as header if next rows exist
-                    pass
-                # Heuristic: first row with th-like content becomes header
+                # Heuristic: the first non-empty row becomes the header row.
                 if not self._cur_table["headers"]:
                     # Look ahead: if we haven't set headers, treat first row as header if it looks header-ish
                     # We'll store first row as header if it contains typical header words or th was used
                     self._cur_table["headers"] = text_row
-                else:
+                elif len(self._cur_table["rows"]) < self.max_rows:
                     self._cur_table["rows"].append(text_row)
             self._cur_row = None
         elif t in {"th", "td"} and self._cur_row is not None:
@@ -94,10 +153,16 @@ class PriceParser(HTMLParser):
         # Price patterns: $12.99, ₹1,299, €49.99, 1,299.00 etc.
         for m in re.finditer(r"(?:₹|\$|€|£|¥)\s*[\d,]+(?:\.\d{1,2})?", t):
             self.prices.append(m.group(0).strip())
-        for m in re.finditer(r"\b\d[\d,]*\.\d{2}\b", t):
-            if m.group(0) not in self.prices:
-                # Avoid capturing random numbers — only if near currency context handled separately
-                pass
+        # A bare "49.99" is a price only when the text around it says so;
+        # otherwise ratings, sizes and timestamps all look like money. (This
+        # branch used to be an ``if`` whose body was just ``pass``, so prices
+        # written without a currency symbol were silently never captured.)
+        if re.search(r"(?i)\b(?:price|cost|total|now|only|from|mrp|was)\b|:", t):
+            self.prices.extend(
+                m.group(0)
+                for m in re.finditer(r"\b\d[\d,]*\.\d{2}\b", t)
+                if m.group(0) not in self.prices
+            )
         lower = t.lower()
         if any(w in lower for w in ["out of stock", "sold out", "currently unavailable"]):
             self.availability = "out_of_stock"
@@ -125,7 +190,9 @@ class SmartScraper:
         html = self.fetch(url)
         parser = TableParser()
         parser.feed(html)
-        tables = parser.tables[:max_tables]
+        # A negative count used to slice from the end (4 tables -> 3 "shown");
+        # treat any non-positive request as "none".
+        tables = parser.tables[:max(0, int(max_tables))]
         return {
             "url": url,
             "table_count": len(parser.tables),
@@ -136,8 +203,11 @@ class SmartScraper:
     def scrape_lists(self, url: str, *, selector_hint: str = "") -> dict[str, Any]:
         """Extract list-like content: <li>, cards, articles."""
         html = self.fetch(url)
+        if selector_hint:
+            # A selector hint narrows the region we scan; it never replaces the
+            # real extraction below, so hinted and unhinted calls agree.
+            html = _narrow_html_to_hint(html, selector_hint)
         # Simple heuristic: extract all <li> text, <article> titles, heading lists
-        items: list[str] = []
         # li parser
         class ListParser(HTMLParser):
             def __init__(self) -> None:

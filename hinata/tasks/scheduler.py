@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import uuid
@@ -10,6 +11,8 @@ from collections.abc import Callable
 from typing import Any
 
 from hinata.database.database import Database
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TaskScheduler:
@@ -104,21 +107,39 @@ class TaskScheduler:
         dispatched: list[dict[str, Any]] = []
         for row in due:
             sched_id = str(row["schedule_id"])
-            if row["expires_epoch"] is not None and now > float(row["expires_epoch"]):
+            if row["expires_epoch"] is not None and now >= float(row["expires_epoch"]):
                 self.database.execute(
                     "UPDATE scheduled_tasks SET enabled = 0, last_status = 'expired', updated_at = datetime('now') WHERE schedule_id = ?",
                     (sched_id,),
                 )
                 continue
             if row["requires_online"] and not online_mode_enabled:
+                # A task that needs the network cannot run while offline, but it
+                # must not keep its place at the head of the due queue: the query
+                # is LIMIT 10 ordered by next_run_epoch, so a task parked in the
+                # past would be re-selected on every tick (forever) and could
+                # crowd out tasks that *can* run. Push it forward by one interval
+                # so the queue keeps moving; it is still due, just not first.
+                resume_at = now + max(1, int(row["interval_seconds"]) if row["interval_seconds"] else 60)
                 self.database.execute(
-                    "UPDATE scheduled_tasks SET last_status = 'blocked_offline', updated_at = datetime('now') WHERE schedule_id = ?",
-                    (sched_id,),
+                    "UPDATE scheduled_tasks SET last_status = 'blocked_offline', "
+                    "next_run_epoch = ?, updated_at = datetime('now') WHERE schedule_id = ?",
+                    (resume_at, sched_id),
                 )
-                dispatched.append({"schedule_id": sched_id, "status": "blocked_offline"})
+                dispatched.append(
+                    {"schedule_id": sched_id, "status": "blocked_offline", "retry_at_epoch": resume_at}
+                )
                 continue
 
-            outcome = runner(row)
+            try:
+                outcome = runner(row)
+            except Exception as exc:
+                # A single failing task must not stop the queue. Record the
+                # failure, advance the schedule like any other attempt, and keep
+                # going: otherwise the row stays due, re-raises on every tick,
+                # and every task behind it starves.
+                LOGGER.warning("Scheduled task %s failed: %s", sched_id, exc)
+                outcome = {"status": f"error: {type(exc).__name__}"[:60]}
             new_count = int(row["run_count"]) + 1
             still_enabled = int(row["schedule_kind"] == "interval" and new_count < int(row["max_runs"]))
             next_run = now + max(1, int(row["interval_seconds"])) if still_enabled else float(row["next_run_epoch"])

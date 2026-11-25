@@ -68,6 +68,8 @@ class OfflineGuard:
     _active_guard: OfflineGuard | None = None
     _orig_create_connection = socket.create_connection
     _orig_socket_connect = socket.socket.connect
+    _orig_getaddrinfo = socket.getaddrinfo
+    _orig_gethostbyname = socket.gethostbyname
 
     def __init__(
         self,
@@ -136,7 +138,14 @@ class OfflineGuard:
             }
 
     def install_socket_guard(self) -> None:
-        """Install process-wide socket interception blocking non-loopback connections."""
+        """Install process-wide DNS + socket interception blocking non-loopback egress.
+
+        Blocking only ``connect``/``create_connection`` still lets a name lookup
+        leave the machine: resolution itself is an outbound DNS query, which both
+        leaks the requested domain and pollutes caches. In strict offline mode
+        ``getaddrinfo``/``gethostbyname`` are therefore refused for non-loopback
+        names as well (loopback names still resolve so ``localhost`` works).
+        """
         with OfflineGuard._patch_lock:
             OfflineGuard._active_guard = self
 
@@ -157,14 +166,56 @@ class OfflineGuard:
                     guard.check_host(str(address[0]), int(address[1]), purpose="socket.connect")
                 return OfflineGuard._orig_socket_connect(sock, address)
 
+            def _guarded_getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+                guard = OfflineGuard._active_guard
+                if guard is not None and host is not None and not guard._resolution_allowed(str(host)):
+                    name = str(host)
+                    with guard._events_lock:
+                        guard._blocked_attempts.append(
+                            {"host": name.strip().lower(), "port": None, "purpose": "getaddrinfo"}
+                        )
+                    raise OfflinePolicyError(
+                        f"DNS resolution of '{name}' blocked by HINATA {guard.mode} policy"
+                    )
+                return OfflineGuard._orig_getaddrinfo(host, *args, **kwargs)
+
+            def _guarded_gethostbyname(host: Any) -> str:
+                guard = OfflineGuard._active_guard
+                if guard is not None and not guard._resolution_allowed(str(host)):
+                    with guard._events_lock:
+                        guard._blocked_attempts.append(
+                            {"host": str(host).strip().lower(), "port": None, "purpose": "gethostbyname"}
+                        )
+                    raise OfflinePolicyError(
+                        f"DNS resolution of '{host}' blocked by HINATA {guard.mode} policy"
+                    )
+                return OfflineGuard._orig_gethostbyname(host)
+
             socket.create_connection = _guarded_create_connection  # type: ignore[assignment]
             socket.socket.connect = _guarded_connect  # type: ignore[assignment,method-assign]
+            socket.getaddrinfo = _guarded_getaddrinfo  # type: ignore[assignment]
+            socket.gethostbyname = _guarded_gethostbyname  # type: ignore[assignment]
+
+    def _resolution_allowed(self, host: str) -> bool:
+        """Allow loopback/IP-literal lookups; forbid resolving public names offline."""
+        cleaned = host.strip().strip("[]").lower()
+        if not cleaned:
+            return True  # getaddrinfo(None) = local addresses
+        if is_loopback_host(cleaned):
+            return True
+        try:
+            ipaddress.ip_address(cleaned)
+            return True  # numeric address: no DNS query leaves the machine
+        except ValueError:
+            return False
 
     def uninstall_socket_guard(self) -> None:
         with OfflineGuard._patch_lock:
             if OfflineGuard._active_guard is self:
                 socket.create_connection = OfflineGuard._orig_create_connection  # type: ignore[assignment]
                 socket.socket.connect = OfflineGuard._orig_socket_connect  # type: ignore[assignment,method-assign]
+                socket.getaddrinfo = OfflineGuard._orig_getaddrinfo  # type: ignore[assignment]
+                socket.gethostbyname = OfflineGuard._orig_gethostbyname  # type: ignore[assignment]
                 OfflineGuard._active_guard = None
 
     @contextmanager

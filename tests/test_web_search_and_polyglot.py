@@ -10,12 +10,15 @@ from unittest.mock import patch
 from hinata.agents.coder import PolyglotCoder, resolve_language
 from hinata.automation.app_control import AppControl, AutomationError
 from hinata.automation.file_manager import FileManager
+from hinata.automation.research_synthesizer import ResearchSynthesizer
+from hinata.automation.smart_scraper import PriceParser, SmartScraper, TableParser
 from hinata.automation.web_search import (
     WebSearchEngine,
+    _DuckDuckGoHTMLParser,
     extract_core_search_query,
     is_safe_public_url,
 )
-from hinata.config import SecurityConfig
+from hinata.config import HinataConfig, SecurityConfig
 from hinata.core.intent_parser import IntentParser
 from hinata.core.model_reply import plain_text_reply
 from hinata.security.action_validator import ActionValidator
@@ -169,6 +172,111 @@ class WebSearchAndPolyglotTests(unittest.TestCase):
     def test_static_app_catalog_lists_configured_apps_without_platform_launch(self):
         control = AppControl({}, discover_installed=False)
         self.assertEqual(control.list_installed_apps()["count"], 0)
+
+
+class HostilePageParsingTests(unittest.TestCase):
+    """Parsers must stay bounded and must not invent results on bad markup."""
+
+    def test_ddg_parser_caps_collected_results(self):
+        page = "<a class='result__a' href='https://x.com/'>t</a>" * 5000
+        parser = _DuckDuckGoHTMLParser()
+        parser.feed(page)
+        parser.close()
+        self.assertEqual(len(parser.results), _DuckDuckGoHTMLParser.MAX_RESULTS)
+
+    def test_ddg_parser_rejects_unsafe_schemes(self):
+        for href in (
+            "javascript:alert(1)",
+            "data:text/html,<script>",
+            "http://127.0.0.1/admin",
+            "//duckduckgo.com/l/?uddg=javascript%3Aalert(1)",
+        ):
+            parser = _DuckDuckGoHTMLParser()
+            parser.feed(f"<a class='result__a' href='{href}'>title</a>")
+            parser.close()
+            self.assertEqual(parser.results, [], href)
+
+    def test_table_parser_is_bounded_but_keeps_normal_tables(self):
+        rows = "".join(f"<tr><td>r{i}</td><td>{'x' * 200}</td></tr>" for i in range(5000))
+        parser = TableParser()
+        parser.feed(f"<table><tr><th>a</th><th>b</th></tr>{rows}</table>")
+        parser.close()
+        self.assertEqual(len(parser.tables), 1)
+        self.assertEqual(len(parser.tables[0]["rows"]), parser.max_rows)
+        self.assertEqual(parser.tables[0]["headers"], ["a", "b"])
+
+    def test_price_parser_reads_symbol_and_labelled_bare_amounts(self):
+        parser = PriceParser()
+        parser.feed("<span>$49.99</span><span>Price: 1,299.00 USD</span>")
+        parser.close()
+        self.assertIn("$49.99", parser.prices)
+        self.assertIn("1,299.00", parser.prices)
+
+    def test_price_parser_ignores_unlabelled_numbers(self):
+        parser = PriceParser()
+        parser.feed("<span>4.5 stars from 120 reviews</span><span>Version 2.1.30</span>")
+        parser.close()
+        self.assertEqual(parser.prices, [])
+
+
+class ResearchAndScrapeBoundsTests(unittest.TestCase):
+    def test_scrape_tables_treats_non_positive_count_as_none(self) -> None:
+        class _Fixed(SmartScraper):
+            def fetch(self, url: str, **kwargs: object) -> str:  # noqa: D401 - test stub
+                return "<table><tr><th>a</th></tr><tr><td>1</td></tr></table>" * 4
+
+        result = _Fixed().scrape_tables("https://example.com", max_tables=-1)
+        self.assertEqual(result["table_count"], 4)
+        self.assertEqual(result["tables"], [])
+
+    def test_deep_research_clamps_counts_at_the_library_boundary(self) -> None:
+        class _StubSearch:
+            def search(self, query: str, max_results: int = 5) -> dict:
+                return {
+                    "results": [
+                        {"title": f"t{i}", "url": f"https://e.com/{i}/{query}", "snippet": "s"}
+                        for i in range(8)
+                    ]
+                }
+
+            def fetch_webpage(self, url: str, max_chars: int = 4000) -> dict:
+                return {"content": "c"}
+
+        research = ResearchSynthesizer(web_search=_StubSearch(), llm=None)
+        # A negative count used to slice from the end and return results anyway.
+        self.assertEqual(research.deep_research("x", max_sources=-5)["results_count"], 1)
+        self.assertLessEqual(research.deep_research("x", max_sources=99)["results_count"], 20)
+
+
+class ReadTextBoundTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name) / "root"
+        root.mkdir()
+        config = HinataConfig(
+            data_dir=Path(self.temporary.name) / "data",
+            security=SecurityConfig(allowed_roots=[root]),
+        )
+        config.validate()
+        self.root = root
+        self.files = FileManager(config.security)
+        (root / "a.txt").write_text("0123456789" * 10, encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_negative_max_chars_returns_nothing_not_the_tail(self) -> None:
+        # max_chars=-1 used to return everything except the last character.
+        self.assertEqual(self.files.read_text("a.txt", max_chars=-1)["content"], "")
+        self.assertEqual(len(self.files.read_text("a.txt", max_chars=5)["content"]), 5)
+
+    def test_non_positive_search_limit_returns_no_matches(self) -> None:
+        # The limit was checked after appending, so 0 and negatives returned 1.
+        for index in range(4):
+            (self.root / f"f{index}.txt").write_text("x", encoding="utf-8")
+        self.assertEqual(len(self.files.search("f", max_results=2)["matches"]), 2)
+        self.assertEqual(self.files.search("f", max_results=0)["matches"], [])
+        self.assertEqual(self.files.search("f", max_results=-3)["matches"], [])
 
 
 if __name__ == "__main__":

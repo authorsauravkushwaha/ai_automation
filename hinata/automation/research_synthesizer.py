@@ -32,6 +32,12 @@ class ResearchSynthesizer:
         ]
 
     def deep_research(self, topic: str, *, max_results_per_query: int = 5, max_sources: int = 12) -> dict[str, Any]:
+        # Clamp here as well as in the action schema: direct library callers
+        # (and the intra-process tool path) bypass validation, and a negative
+        # max_sources silently becomes a negative slice — ``results[:-5]``
+        # keeps all but the last five instead of refusing the request.
+        max_results_per_query = max(1, min(int(max_results_per_query), 10))
+        max_sources = max(1, min(int(max_sources), 20))
         queries = self._make_queries(topic)
         all_results: list[dict[str, Any]] = []
         errors: dict[str, str] = {}
@@ -93,8 +99,8 @@ class ResearchSynthesizer:
             try:
                 prompt = (
                     f"Compare '{topic_a}' vs '{topic_b}' using the evidence below. Be fair, cite sources like [A1], [B1].\n\n"
-                    f"A sources:\n" + "\n".join(f"[A{i}] {r['title']} — {r['snippet'][:300]}" for i, r in enumerate(a["raw_results"][:6], 1)) +
-                    f"\n\nB sources:\n" + "\n".join(f"[B{i}] {r['title']} — {r['snippet'][:300]}" for i, r in enumerate(b["raw_results"][:6], 1))
+                    "A sources:\n" + "\n".join(f"[A{i}] {r['title']} — {r['snippet'][:300]}" for i, r in enumerate(a["raw_results"][:6], 1)) +
+                    "\n\nB sources:\n" + "\n".join(f"[B{i}] {r['title']} — {r['snippet'][:300]}" for i, r in enumerate(b["raw_results"][:6], 1))
                 )
                 comparison = self.llm.chat([{"role": "user", "content": prompt}], "You compare two topics fairly with citations.").strip()
             except Exception:

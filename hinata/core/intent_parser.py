@@ -243,6 +243,30 @@ class IntentParser:
 
         # ── HINATA Web Autofill & Identity Vault (high priority — before generic open) ──
         #   open website / go to <url>
+        result = self._parse_web(stripped, text)
+        if result is not None:
+            return result
+        result = self._parse_scraper(stripped, text)
+        if result is not None:
+            return result
+        result = self._parse_files(stripped, text)
+        if result is not None:
+            return result
+        result = self._parse_comms(stripped, text)
+        if result is not None:
+            return result
+        result = self._parse_system(stripped, text)
+        if result is not None:
+            return result
+        result = self._parse_research(stripped, text)
+        if result is not None:
+            return result
+        result = self._parse_dev(stripped, text)
+        if result is not None:
+            return result
+        return None
+
+    def _parse_web(self, stripped: str, text: str) -> ActionRequest | None:
         match = re.fullmatch(r"(?:please\s+)?(?:open|go\s+to|launch|visit)\s+(?:website\s+)?(?:https?://)?(\S+\.[^\s]+)(?:\s+in\s+(\w+)(?:\s+browser)?)?", stripped, re.I)
         if match:
             raw_url = match.group(1).strip()
@@ -331,8 +355,9 @@ class IntentParser:
             if not raw_url.lower().startswith('http'):
                 raw_url = 'https://' + raw_url
             return self._action("web_autofill", {"url": raw_url, "submit": True}, text)
+        return None
 
-        # ── SUPER POWERS — Smart Scraper
+    def _parse_scraper(self, stripped: str, text: str) -> ActionRequest | None:
         match = re.fullmatch(r"scrape\s+tables?\s+(?:from\s+)?(\S+)", stripped, re.I)
         if match:
             raw = match.group(1).strip()
@@ -366,7 +391,9 @@ class IntentParser:
             if not raw.lower().startswith('http'):
                 raw = 'https://' + raw
             return self._action("summarize_url", {"url": raw}, text)
-        # ── File Wizard
+        return None
+
+    def _parse_files(self, stripped: str, text: str) -> ActionRequest | None:
         match = re.fullmatch(r"analyze\s+storage(?:\s+(?:for|in)\s+(.+))?", stripped, re.I)
         if match:
             args2: dict[str, object] = {}
@@ -400,7 +427,9 @@ class IntentParser:
         if match:
             args2 = {"path": match.group(1).strip()} if match.group(1) else {}
             return self._action("quick_cleanup", args2, text)
-        # ── Communication
+        return None
+
+    def _parse_comms(self, stripped: str, text: str) -> ActionRequest | None:
         match = re.fullmatch(r"draft\s+email\s+to\s+(\S+)(?:\s+subject\s+(.+?))?(?:\s+using\s+(\w+))?\s*$", stripped, re.I)
         if match:
             args2 = {"to": match.group(1).strip()}
@@ -430,7 +459,9 @@ class IntentParser:
         match = re.fullmatch(r"broadcast\s+(.+)", stripped, re.I)
         if match:
             return self._action("broadcast_message", {"message": match.group(1).strip()}, text)
-        # ── System
+        return None
+
+    def _parse_system(self, stripped: str, text: str) -> ActionRequest | None:
         match = re.fullmatch(r"(?:health\s+check|system\s+health|check\s+health)", stripped, re.I)
         if match:
             return self._action("health_check", {}, text)
@@ -443,7 +474,9 @@ class IntentParser:
         match = re.fullmatch(r"search\s+process(?:es)?\s+(?:for\s+)?(.+)", stripped, re.I)
         if match:
             return self._action("process_search", {"name": match.group(1).strip()}, text)
-        # ── Research
+        return None
+
+    def _parse_research(self, stripped: str, text: str) -> ActionRequest | None:
         match = re.fullmatch(r"deep\s+research(?:\s+on)?\s+(.+)", stripped, re.I)
         if match:
             return self._action("deep_research", {"topic": match.group(1).strip()}, text)
@@ -455,7 +488,9 @@ class IntentParser:
         match = re.fullmatch(r"compare\s+(.+?)\s+(?:vs|versus|against)\s+(.+)", stripped, re.I)
         if match:
             return self._action("compare_topics", {"topic_a": match.group(1).strip(), "topic_b": match.group(2).strip()}, text)
-        # ── Dev
+        return None
+
+    def _parse_dev(self, stripped: str, text: str) -> ActionRequest | None:
         match = re.fullmatch(r"git\s+status(?:\s+(.+))?", stripped, re.I)
         if match:
             args2 = {}
@@ -496,6 +531,17 @@ class IntentParser:
             return self._action("dev_run_tests", args2, text)
 
         patterns: list[tuple[str, str, tuple[str, ...]]] = [
+            # --- two-path file operations. These are listed first and are far
+            # more specific than the generic "open <app>" rule below, which would
+            # otherwise swallow ("copy X to Y" never reached copy_file at all).
+            (r"^(?:copy|duplicate)(?:\s+the)?(?:\s+file)?\s+(.+?)\s+(?:to|into)\s+(.+)$", "copy_file", ("source", "destination")),
+            (r"^(?:move|rename)(?:\s+the)?(?:\s+file)?\s+(.+?)\s+(?:to|into|as)\s+(.+)$", "move_file", ("source", "destination")),
+            (r"^(?:archive|zip|compress)(?:\s+the)?(?:\s+folder)?\s+(.+?)\s+(?:to|into|as)\s+(.+)$", "archive_files", ("source", "archive_path")),
+            (r"^compare(?:\s+the)?(?:\s+files?)?\s+(.+?)\s+(?:with|and|to)\s+(.+)$", "compare_files", ("first", "second")),
+            # --- write a text file: "write <text> to <path>" / "save <text> as <path>"
+            (r"^(?:write|save)\s+(?:a\s+note\s+)?(?:saying\s+)?(.+?)\s+(?:to|into|as)\s+(\S+\.[\w]+)$", "write_text_file", ("content", "path")),
+            # --- destructive, but the guard/confirmation tier handles that
+            (r"^(?:delete|remove|trash)(?:\s+the)?(?:\s+file)?\s+(.+)$", "quarantine_delete_file", ("path",)),
             (r"^(?:open|launch|start)\s+(.+)$", "open_application", ("name",)),
             (r"^(?:close|exit|quit)\s+(.+)$", "close_application", ("name",)),
             (r"^(?:open|show)(?:\s+the)?\s+folder\s+(.+)$", "open_folder", ("path",)),
@@ -505,7 +551,12 @@ class IntentParser:
             (r"^type\s+(.+)$", "type_text", ("text",)),
         ]
         # More specific path commands must run before generic open application.
-        patterns.sort(key=lambda item: 0 if item[1] in {"open_folder", "open_file", "create_folder", "read_text_file", "type_text"} else 1)
+        _PATH_TOOLS = {
+            "open_folder", "open_file", "create_folder", "read_text_file", "type_text",
+            "copy_file", "move_file", "archive_files", "compare_files", "write_text_file",
+            "quarantine_delete_file",
+        }
+        patterns.sort(key=lambda item: 0 if item[1] in _PATH_TOOLS else 1)
         for pattern, tool, keys in patterns:
             match = re.fullmatch(pattern, stripped, flags=re.IGNORECASE)
             if match:
@@ -545,6 +596,7 @@ class IntentParser:
         match = re.fullmatch(r"(?:please\s+)?(?:search(?:\s+for)?|web\s+search(?:\s+for)?)\s+(.+)", stripped, re.I)
         if match:
             return self._action("web_search", {"query": match.group(1).strip()}, text)
+        return None
         return None
 
     def parse_multitask(self, text: str) -> list[str]:

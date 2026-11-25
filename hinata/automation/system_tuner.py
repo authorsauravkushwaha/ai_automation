@@ -5,9 +5,7 @@ All operations are local, bounded, and permission-gated.
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -62,22 +60,46 @@ class SystemTuner:
         return {"status": status, "issues": issues, "ok": ok, "snapshot": sys_data}
 
     def network_diag(self) -> dict[str, Any]:
+        """Probe connectivity, starting with loopback and only then the internet.
+
+        Ordering matters: under ``strict_offline`` the loopback probe still
+        answers, and every external probe is *attempted* through the same socket
+        layer the rest of the app uses, so the offline guard records and blocks
+        it rather than this diagnostic silently bypassing the policy.
+        """
         checks: list[dict[str, Any]] = []
-        # DNS + internet via ping / curl fallback using stdlib
+        local = self._probe_connection("127.0.0.1", 1)
+        checks.append(local)
+        for host, port in (("1.1.1.1", 80), ("8.8.8.8", 80), ("example.com", 80)):
+            checks.append(self._probe_connection(host, port))
+        online = any(c.get("ok") for c in checks if c["host"] != "127.0.0.1")
+        loopback_ok = bool(checks[0].get("ok"))
+        return {
+            "online": online,
+            "loopback": loopback_ok,
+            "checks": checks,
+            "note": (
+                "Loopback is always checked first. External probes are blocked by "
+                "strict_offline / the online-mode allowlist, so 'online: false' can "
+                "mean 'policy blocked' rather than 'no network'."
+            ),
+        }
+
+    @staticmethod
+    def _probe_connection(host: str, port: int) -> dict[str, Any]:
         import socket
-        for host in ["8.8.8.8", "1.1.1.1", "google.com"]:
-            try:
-                socket.gethostbyname(host) if "." not in host or not host[0].isdigit() else None
-            except Exception:
-                pass
-            try:
-                start = time.time()
-                socket.create_connection((host if host[0].isdigit() else socket.gethostbyname(host), 80), timeout=3).close()
-                checks.append({"host": host, "ok": True, "ms": round((time.time() - start) * 1000, 1)})
-            except Exception as exc:
-                checks.append({"host": host, "ok": False, "error": str(exc)[:120]})
-        online = any(c.get("ok") for c in checks)
-        return {"online": online, "checks": checks, "note": "Loopback always works; internet depends on host policy."}
+
+        target: str
+        try:
+            target = host if host[0].isdigit() else socket.gethostbyname(host)
+        except OSError as exc:
+            return {"host": host, "ok": False, "error": f"dns: {exc}"[:120]}
+        try:
+            start = time.time()
+            socket.create_connection((target, port), timeout=2.0).close()
+            return {"host": host, "ok": True, "ms": round((time.time() - start) * 1000, 1)}
+        except OSError as exc:
+            return {"host": host, "ok": False, "error": str(exc)[:120]}
 
     def backup_create(self, source: str, dest_dir: str, *, max_age_days: int = 30) -> dict[str, Any]:
         if not self.files:
@@ -87,8 +109,18 @@ class SystemTuner:
         dst_root.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         dst = dst_root / f"backup_{src.name}_{stamp}.zip"
+        # The stamp only has second resolution, so two backups of the same
+        # folder within one second (a scheduled backup plus a user asking for
+        # one, or a retry) collided and the second failed outright. Pick the
+        # next free suffix instead of refusing to back up.
         if dst.exists():
-            raise AutomationError(f"Backup dest exists: {dst}")
+            for index in range(2, 1000):
+                candidate = dst_root / f"backup_{src.name}_{stamp}_{index}.zip"
+                if not candidate.exists():
+                    dst = candidate
+                    break
+            else:
+                raise AutomationError(f"Backup dest exists and no free name was found: {dst}")
         # Use zipfile
         import zipfile
         count = 0
@@ -99,11 +131,38 @@ class SystemTuner:
                 count = 1
                 total = src.stat().st_size
             else:
-                for dirpath, _, filenames in os.walk(src):
+                # Prune the walk so the archive never contains itself: if the
+                # destination sits inside the source (the common "back up into
+                # Documents/Backups" case), every run would otherwise nest the
+                # previous backups inside the new one, growing without bound.
+                src_resolved = src.resolve()
+                dst_resolved = dst_root.resolve()
+                excluded: Path | None = None
+                try:
+                    if dst_resolved == src_resolved or dst_resolved.is_relative_to(src_resolved):
+                        excluded = dst_resolved
+                except (OSError, ValueError):
+                    excluded = None
+                dst_self = dst.resolve()
+                for dirpath, dirnames, filenames in os.walk(src):
+                    if excluded is not None:
+                        dirnames[:] = [
+                            d for d in dirnames if (Path(dirpath) / d).resolve() != excluded
+                        ]
                     for fn in filenames:
                         if fn.startswith("."):
                             continue
                         fp = Path(dirpath) / fn
+                        # The archive being written now lives inside the walk
+                        # whenever the destination is the source (or inside it):
+                        # excluding only the destination *directory* still let
+                        # ``zf.write`` add the partially-written zip to itself,
+                        # so each run nested the previous backups and grew
+                        # without bound. Skip the live archive by name.
+                        if fp.resolve() == dst_self:
+                            continue
+                        if fp.parent.resolve() == dst_root.resolve() and fp.name.startswith(f"backup_{src.name}_"):
+                            continue  # an older backup already stored here
                         if fp.is_symlink():
                             continue
                         try:
@@ -127,7 +186,7 @@ class SystemTuner:
                 pass
         return {"source": str(src), "archive": str(dst), "files": count, "bytes": total, "pruned_old": pruned}
 
-    def quick_cleanup(self, path: str = "", *, dry_run: bool = True) -> dict[str, Any]:
+    def quick_cleanup(self, path: str = "", *, dry_run: bool = True, min_age_days: int = 1) -> dict[str, Any]:
         if not self.files:
             raise AutomationError("File manager needed")
         if path.strip():
@@ -136,7 +195,10 @@ class SystemTuner:
             root = next((r for r in self.files.roots if r.exists()), self.files.roots[0] if self.files.roots else Path.cwd())
         if not root.is_dir():
             raise AutomationError(f"Not a directory: {root}")
-        # Find empty folders + tmp/log/bak files
+        # Find empty folders + tmp/log/bak files.
+        # ``min_age_days`` protects files still in use: a log written seconds ago
+        # (or a download in progress) must not be swept up by a "cleanup".
+        cutoff = time.time() - max(0, min_age_days) * 86400
         empty_dirs: list[str] = []
         temp_files: list[dict[str, Any]] = []
         for dirpath, dirnames, filenames in os.walk(root):
@@ -144,12 +206,21 @@ class SystemTuner:
                 empty_dirs.append(dirpath)
             for fn in filenames:
                 low = fn.lower()
-                if low.endswith((".tmp", ".temp", ".bak", ".cache", ".log")) or fn.startswith("~"):
-                    fp = Path(dirpath) / fn
-                    try:
-                        temp_files.append({"path": str(fp), "bytes": fp.stat().st_size})
-                    except OSError:
-                        pass
+                if not (low.endswith((".tmp", ".temp", ".bak", ".cache", ".log")) or fn.startswith("~")):
+                    continue
+                fp = Path(dirpath) / fn
+                try:
+                    if fp.is_symlink():
+                        continue  # never delete through a link into another folder
+                    stat = fp.stat()
+                    if stat.st_mtime >= cutoff:
+                        continue  # too recent: possibly still being written
+                    temp_files.append(
+                        {"path": str(fp), "bytes": stat.st_size,
+                         "age_days": round((time.time() - stat.st_mtime) / 86400, 1)}
+                    )
+                except OSError:
+                    pass
         total_bytes = sum(x["bytes"] for x in temp_files)
         if not dry_run:
             for d in empty_dirs:
@@ -177,7 +248,6 @@ class SystemTuner:
         if not name or len(name) < 2:
             raise AutomationError("Process name must be at least 2 chars")
         # Use ps/tasklist via DesktopCockpit logic inline for portability
-        import subprocess, os
         procs: list[dict[str, Any]] = []
         if os.name == "nt":
             try:

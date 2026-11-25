@@ -11,7 +11,14 @@ from pathlib import Path
 _ARROW_IMAGE = (Path(__file__).resolve().parent / "assets" / "down-chevron.png").as_posix()
 STYLE_SHEET = """
 /* Base stays transparent so SceneCanvas is visible behind every child. */
-QWidget { color: #dce7f2; font-family: "Segoe UI"; font-size: 13px; }
+/* Segoe UI first (native Windows look), then the closest well-hinted
+   families on Linux/macOS. Without the chain Qt silently picks a
+   proportional default whose metrics break the header spacing. */
+QWidget {
+    color: #dce7f2;
+    font-family: "Segoe UI", "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
+    font-size: 13px;
+}
 QWidget#canvas { background: transparent; }
 QMainWindow { background: #050810; }
 QDialog {

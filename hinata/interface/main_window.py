@@ -7,7 +7,7 @@ import re
 import sys
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCloseEvent
@@ -45,7 +45,112 @@ class SpeechSignals(QObject):
     state = Signal(str, object)
 
 
-class MainWindow(QMainWindow):
+class _MainWindowSlices(QMainWindow):
+    """Declared surface shared by every slice of :class:`MainWindow`.
+
+    The slices are mixed into one window, so each already has the others'
+    methods and the window's attributes at runtime. Declaring that shared
+    surface once here (never resolved at runtime) keeps every slice
+    type-checkable on its own without three copies of the same contract.
+    """
+
+    if TYPE_CHECKING:  # the composer supplies all of this at runtime
+        def _build_conversation(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _build_footer(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _build_header(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _build_indicators(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _build_input_row(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _build_tools(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _build_ui(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _end_voice_session(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _finish_utterance(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _handle_confirm_action(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _handle_pin(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _handle_plan_confirmation(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _handle_verification(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _load_ui_settings(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _navigate_chat(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _pause_voice_capture(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _repolish(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _send_text(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _set_browser_retry(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _update_busy_state(self, *args: Any, **kwargs: Any) -> Any: ...
+        def _voice_tick(self, *args: Any, **kwargs: Any) -> Any: ...
+        def apply_connection_state(self, *args: Any, **kwargs: Any) -> Any: ...
+        def change_personality_mode(self, *args: Any, **kwargs: Any) -> Any: ...
+        def closeEvent(self, *args: Any, **kwargs: Any) -> Any: ...
+        def connect_ollama(self, *args: Any, **kwargs: Any) -> Any: ...
+        def connection_error(self, *args: Any, **kwargs: Any) -> Any: ...
+        def emergency_stop(self, *args: Any, **kwargs: Any) -> Any: ...
+        def finish_task(self, *args: Any, **kwargs: Any) -> Any: ...
+        def handle_response(self, *args: Any, **kwargs: Any) -> Any: ...
+        def offer_model_download(self, *args: Any, **kwargs: Any) -> Any: ...
+        def open_control_center(self, *args: Any, **kwargs: Any) -> Any: ...
+        def open_enrollment(self, *args: Any, **kwargs: Any) -> Any: ...
+        def open_memory(self, *args: Any, **kwargs: Any) -> Any: ...
+        def open_settings(self, *args: Any, **kwargs: Any) -> Any: ...
+        def open_status(self, *args: Any, **kwargs: Any) -> Any: ...
+        def process_voice_result(self, *args: Any, **kwargs: Any) -> Any: ...
+        def quick_lockdown(self, *args: Any, **kwargs: Any) -> Any: ...
+        def reconnect_ollama(self, *args: Any, **kwargs: Any) -> Any: ...
+        def retry_in_browser(self, *args: Any, **kwargs: Any) -> Any: ...
+        def run_task(self, *args: Any, **kwargs: Any) -> Any: ...
+        def show_status_dialog(self, *args: Any, **kwargs: Any) -> Any: ...
+        def show_task_error(self, *args: Any, **kwargs: Any) -> Any: ...
+        def speak_text(self, *args: Any, **kwargs: Any) -> Any: ...
+        def submit_text(self, *args: Any, **kwargs: Any) -> Any: ...
+        def toggle_microphone(self, *args: Any, **kwargs: Any) -> Any: ...
+        def update_speech_state(self, *args: Any, **kwargs: Any) -> Any: ...
+        def voice_error(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        _browser_retry_query: str | None
+        _stop_generation: int
+        _voice_capturing: bool
+        _voice_resume_at: float
+        _voice_session: bool
+        _voice_timer: QTimer
+        activity_label: QLabel
+        assistant: HinataAssistant
+        browser_retry_button: QPushButton
+        connection_badge: QLabel
+        conversation: ConversationView
+        input: QLineEdit
+        last_response: AssistantResponse | None
+        last_response_text: str
+        listening_pill: StatusPill
+        microphone_button: QPushButton
+        mode_combo: QComboBox
+        pending_tasks: int
+        processing_pill: StatusPill
+        reconnect_button: QPushButton
+        send_button: QPushButton
+        speak_responses: bool
+        speaking_pill: StatusPill
+        speech_signals: SpeechSignals
+        threadpool: QThreadPool
+        workers: set[Worker]
+
+
+class WindowChromeMixin(_MainWindowSlices):
+    """One cohesive slice of :class:`MainWindow`.
+
+    The window composes these slices; they never instantiate alone.
+    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     def __init__(self, assistant: HinataAssistant) -> None:
         super().__init__()
         self.assistant = assistant
@@ -70,6 +175,11 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(720, 560)
         self.resize(920, 700)
         self._build_ui()
+        # Apply the theme here rather than only in ``run_gui``: a window built
+        # directly (tests, previews, future entry points) must not silently fall
+        # back to unstyled Qt defaults — that made every GUI test assert on a
+        # window the owner never actually sees.
+        self.setStyleSheet(STYLE_SHEET)
 
     def change_personality_mode(self, index: int) -> None:
         mode = self.mode_combo.itemData(index)
@@ -111,6 +221,26 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(18, 16, 18, 14)
         outer.setSpacing(12)
 
+        self._build_header(outer)
+        self._build_conversation(outer)
+        self._build_indicators(outer)
+        self._build_input_row(outer)
+        self._build_tools(outer)
+        self._build_footer(outer)
+        self.statusBar().showMessage("Local memory ready")
+        self.input.setFocus()
+        # Connect to the local Ollama runtime as soon as the window is ready, so a
+        # fresh install chats without the owner starting a service by hand.
+        if self.assistant.orchestrator.llm_enabled:
+            if self.assistant.config.ollama.auto_pull:
+                QTimer.singleShot(150, lambda: self.connect_ollama(download_missing=True))
+            else:
+                QTimer.singleShot(150, self.connect_ollama)
+        else:
+            self.connection_badge.setText("●  LOCAL MODEL OFF")
+
+    def _build_header(self, outer: QVBoxLayout | QHBoxLayout) -> None:
+        """Build one region of the main window into ``outer``."""
         header = QFrame()
         header.setObjectName("header")
         header_layout = QHBoxLayout(header)
@@ -154,6 +284,8 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(settings_button)
         outer.addWidget(header)
 
+    def _build_conversation(self, outer: QVBoxLayout | QHBoxLayout) -> None:
+        """Build one region of the main window into ``outer``."""
         self.conversation = ConversationView()
         outer.addWidget(self.conversation, 1)
         self.conversation.add_message(
@@ -162,6 +294,8 @@ class MainWindow(QMainWindow):
             + " Type a request or start hands-free voice. Structured PC commands work even when Ollama is offline.",
         )
 
+    def _build_indicators(self, outer: QVBoxLayout | QHBoxLayout) -> None:
+        """Build one region of the main window into ``outer``."""
         indicators = QHBoxLayout()
         self.listening_pill = StatusPill("LISTENING")
         self.processing_pill = StatusPill("PROCESSING")
@@ -179,6 +313,8 @@ class MainWindow(QMainWindow):
         indicators.addWidget(latest)
         outer.addLayout(indicators)
 
+    def _build_input_row(self, outer: QVBoxLayout | QHBoxLayout) -> None:
+        """Build one region of the main window into ``outer``."""
         input_row = QHBoxLayout()
         self.microphone_button = QPushButton("Start hands-free voice")
         self.microphone_button.setToolTip("Listen locally until you stop speaking; click again to pause hands-free voice")
@@ -199,6 +335,8 @@ class MainWindow(QMainWindow):
         input_row.addWidget(self.browser_retry_button)
         outer.addLayout(input_row)
 
+    def _build_tools(self, outer: QVBoxLayout | QHBoxLayout) -> None:
+        """Build one region of the main window into ``outer``."""
         tools = QHBoxLayout()
         briefing_button = QPushButton("Tactical briefing")
         briefing_button.setToolTip("Synthesize live hardware, queue, daemon, and security briefing")
@@ -228,6 +366,8 @@ class MainWindow(QMainWindow):
         tools.addWidget(memory_button)
         outer.addLayout(tools)
 
+    def _build_footer(self, outer: QVBoxLayout | QHBoxLayout) -> None:
+        """Build one region of the main window into ``outer``."""
         footer = QHBoxLayout()
         self.model_label = QLabel(
             f"Model: {self.assistant.config.ollama.model or 'auto-detect'}  •  CPU profile  •  "
@@ -240,17 +380,360 @@ class MainWindow(QMainWindow):
         privacy.setObjectName("muted")
         footer.addWidget(privacy)
         outer.addLayout(footer)
-        self.statusBar().showMessage("Local memory ready")
-        self.input.setFocus()
-        # Connect to the local Ollama runtime as soon as the window is ready, so a
-        # fresh install chats without the owner starting a service by hand.
-        if self.assistant.orchestrator.llm_enabled:
-            if self.assistant.config.ollama.auto_pull:
-                QTimer.singleShot(150, lambda: self.connect_ollama(download_missing=True))
-            else:
-                QTimer.singleShot(150, self.connect_ollama)
-        else:
+
+    def apply_connection_state(self, report: dict[str, Any]) -> None:
+        self.reconnect_button.setEnabled(True)
+        if report.get("state") in {"ready", "model_missing"}:
+            # Connected: return the button to its quiet default style.
+            self.reconnect_button.setObjectName("")
+            self._repolish(self.reconnect_button)
+        state = str(report.get("state", ""))
+        if state == "ready":
+            model = str(report.get("model") or self.assistant.config.ollama.model)
+            self.connection_badge.setText("●  LOCAL ONLY")
+            self.model_label.setText(
+                f"Model: {model}  •  CPU profile  •  STT: {self.assistant.config.speech.stt_backend}"
+            )
+            self.statusBar().showMessage("Local Ollama connected", 4000)
+            return
+        if state == "model_missing":
+            self.connection_badge.setText("●  MODEL MISSING")
+            self.statusBar().showMessage(
+                "Ollama is running but the local model is not downloaded", 8000
+            )
+            self.offer_model_download(str(report.get("model") or ""))
+            return
+        if state == "not_installed":
+            self.connection_badge.setText("●  OLLAMA NOT INSTALLED")
+            self.conversation.add_message(
+                "System",
+                str(report.get("guidance") or "Ollama is not installed.")
+                + "\nStructured commands such as 'open notepad' and 'system info' still work.",
+            )
+            return
+        if state == "disabled":
             self.connection_badge.setText("●  LOCAL MODEL OFF")
+            return
+        self.connection_badge.setText("●  OLLAMA OFFLINE")
+        detail = report.get("error") or report.get("guidance") or "Ollama did not answer."
+        self.conversation.add_message(
+            "System",
+            f"{detail}\nStructured commands such as 'open notepad', 'system info', and "
+            "'find files for report in Downloads' still work without the model. "
+            "Press Reconnect to try starting Ollama again.",
+        )
+
+    def open_settings(self) -> None:
+        self._pause_voice_capture()
+        dialog = SettingsDialog(
+            self.assistant,
+            speak_responses=self.speak_responses,
+            llm_enabled=self.assistant.orchestrator.llm_enabled,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.speak_responses = dialog.speak_checkbox.isChecked()
+        self.assistant.orchestrator.llm_enabled = dialog.llm_checkbox.isChecked()
+        self.assistant.personality.set_owner_name(dialog.owner_name_input.text())
+        web_enabled = dialog.web_search_checkbox.isChecked()
+        self.assistant.config.security.web_search_enabled = web_enabled
+        self.assistant.orchestrator.web_search.enabled = web_enabled
+        if not web_enabled:
+            self._set_browser_retry(None)
+        voice_gender = str(dialog.voice_gender_combo.currentData())
+        self.assistant.config.speech.tts_voice_gender = voice_gender
+        selected = dialog.selected_microphone
+        self.assistant.microphone.device = (
+            int(selected) if selected.isascii() and selected.isdigit() else selected or None
+        )
+        self.assistant.database.set_setting("ui.speak_responses", str(self.speak_responses).lower())
+        self.assistant.database.set_setting(
+            "ui.llm_enabled", str(self.assistant.orchestrator.llm_enabled).lower()
+        )
+        hands_free = dialog.hands_free_settings
+        self.assistant.microphone.hands_free = hands_free
+        self.assistant.database.set_setting("ui.hands_free_pause_ms", str(hands_free.pause_ms))
+        self.assistant.database.set_setting("ui.hands_free_sensitivity", hands_free.sensitivity)
+        self.assistant.database.set_setting("ui.microphone", selected)
+        self.assistant.database.set_setting("ui.web_search_enabled", str(web_enabled).lower())
+        self.assistant.database.set_setting("ui.voice_gender", voice_gender)
+        if self.assistant.orchestrator.llm_enabled and not self.pending_tasks:
+            QTimer.singleShot(0, self.connect_ollama)
+        self.statusBar().showMessage("Settings saved locally", 4000)
+
+    def open_memory(self) -> None:
+        dialog = MemoryDialog(self.assistant, self)
+        dialog.actionRequested.connect(self.submit_text)
+        dialog.exec()
+
+    def open_control_center(self) -> None:
+        AgentControlCenterDialog(self.assistant, self).exec()
+
+    def open_enrollment(self) -> None:
+        if self.pending_tasks:
+            QMessageBox.information(self, "Busy", "Finish the current task before enrollment.")
+            return
+        self._end_voice_session()
+        EnrollmentDialog(self.assistant, self.run_task, self).exec()
+
+    def open_status(self) -> None:
+        self.run_task(
+            self.assistant.status,
+            self.show_status_dialog,
+            label="Checking local runtime",
+        )
+
+    def show_status_dialog(self, status: dict[str, Any]) -> None:
+        StatusDialog(status, self).exec()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self.pending_tasks:
+            QMessageBox.information(
+                self, "Task in progress", "Please wait for the active local task to finish before closing HINATA."
+            )
+            event.ignore()
+            return
+        self._end_voice_session()
+        if self.assistant.microphone.recording:
+            self.assistant.microphone.cancel()
+        self.assistant.tts.stop()
+        event.accept()
+
+    @staticmethod
+    def _repolish(widget: QWidget) -> None:
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+
+class ResponseHandlingMixin(_MainWindowSlices):
+    """One cohesive slice of :class:`MainWindow`.
+
+    The window composes these slices; they never instantiate alone.
+    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _navigate_chat(self, text: str) -> bool:
+        """Handle local chat navigation without adding messages or invoking a model."""
+        command = " ".join(text.casefold().strip().rstrip(".!?").split())
+        command = re.sub(r"^hinata(?:[,!:]\s*|\s+)(?:please\s+)?|^please\s+", "", command)
+        if command == "scroll chat up":
+            self.conversation.scroll_history(-1)
+        elif command == "scroll chat down":
+            self.conversation.scroll_history(1)
+        elif command in {"latest message", "go to latest message", "go to the latest message"}:
+            self.conversation.jump_to_latest()
+        else:
+            return False
+        return True
+
+    def _set_browser_retry(self, query: str | None) -> None:
+        self._browser_retry_query = query
+        self.browser_retry_button.setVisible(query is not None)
+
+    def retry_in_browser(self) -> None:
+        if self._browser_retry_query:
+            # Keep any draft in the input box. Browser-first syntax treats the
+            # whole query as data, and dispatch rechecks current permissions.
+            query = " ".join(self._browser_retry_query.split())
+            self._send_text(f"search in browser for {query}")
+
+    def handle_response(self, response: AssistantResponse, voice: VoiceResult | None = None) -> None:
+        self.conversation.add_message("HINATA", response.text)
+        retry = response.data.get("browser_retry_query")
+        web = self.assistant.orchestrator.web_search
+        self._set_browser_retry(retry if isinstance(retry, str) and retry and web.enabled and not web.strict_offline else None)
+        if self.speak_responses:
+            self.speak_text(spoken_reply(response))
+        self.statusBar().showMessage(response.status.replace("_", " "), 5000)
+        if response.status == "model_unavailable":
+            text = response.text.lower()
+            connected_but_wrong = "unexpected format" in text
+            if not connected_but_wrong:
+                self.connection_badge.setText("●  OLLAMA OFFLINE")
+            # Keep the header honest and make the one-click fix obvious.
+            self.reconnect_button.setEnabled(True)
+            self.reconnect_button.setObjectName("primary")
+            self._repolish(self.reconnect_button)
+        source = "voice" if voice is not None else "text"
+        speaker_match = voice.speaker_match if voice is not None else None
+        speaker_required = voice.speaker_required if voice is not None else False
+        self._handle_verification(response, source, speaker_match, speaker_required, voice)
+        self._handle_plan_confirmation(response, source, speaker_match, speaker_required, voice)
+        self._handle_confirm_action(response, source, speaker_match, speaker_required, voice)
+        self._handle_pin(response, source, speaker_match, speaker_required, voice)
+        self.last_response_text = response.text
+
+    def _handle_verification(self, response: AssistantResponse, source: str,
+                  speaker_match: bool | None, speaker_required: bool,
+                  voice: VoiceResult | None = None) -> None:
+        if response.status == "verification_required" and response.data.get("task_id"):
+            task_id = response.data["task_id"]
+            try:
+                task, checks = self.assistant.review_task(task_id)
+            except (ValueError, RuntimeError) as exc:
+                self.show_task_error(str(exc))
+                return
+            details = "\n".join(f"Step {check['step']} ({check['tool']}): {check['status']} — {check['detail']}" for check in checks)
+            request = task.get("user_request") or "Not recorded; inspect the task history manually."
+            answer = QMessageBox.question(
+                self, "Review task outcome",
+                f"Original request: {request}\nPlan objective: {task['objective']}\n\n{details}\n\n"
+                "Have you personally checked that the original request was satisfied? "
+                "Choose No to leave the task awaiting review.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.conversation.add_message("System", f"Task {task_id} remains unverified. Review it later with hinata tasks.")
+                return
+            evidence, accepted = QInputDialog.getMultiLineText(
+                self, "Record observed evidence", "Describe what you personally checked (10–1000 characters):"
+            )
+            if not accepted:
+                self.conversation.add_message("System", f"Task {task_id} remains unverified.")
+                return
+            try:
+                if self.assistant.attest_task(task_id, evidence, satisfied=True):
+                    self.conversation.add_message("System", "Human review recorded; task marked complete.")
+                else:
+                    self.conversation.add_message("System", "Task state changed; review was not recorded.")
+            except (ValueError, RuntimeError) as exc:
+                self.show_task_error(str(exc))
+            return
+
+    def _handle_plan_confirmation(self, response: AssistantResponse, source: str,
+                  speaker_match: bool | None, speaker_required: bool,
+                  voice: VoiceResult | None = None) -> None:
+        if response.needs_plan_confirmation:
+            answer = QMessageBox.question(
+                self,
+                "Approve HINATA plan",
+                f"{response.text}\n\nApprove this entire plan? No step has run yet.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                if response.data.get("task_id"):
+                    self.assistant.tasks.cancel_pending(response.data["task_id"])
+                self.conversation.add_message("System", "Plan cancelled; no steps were executed.")
+                if self.speak_responses:
+                    self.speak_text("Plan cancelled. No steps were executed.")
+                return
+            self.run_task(
+                lambda: self.assistant.execute_plan(
+                    response.plan_actions,
+                    task_id=response.data.get("task_id"),
+                    source=source,
+                    speaker_match=speaker_match,
+                    speaker_required=speaker_required,
+                ),
+                lambda result: self.handle_response(result, voice),
+                label="Executing approved plan",
+            )
+            return
+
+    def _handle_confirm_action(self, response: AssistantResponse, source: str,
+                  speaker_match: bool | None, speaker_required: bool,
+                  voice: VoiceResult | None = None) -> None:
+        if response.needs_confirmation and response.action is not None:
+            action = response.action
+            details = json.dumps(action.arguments, indent=2, ensure_ascii=False)
+            answer = QMessageBox.question(
+                self,
+                "Approve controlled action",
+                f"{response.text}\n\nTool: {action.tool}\nArguments:\n{details}\n\n"
+                "No action has run yet. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.conversation.add_message("System", "Action cancelled; nothing was executed.")
+                if self.speak_responses:
+                    self.speak_text("Action cancelled. Nothing was executed.")
+                return
+            self.run_task(
+                lambda: self.assistant.resume(
+                    action,
+                    source=source,
+                    speaker_match=speaker_match,
+                    speaker_required=speaker_required,
+                ),
+                lambda result: self.handle_response(result, voice),
+                label="Checking authorization",
+            )
+            return
+
+    def _handle_pin(self, response: AssistantResponse, source: str,
+                  speaker_match: bool | None, speaker_required: bool,
+                  voice: VoiceResult | None = None) -> None:
+        if response.needs_pin and response.action is not None:
+            action = response.action
+            pin, accepted = QInputDialog.getText(
+                self,
+                "Sensitive action authorization",
+                response.text,
+                QLineEdit.EchoMode.Password,
+            )
+            if not accepted:
+                self.conversation.add_message("System", "Action cancelled; nothing was executed.")
+                if self.speak_responses:
+                    self.speak_text("Action cancelled. Nothing was executed.")
+                return
+            # The worker consumes and removes the only task-held PIN copy.
+            secret = [pin]
+
+            def authorized() -> AssistantResponse:
+                return self.assistant.resume(
+                    action,
+                    source=source,
+                    speaker_match=speaker_match,
+                    speaker_required=speaker_required,
+                    pin=secret.pop(),
+                )
+
+            pin = ""
+            self.run_task(
+                authorized,
+                lambda result: self.handle_response(result, voice),
+                label="Verifying PIN locally",
+            )
+            return
+
+
+class SpeechAndTaskMixin(_MainWindowSlices):
+    """Voice capture, speech output and background task orchestration.
+
+    Inherits ``QMainWindow`` so its members (``self.statusBar()``, dialogs that
+    take the window as their parent) type-check on their own; ``MainWindow``
+    therefore receives ``QMainWindow`` through this slice as well.
+    """
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     def run_task(
         self,
@@ -319,20 +802,6 @@ class MainWindow(QMainWindow):
         if not self._navigate_chat(cleaned):
             self._send_text(cleaned)
 
-    def _navigate_chat(self, text: str) -> bool:
-        """Handle local chat navigation without adding messages or invoking a model."""
-        command = " ".join(text.casefold().strip().rstrip(".!?").split())
-        command = re.sub(r"^hinata(?:[,!:]\s*|\s+)(?:please\s+)?|^please\s+", "", command)
-        if command == "scroll chat up":
-            self.conversation.scroll_history(-1)
-        elif command == "scroll chat down":
-            self.conversation.scroll_history(1)
-        elif command in {"latest message", "go to latest message", "go to the latest message"}:
-            self.conversation.jump_to_latest()
-        else:
-            return False
-        return True
-
     def _send_text(self, cleaned: str) -> None:
         self._set_browser_retry(None)
         self.conversation.add_message("You", cleaned)
@@ -341,159 +810,6 @@ class MainWindow(QMainWindow):
             self.handle_response,
             label="Understanding request",
         )
-
-    def _set_browser_retry(self, query: str | None) -> None:
-        self._browser_retry_query = query
-        self.browser_retry_button.setVisible(query is not None)
-
-    def retry_in_browser(self) -> None:
-        if self._browser_retry_query:
-            # Keep any draft in the input box. Browser-first syntax treats the
-            # whole query as data, and dispatch rechecks current permissions.
-            query = " ".join(self._browser_retry_query.split())
-            self._send_text(f"search in browser for {query}")
-
-    def handle_response(self, response: AssistantResponse, voice: VoiceResult | None = None) -> None:
-        self.conversation.add_message("HINATA", response.text)
-        retry = response.data.get("browser_retry_query")
-        web = self.assistant.orchestrator.web_search
-        self._set_browser_retry(retry if isinstance(retry, str) and retry and web.enabled and not web.strict_offline else None)
-        if self.speak_responses:
-            self.speak_text(spoken_reply(response))
-        self.statusBar().showMessage(response.status.replace("_", " "), 5000)
-        if response.status == "model_unavailable":
-            text = response.text.lower()
-            connected_but_wrong = "unexpected format" in text
-            if not connected_but_wrong:
-                self.connection_badge.setText("●  OLLAMA OFFLINE")
-            # Keep the header honest and make the one-click fix obvious.
-            self.reconnect_button.setEnabled(True)
-            self.reconnect_button.setObjectName("primary")
-            self._repolish(self.reconnect_button)
-        source = "voice" if voice is not None else "text"
-        speaker_match = voice.speaker_match if voice is not None else None
-        speaker_required = voice.speaker_required if voice is not None else False
-        if response.status == "verification_required" and response.data.get("task_id"):
-            task_id = response.data["task_id"]
-            try:
-                task, checks = self.assistant.review_task(task_id)
-            except (ValueError, RuntimeError) as exc:
-                self.show_task_error(str(exc))
-                return
-            details = "\n".join(f"Step {check['step']} ({check['tool']}): {check['status']} — {check['detail']}" for check in checks)
-            request = task.get("user_request") or "Not recorded; inspect the task history manually."
-            answer = QMessageBox.question(
-                self, "Review task outcome",
-                f"Original request: {request}\nPlan objective: {task['objective']}\n\n{details}\n\n"
-                "Have you personally checked that the original request was satisfied? "
-                "Choose No to leave the task awaiting review.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                self.conversation.add_message("System", f"Task {task_id} remains unverified. Review it later with hinata tasks.")
-                return
-            evidence, accepted = QInputDialog.getMultiLineText(
-                self, "Record observed evidence", "Describe what you personally checked (10–1000 characters):"
-            )
-            if not accepted:
-                self.conversation.add_message("System", f"Task {task_id} remains unverified.")
-                return
-            try:
-                if self.assistant.attest_task(task_id, evidence, satisfied=True):
-                    self.conversation.add_message("System", "Human review recorded; task marked complete.")
-                else:
-                    self.conversation.add_message("System", "Task state changed; review was not recorded.")
-            except (ValueError, RuntimeError) as exc:
-                self.show_task_error(str(exc))
-            return
-        if response.needs_plan_confirmation:
-            answer = QMessageBox.question(
-                self,
-                "Approve HINATA plan",
-                f"{response.text}\n\nApprove this entire plan? No step has run yet.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                if response.data.get("task_id"):
-                    self.assistant.tasks.cancel_pending(response.data["task_id"])
-                self.conversation.add_message("System", "Plan cancelled; no steps were executed.")
-                if self.speak_responses:
-                    self.speak_text("Plan cancelled. No steps were executed.")
-                return
-            self.run_task(
-                lambda: self.assistant.execute_plan(
-                    response.plan_actions,
-                    task_id=response.data.get("task_id"),
-                    source=source,
-                    speaker_match=speaker_match,
-                    speaker_required=speaker_required,
-                ),
-                lambda result: self.handle_response(result, voice),
-                label="Executing approved plan",
-            )
-            return
-        if response.needs_confirmation and response.action is not None:
-            action = response.action
-            details = json.dumps(action.arguments, indent=2, ensure_ascii=False)
-            answer = QMessageBox.question(
-                self,
-                "Approve controlled action",
-                f"{response.text}\n\nTool: {action.tool}\nArguments:\n{details}\n\n"
-                "No action has run yet. Continue?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                self.conversation.add_message("System", "Action cancelled; nothing was executed.")
-                if self.speak_responses:
-                    self.speak_text("Action cancelled. Nothing was executed.")
-                return
-            self.run_task(
-                lambda: self.assistant.resume(
-                    action,
-                    source=source,
-                    speaker_match=speaker_match,
-                    speaker_required=speaker_required,
-                ),
-                lambda result: self.handle_response(result, voice),
-                label="Checking authorization",
-            )
-            return
-        if response.needs_pin and response.action is not None:
-            action = response.action
-            pin, accepted = QInputDialog.getText(
-                self,
-                "Sensitive action authorization",
-                response.text,
-                QLineEdit.EchoMode.Password,
-            )
-            if not accepted:
-                self.conversation.add_message("System", "Action cancelled; nothing was executed.")
-                if self.speak_responses:
-                    self.speak_text("Action cancelled. Nothing was executed.")
-                return
-            # The worker consumes and removes the only task-held PIN copy.
-            secret = [pin]
-
-            def authorized() -> AssistantResponse:
-                return self.assistant.resume(
-                    action,
-                    source=source,
-                    speaker_match=speaker_match,
-                    speaker_required=speaker_required,
-                    pin=secret.pop(),
-                )
-
-            pin = ""
-            self.run_task(
-                authorized,
-                lambda result: self.handle_response(result, voice),
-                label="Verifying PIN locally",
-            )
-            return
-        self.last_response_text = response.text
 
     def toggle_microphone(self) -> None:
         if self._voice_session:
@@ -607,7 +923,6 @@ class MainWindow(QMainWindow):
         self.activity_label.setText("Stop requested — an action already in progress may finish")
         self.statusBar().showMessage("Stop requested; HINATA will not start another action", 7000)
 
-    # --------------------------------------------------------------- Ollama
     def connect_ollama(self, *, download_missing: bool = False) -> None:
         """Start/verify loopback Ollama in the background and report the result."""
         self.connection_badge.setText("●  CONNECTING TO OLLAMA…")
@@ -630,48 +945,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Local model unavailable: {message}", 9000)
         self.show_task_error(message)
 
-    def apply_connection_state(self, report: dict[str, Any]) -> None:
-        self.reconnect_button.setEnabled(True)
-        if report.get("state") in {"ready", "model_missing"}:
-            # Connected: return the button to its quiet default style.
-            self.reconnect_button.setObjectName("")
-            self._repolish(self.reconnect_button)
-        state = str(report.get("state", ""))
-        if state == "ready":
-            model = str(report.get("model") or self.assistant.config.ollama.model)
-            self.connection_badge.setText("●  LOCAL ONLY")
-            self.model_label.setText(
-                f"Model: {model}  •  CPU profile  •  STT: {self.assistant.config.speech.stt_backend}"
-            )
-            self.statusBar().showMessage("Local Ollama connected", 4000)
-            return
-        if state == "model_missing":
-            self.connection_badge.setText("●  MODEL MISSING")
-            self.statusBar().showMessage(
-                "Ollama is running but the local model is not downloaded", 8000
-            )
-            self.offer_model_download(str(report.get("model") or ""))
-            return
-        if state == "not_installed":
-            self.connection_badge.setText("●  OLLAMA NOT INSTALLED")
-            self.conversation.add_message(
-                "System",
-                str(report.get("guidance") or "Ollama is not installed.")
-                + "\nStructured commands such as 'open notepad' and 'system info' still work.",
-            )
-            return
-        if state == "disabled":
-            self.connection_badge.setText("●  LOCAL MODEL OFF")
-            return
-        self.connection_badge.setText("●  OLLAMA OFFLINE")
-        detail = report.get("error") or report.get("guidance") or "Ollama did not answer."
-        self.conversation.add_message(
-            "System",
-            f"{detail}\nStructured commands such as 'open notepad', 'system info', and "
-            "'find files for report in Downloads' still work without the model. "
-            "Press Reconnect to try starting Ollama again.",
-        )
-
     def offer_model_download(self, model: str) -> None:
         name = model or self.assistant.config.ollama.model or "the configured model"
         answer = QMessageBox.question(
@@ -690,53 +963,6 @@ class MainWindow(QMainWindow):
         if self.pending_tasks:
             return
         self.connect_ollama()
-
-    def open_settings(self) -> None:
-        self._pause_voice_capture()
-        dialog = SettingsDialog(
-            self.assistant,
-            speak_responses=self.speak_responses,
-            llm_enabled=self.assistant.orchestrator.llm_enabled,
-            parent=self,
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        self.speak_responses = dialog.speak_checkbox.isChecked()
-        self.assistant.orchestrator.llm_enabled = dialog.llm_checkbox.isChecked()
-        self.assistant.personality.set_owner_name(dialog.owner_name_input.text())
-        web_enabled = dialog.web_search_checkbox.isChecked()
-        self.assistant.config.security.web_search_enabled = web_enabled
-        self.assistant.orchestrator.web_search.enabled = web_enabled
-        if not web_enabled:
-            self._set_browser_retry(None)
-        voice_gender = str(dialog.voice_gender_combo.currentData())
-        self.assistant.config.speech.tts_voice_gender = voice_gender
-        selected = dialog.selected_microphone
-        self.assistant.microphone.device = (
-            int(selected) if selected.isascii() and selected.isdigit() else selected or None
-        )
-        self.assistant.database.set_setting("ui.speak_responses", str(self.speak_responses).lower())
-        self.assistant.database.set_setting(
-            "ui.llm_enabled", str(self.assistant.orchestrator.llm_enabled).lower()
-        )
-        hands_free = dialog.hands_free_settings
-        self.assistant.microphone.hands_free = hands_free
-        self.assistant.database.set_setting("ui.hands_free_pause_ms", str(hands_free.pause_ms))
-        self.assistant.database.set_setting("ui.hands_free_sensitivity", hands_free.sensitivity)
-        self.assistant.database.set_setting("ui.microphone", selected)
-        self.assistant.database.set_setting("ui.web_search_enabled", str(web_enabled).lower())
-        self.assistant.database.set_setting("ui.voice_gender", voice_gender)
-        if self.assistant.orchestrator.llm_enabled and not self.pending_tasks:
-            QTimer.singleShot(0, self.connect_ollama)
-        self.statusBar().showMessage("Settings saved locally", 4000)
-
-    def open_memory(self) -> None:
-        dialog = MemoryDialog(self.assistant, self)
-        dialog.actionRequested.connect(self.submit_text)
-        dialog.exec()
-
-    def open_control_center(self) -> None:
-        AgentControlCenterDialog(self.assistant, self).exec()
 
     def quick_lockdown(self) -> None:
         if not self.assistant.override_controller.is_lockdown:
@@ -760,42 +986,17 @@ class MainWindow(QMainWindow):
         except PermissionError as exc:
             QMessageBox.critical(self, "PIN Verification Failed", str(exc))
 
-    def open_enrollment(self) -> None:
-        if self.pending_tasks:
-            QMessageBox.information(self, "Busy", "Finish the current task before enrollment.")
-            return
-        self._end_voice_session()
-        EnrollmentDialog(self.assistant, self.run_task, self).exec()
 
-    def open_status(self) -> None:
-        self.run_task(
-            self.assistant.status,
-            self.show_status_dialog,
-            label="Checking local runtime",
-        )
+class MainWindow(WindowChromeMixin, ResponseHandlingMixin, SpeechAndTaskMixin):
+    """The HINATA desktop window, assembled from three cohesive slices.
 
-    def show_status_dialog(self, status: dict[str, Any]) -> None:
-        StatusDialog(status, self).exec()
+    Chrome and layout (``WindowChromeMixin``), assistant responses and the
+    dialogs they raise (``ResponseHandlingMixin``), and speech plus worker
+    orchestration (``SpeechAndTaskMixin``). Splitting it keeps each concern
+    navigable; the window itself only composes them.
+    """
 
-    def closeEvent(self, event: QCloseEvent) -> None:
-        if self.pending_tasks:
-            QMessageBox.information(
-                self, "Task in progress", "Please wait for the active local task to finish before closing HINATA."
-            )
-            event.ignore()
-            return
-        self._end_voice_session()
-        if self.assistant.microphone.recording:
-            self.assistant.microphone.cancel()
-        self.assistant.tts.stop()
-        event.accept()
-
-    @staticmethod
-    def _repolish(widget: QWidget) -> None:
-        widget.style().unpolish(widget)
-        widget.style().polish(widget)
-
-
+    # --------------------------------------------------------------- Ollama
 def run_gui(assistant: HinataAssistant) -> int:
     instance = QApplication.instance()
     application = instance if isinstance(instance, QApplication) else QApplication(sys.argv)

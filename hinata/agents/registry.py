@@ -14,6 +14,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
+import logging
 import threading
 import time
 import uuid
@@ -26,6 +27,8 @@ from hinata.core.tool_registry import DEFAULT_MANIFESTS
 from hinata.core.types import ActionRequest, ActionResult
 from hinata.database.database import Database
 from hinata.security.redaction import redact_value
+
+LOGGER = logging.getLogger(__name__)
 
 MESSAGE_TYPES = frozenset(
     {
@@ -521,9 +524,37 @@ class AgentRegistry:
             ),
         )
 
-    def messages_for_task(self, root_task_id: str) -> list[dict[str, Any]]:
+    def messages_for_task(
+        self, root_task_id: str, *, include_expired: bool = False
+    ) -> list[dict[str, Any]]:
+        """Conversation for a task.
+
+        ``deadline_epoch`` is a numeric epoch column, so it is compared with
+        ``strftime('%s','now')``. Comparing it to the text ``datetime('now')``
+        would cast the column to 0 and silently mark every message as expired.
+        Expired messages are withheld by default: a reply that missed its
+        deadline must not be treated as a fresh answer.
+        """
+        if include_expired:
+            return self.database.fetch_all(
+                "SELECT * FROM agent_messages WHERE root_task_id = ? ORDER BY created_at ASC",
+                (root_task_id,),
+            )
         return self.database.fetch_all(
-            "SELECT * FROM agent_messages WHERE root_task_id = ? ORDER BY created_at ASC",
+            "SELECT * FROM agent_messages WHERE root_task_id = ?"
+            " AND (deadline_epoch IS NULL"
+            "      OR CAST(deadline_epoch AS REAL) > CAST(strftime('%s','now') AS REAL))"
+            " ORDER BY created_at ASC",
+            (root_task_id,),
+        )
+
+    def expired_messages_for_task(self, root_task_id: str) -> list[dict[str, Any]]:
+        """Messages whose deadline has passed, so a caller can report the loss."""
+        return self.database.fetch_all(
+            "SELECT * FROM agent_messages WHERE root_task_id = ?"
+            " AND deadline_epoch IS NOT NULL"
+            " AND CAST(deadline_epoch AS REAL) <= CAST(strftime('%s','now') AS REAL)"
+            " ORDER BY created_at ASC",
             (root_task_id,),
         )
 
@@ -802,8 +833,14 @@ class AgentRegistry:
             try:
                 self.record_report(root_task_id, failure)
             except Exception:
-                # Reporting must never mask the original runtime failure.
-                pass
+                # Reporting must never mask the original runtime failure, but a
+                # lost report is still a lost report: log it with the agent id so
+                # a missing report is diagnosable instead of invisible.
+                LOGGER.warning(
+                    "Could not persist failure report for task %s (agent %s); "
+                    "the runtime failure is raised below.",
+                    root_task_id, agent_id, exc_info=True,
+                )
             with self._health_lock:
                 self._health[agent_id]["failed_tasks"] += 1
                 self._health[agent_id]["last_error"] = str(exc)[:200]

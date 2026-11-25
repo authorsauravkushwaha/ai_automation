@@ -25,7 +25,6 @@ from typing import Any
 
 from hinata.automation.app_control import AutomationError
 
-
 CATEGORY_MAP: dict[str, str] = {
     ".jpg": "Images", ".jpeg": "Images", ".png": "Images", ".gif": "Images", ".webp": "Images", ".svg": "Images", ".heic": "Images",
     ".mp4": "Videos", ".mov": "Videos", ".avi": "Videos", ".mkv": "Videos", ".webm": "Videos",
@@ -39,6 +38,26 @@ CATEGORY_MAP: dict[str, str] = {
 }
 
 
+#: Extensions ``clean_temp`` is allowed to remove. Deliberately narrow: a stale
+#: document is not "temp" just because it is old.
+TEMP_SUFFIXES = frozenset({".tmp", ".temp", ".cache", ".bak", ".part", ".crdownload", ".log"})
+
+
+def _is_same_file(a: Path, b: Path) -> bool:
+    """True when both paths already point at one file (case-only rename, hardlink).
+
+    ``Path.exists()`` is not enough on a case-insensitive filesystem: renaming
+    ``Report.txt`` to ``report.txt`` would look like an overwrite of an existing
+    file when in fact it is the source.
+    """
+    try:
+        if not (a.exists() and b.exists()):
+            return False
+        return a.samefile(b)
+    except OSError:
+        return False
+
+
 class FileWizard:
     def __init__(self, files=None) -> None:
         self.files = files
@@ -48,13 +67,15 @@ class FileWizard:
             raise AutomationError("File manager not available")
         return self.files
 
-    def analyze_storage(self, path: str = "", *, top_n: int = 20) -> dict[str, Any]:
+    def _resolve_root(self, path: str) -> Any:
+        """Resolve ``path`` or, when it is empty, the first permitted root."""
         fm = self._require_files()
         if path.strip():
-            root = fm.resolve(path)
-        else:
-            # Pick first existing root, fallback to cwd
-            root = next((r for r in fm.roots if r.exists()), fm.roots[0] if fm.roots else Path.cwd())
+            return fm.resolve(path)
+        return next((r for r in fm.roots if r.exists()), fm.roots[0] if fm.roots else Path.cwd())
+
+    def analyze_storage(self, path: str = "", *, top_n: int = 20) -> dict[str, Any]:
+        root = self._resolve_root(path)
         if not root.is_dir():
             raise AutomationError(f"Not a directory: {root}")
         ext_counter: Counter[str] = Counter()
@@ -85,15 +106,11 @@ class FileWizard:
             "total_mb": round(total_bytes / (1024 * 1024), 2),
             "by_ext_count": dict(ext_counter.most_common(20)),
             "by_ext_bytes": {k: round(v / (1024 * 1024), 2) for k, v in ext_bytes.most_common(20)},
-            "largest": largest[:top_n],
+            "largest": largest[: max(0, top_n)],  # negative would slice from the end
         }
 
     def find_duplicates(self, path: str = "", *, max_groups: int = 20, min_size_kb: int = 1) -> dict[str, Any]:
-        fm = self._require_files()
-        if path.strip():
-            root = fm.resolve(path)
-        else:
-            root = next((r for r in fm.roots if r.exists()), fm.roots[0] if fm.roots else Path.cwd())
+        root = self._resolve_root(path)
         if not root.is_dir():
             raise AutomationError(f"Not a directory: {root}")
         # First group by size
@@ -124,18 +141,18 @@ class FileWizard:
                     quick_map[h].append(p)
                 except OSError:
                     continue
-            for qh, qpaths in quick_map.items():
+            for qpaths in quick_map.values():
                 if len(qpaths) < 2:
                     continue
                 # Full hash
                 full_map: dict[str, list[Path]] = defaultdict(list)
                 for p in qpaths:
                     try:
-                        h = hashlib.md5()
+                        digest = hashlib.md5()
                         with p.open("rb") as f:
                             while chunk := f.read(8192):
-                                h.update(chunk)
-                        full_map[h.hexdigest()].append(p)
+                                digest.update(chunk)
+                        full_map[digest.hexdigest()].append(p)
                     except OSError:
                         continue
                 for fh, fps in full_map.items():
@@ -148,8 +165,7 @@ class FileWizard:
         return {"root": str(root), "duplicate_groups": groups, "groups_found": len(groups)}
 
     def organize_folder(self, path: str, *, mode: str = "by_type", dry_run: bool = True) -> dict[str, Any]:
-        fm = self._require_files()
-        root = fm.resolve(path)
+        root = self._resolve_root(path)
         if not root.is_dir():
             raise AutomationError(f"Not a directory: {root}")
         mode = mode.lower().strip()
@@ -157,7 +173,9 @@ class FileWizard:
             raise AutomationError("mode must be by_type, by_date, or by_ext")
         moves: list[dict[str, str]] = []
         for item in root.iterdir():
-            if item.is_dir() or item.name.startswith("."):
+            # Symlinks are left alone: moving one would either dangle or relocate
+            # a file that lives outside the permitted roots.
+            if item.is_symlink() or item.is_dir() or item.name.startswith("."):
                 continue
             ext = item.suffix.lower()
             if mode == "by_type":
@@ -187,11 +205,13 @@ class FileWizard:
         return {"root": str(root), "mode": mode, "planned_moves": moves, "dry_run": dry_run, "count": len(moves)}
 
     def batch_rename(self, folder: str, pattern: str, *, replacement: str = "", start_num: int = 1, dry_run: bool = True) -> dict[str, Any]:
-        fm = self._require_files()
-        root = fm.resolve(folder)
+        root = self._resolve_root(folder)
         if not root.is_dir():
             raise AutomationError(f"Not a directory: {root}")
-        files = sorted([p for p in root.iterdir() if p.is_file() and not p.name.startswith(".")])
+        files = sorted(
+            p for p in root.iterdir()
+            if p.is_file() and not p.is_symlink() and not p.name.startswith(".")
+        )
         renames: list[dict[str, str]] = []
         for idx, fp in enumerate(files, start=start_num):
             new_name = ""
@@ -217,11 +237,19 @@ class FileWizard:
             if new_name == fp.name:
                 continue
             dest = root / new_name
-            renames.append({"from": str(fp), "to": str(dest)})
+            # A case-only rename ("Report.txt" -> "report.txt") targets the same
+            # file on a case-insensitive volume (Windows, default macOS), so the
+            # overwrite check below must not treat it as a collision.
+            case_only = _is_same_file(fp, dest)
+            renames.append({"from": str(fp), "to": str(dest), "case_only": "true" if case_only else "false"})
         if not dry_run:
             for r in renames:
                 src = Path(r["from"])
                 dst = Path(r["to"])
+                if _is_same_file(src, dst):
+                    # Already the same file: nothing to move, and failing here
+                    # would make "lowercase" unusable on Windows.
+                    continue
                 if dst.exists():
                     raise AutomationError(f"Refusing to overwrite: {dst}")
                 src.rename(dst)
@@ -236,6 +264,20 @@ class FileWizard:
         dst.parent.mkdir(parents=True, exist_ok=True)
         src_ext = src.suffix.lower()
         dst_ext = dst.suffix.lower()
+        # ``fmt`` used to be accepted and never read, so "convert to html" did
+        # nothing unless the destination already happened to end in .html.
+        # Honour an explicit format when the destination extension does not
+        # already imply it.
+        explicit = fmt.strip().lower().lstrip(".")
+        if explicit and explicit != "auto" and dst_ext != f".{explicit}":
+            if dst.suffix.lower():
+                # A different, known extension is a caller mistake: refuse
+                # instead of silently writing a .csv body into a .json file.
+                raise AutomationError(
+                    f"Requested format '{explicit}' conflicts with destination extension '{dst.suffix}'"
+                )
+            dst = dst.with_name(f"{dst.name}.{explicit}")
+            dst_ext = f".{explicit}"
         # Simple converters using stdlib
         if src_ext == ".md" and dst_ext == ".html":
             text = src.read_text(encoding="utf-8", errors="replace")
@@ -307,11 +349,7 @@ class FileWizard:
         return "\n".join(out)
 
     def clean_temp(self, path: str = "", *, min_age_days: int = 7, dry_run: bool = True) -> dict[str, Any]:
-        fm = self._require_files()
-        if path.strip():
-            root = fm.resolve(path)
-        else:
-            root = next((r for r in fm.roots if r.exists()), fm.roots[0] if fm.roots else Path.cwd())
+        root = self._resolve_root(path)
         if not root.is_dir():
             raise AutomationError(f"Not a directory: {root}")
         cutoff = time.time() - min_age_days * 86400
@@ -323,12 +361,29 @@ class FileWizard:
                     continue
                 fp = Path(dirpath) / fn
                 try:
+                    # Never follow a symlink out of the permitted roots.
+                    if fp.is_symlink():
+                        continue
                     st = fp.stat()
-                    if st.st_mtime < cutoff or fn.lower().endswith((".tmp", ".cache", ".log", ".bak")):
-                        candidates.append({"path": str(fp), "bytes": st.st_size, "age_days": round((time.time() - st.st_mtime) / 86400, 1)})
-                        total_bytes += st.st_size
                 except OSError:
                     continue
+                # Two independent conditions, both required:
+                #   1. the name must look like a disposable artefact, and
+                #   2. it must be older than the age limit.
+                # The old code used OR, so it deleted a just-written .log
+                # (still in use) *and* an old user document such as report.pdf.
+                if fp.suffix.lower() not in TEMP_SUFFIXES:
+                    continue
+                if st.st_mtime >= cutoff:
+                    continue
+                candidates.append(
+                    {
+                        "path": str(fp),
+                        "bytes": st.st_size,
+                        "age_days": round((time.time() - st.st_mtime) / 86400, 1),
+                    }
+                )
+                total_bytes += st.st_size
         if not dry_run:
             for c in candidates:
                 try:

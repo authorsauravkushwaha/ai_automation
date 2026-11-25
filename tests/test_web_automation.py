@@ -2,61 +2,52 @@
 
 from __future__ import annotations
 
-import tempfile
-import pathlib
-import threading
 import http.server
-from unittest import mock
+import pathlib
+import tempfile
+import threading
 
-from hinata.database.database import Database
-from hinata.core.identity_vault import IdentityVault, CANONICAL_FIELDS
+from hinata.automation.app_control import AppControl
+from hinata.automation.file_manager import FileManager
+from hinata.automation.jarvis_cockpit import JarvisOverrideController
+from hinata.automation.system_info import SystemInfo
 from hinata.automation.web_automation import (
     WebAutomation,
-    inspect_html,
     heuristic_canonical_for_field,
+    inspect_html,
     map_fields_to_profile,
-    build_fill_plan,
     normalize_url,
 )
-from hinata.security.action_validator import ActionValidator
-from hinata.core.intent_parser import IntentParser
-from hinata.core.memory import Memory
-from hinata.security.authentication import Authentication
-from hinata.core.personality import PersonalityManager
-from hinata.core.permissions import PermissionManager
-from hinata.automation.jarvis_cockpit import JarvisOverrideController
-from hinata.automation.file_manager import FileManager
-from hinata.automation.system_info import SystemInfo
-from hinata.automation.app_control import AppControl
-from hinata.config import HinataConfig
-from hinata.core.llm_manager import LLMManager
-from hinata.core.ollama_service import OllamaService
-from hinata.core.planner import Planner
-from hinata.core.orchestrator import Orchestrator
 from hinata.automation.windows_control import WindowsControl
+from hinata.config import HinataConfig
+from hinata.core.identity_vault import CANONICAL_FIELDS, IdentityVault
+from hinata.core.intent_parser import IntentParser
+from hinata.core.llm_manager import LLMManager
+from hinata.core.memory import Memory
+from hinata.core.ollama_service import OllamaService
+from hinata.core.orchestrator import Orchestrator
+from hinata.core.permissions import PermissionManager
+from hinata.core.personality import PersonalityManager
+from hinata.core.planner import Planner
+from hinata.database.database import Database
+from hinata.security.action_validator import ActionValidator
+from hinata.security.authentication import Authentication
 
 
 def _make_orch():
     cfg = HinataConfig(data_dir=pathlib.Path(tempfile.mkdtemp()))
     cfg.validate()
-    from hinata.database.database import Database
     db = Database(cfg.database_path)
     mem = Memory(db, 100)
     validator = ActionValidator()
     parser = IntentParser(validator)
     planner = Planner(validator)
     auth = Authentication(db)
-    from hinata.automation.jarvis_cockpit import JarvisOverrideController
     perm = PermissionManager(auth, override_controller=JarvisOverrideController())
     files = FileManager(cfg.security)
-    from hinata.core.identity_vault import IdentityVault
-    from hinata.automation.web_automation import WebAutomation
     vault = IdentityVault(db)
     wa = WebAutomation(files=files, windows=WindowsControl())
-    from hinata.core.llm_manager import LLMManager
-    from hinata.core.ollama_service import OllamaService
     llm = LLMManager(cfg.ollama, OllamaService(cfg.ollama))
-    from hinata.core.personality import PersonalityManager
     orch = Orchestrator(
         validator=validator, parser=parser, planner=planner, llm=llm, memory=mem,
         personality=PersonalityManager(db, "friend"), permissions=perm,
@@ -99,7 +90,7 @@ def test_normalize_url():
     assert normalize_url("http://127.0.0.1:8000/", allow_private=True) == "http://127.0.0.1:8000/"
     try:
         normalize_url("ftp://example.com")
-        assert False, "should reject ftp"
+        raise AssertionError("should reject ftp")
     except Exception:
         pass
 

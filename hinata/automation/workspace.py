@@ -589,6 +589,9 @@ class WorkspaceManager:
         if len(raw) > 500_000:
             raise AutomationError("Source file exceeds 500 KB read limit")
         content = raw.decode("utf-8-sig", errors="replace")
+        # A negative bound sliced from the end: max_chars=-1 returned the whole
+        # file minus its last character while claiming it was truncated.
+        max_chars = max(0, min(int(max_chars), 500_000))
         truncated = len(content) > max_chars
         return {
             "workspace_id": ws_id,

@@ -15,12 +15,14 @@ Supports:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
 from typing import Any
 
 from hinata.database.database import Database
+from hinata.database.timestamps import to_sqlite_utc_or_raise
 from hinata.security.redaction import contains_secrets, detect_secrets, redact_text, redact_value
 
 
@@ -156,6 +158,12 @@ class Memory:
                 f"Refusing to retain sensitive secret material ({', '.join(detected)}) in durable memory."
             )
         norm_key = normalized_key.strip().casefold()
+        # Expiry is compared with SQLite's text datetime('now') in retrieval, so it
+        # must be stored in exactly that format. A caller-supplied ISO string
+        # ("...T...+02:00") otherwise compares as text and can never expire.
+        normalized_expiry: str | None = None
+        if expires_at is not None and str(expires_at).strip():
+            normalized_expiry = to_sqlite_utc_or_raise(expires_at, field="expires_at")
         contradicts_id = ""
         old_id = ""
         if norm_key and memory_type in {"semantic", "project"}:
@@ -220,7 +228,7 @@ class Memory:
                 task_id[:64],
                 project_id[:64],
                 document_path[:512],
-                expires_at,
+                normalized_expiry,
                 embedding_model[:160],
                 vector_json,
             ),
@@ -245,7 +253,14 @@ class Memory:
         summary: str,
         evidence: str = "",
     ) -> str:
-        safe_summary = redact_text(f"Objective: {objective} | Outcome: {outcome} | {summary}")[:2000]
+        # ``evidence`` used to be accepted and then dropped on the floor: the
+        # caller's proof (a command's output, a file hash, a test result) never
+        # reached storage, so an "episode" could not later be audited. Fold it
+        # into the record, redacted like everything else that is persisted.
+        parts = [f"Objective: {objective}", f"Outcome: {outcome}", summary]
+        if evidence.strip():
+            parts.append(f"Evidence: {evidence.strip()}")
+        safe_summary = redact_text(" | ".join(p for p in parts if p))[:2000]
         res = self.propose_record(
             memory_type="episodic",
             content=safe_summary,
@@ -351,10 +366,29 @@ class Memory:
         )
         promoted: list[dict[str, Any]] = []
         for ep in episodes:
+            # Consolidation runs on every maintenance pass, so it must be
+            # idempotent: a workflow that already has a promoted record must not
+            # be promoted again (that produced a duplicate every single run,
+            # because procedural records were not part of propose_record's
+            # existing-key check either).
+            already = self.database.fetch_one(
+                """SELECT memory_id FROM memory_records
+                   WHERE memory_type = 'procedural' AND normalized_key = ?
+                   AND superseded_by = '' LIMIT 1""",
+                ("proc:" + hashlib.sha256(str(ep["content"]).encode("utf-8")).hexdigest()[:16],),
+            )
+            if already is not None:
+                continue
             res = self.propose_record(
                 memory_type="procedural",
                 content=f"Reusable verified workflow: {ep['content']}",
-                normalized_key=f"proc:{hash(ep['content']) & 0xFFFFFFFF:08x}",
+                # ``hash()`` is salted per process (PYTHONHASHSEED), so the same
+                # workflow produced a different key on every launch and the
+                # de-duplication this key exists for never happened. A stable
+                # digest of the content is the correct identifier.
+                normalized_key="proc:" + hashlib.sha256(
+                    str(ep["content"]).encode("utf-8")
+                ).hexdigest()[:16],
                 namespace="procedures",
                 scope="workflows",
                 provenance="episodic_consolidation",
@@ -457,6 +491,7 @@ class Memory:
             """SELECT content AS text, updated_at AS created_at,
                memory_type AS kind, provenance FROM memory_records
                WHERE approval_status = 'approved' AND superseded_by = ''
+               AND (expires_at IS NULL OR expires_at > datetime('now'))
                AND content LIKE ? ESCAPE char(92)
                ORDER BY updated_at DESC LIMIT ?""",
             (pattern, limit),
