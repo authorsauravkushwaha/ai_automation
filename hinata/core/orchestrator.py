@@ -99,6 +99,8 @@ class Orchestrator:
         online_mode_enabled: bool = False,
         llm_enabled: bool = True,
         pull_missing_model: bool = False,
+        web_automation: Any | None = None,
+        identity_vault: Any | None = None,
     ) -> None:
         self.validator = validator
         self.parser = parser
@@ -143,6 +145,17 @@ class Orchestrator:
         self._pull_missing = pull_missing_model
         self._stop_requested = threading.Event()
         self.cancellations = CancellationRegistry()
+        # Web automation & identity — lazy init if not injected
+        if web_automation is not None:
+            self.web_automation = web_automation
+        else:
+            from hinata.automation.web_automation import WebAutomation as _WA
+            self.web_automation = _WA(files=files, windows=windows)
+        if identity_vault is not None:
+            self.identity_vault = identity_vault
+        else:
+            from hinata.core.identity_vault import IdentityVault as _IV
+            self.identity_vault = _IV(memory.database)
 
     def set_autonomy_mode(self, mode: str) -> str:
         if mode not in AUTONOMY_MODES:
@@ -1319,6 +1332,18 @@ class Orchestrator:
             return ActionResult(tool, True, data["formatted"], data)
         if tool == "set_owner_name":
             name = self.personality.set_owner_name(args["name"])
+            # Also sync to identity vault so future autofills use this name automatically
+            try:
+                parts = name.split()
+                fields: dict[str, str] = {"full_name": name}
+                if len(parts) >= 2:
+                    fields["first_name"] = parts[0]
+                    fields["last_name"] = parts[-1]
+                elif len(parts) == 1:
+                    fields["first_name"] = parts[0]
+                self.identity_vault.save_profile("personal", fields, display_name="Personal")
+            except Exception:
+                pass  # personality name is primary; vault sync is best-effort
             message = f"I'll remember to address you as {name}."
             return ActionResult(tool, True, message, {"owner_names": list(self.personality.owner_names)})
         if tool == "owner_name":
@@ -1757,6 +1782,142 @@ class Orchestrator:
                 for p in data["processes"][:25]
             ]
             return ActionResult(tool, True, "\n".join(lines), data)
+        # ── HINATA Web Automation — open + inspect + identity + autofill ──
+        if tool == "open_website":
+            data = self.web_automation.open_website(
+                args["url"], browser=args.get("browser", "default"), headless=bool(args.get("headless", False))
+            )
+            return ActionResult(tool, True, f"Opened {data['url']} in {data.get('browser','browser')}." + (f" via {data.get('via','')}" if data.get("via") else ""), data)
+        if tool == "inspect_forms":
+            data = self.web_automation.inspect_url(args["url"])
+            form_lines = []
+            for idx, form in enumerate(data["forms"]):
+                form_lines.append(f"Form {idx}: action='{form.get('action','')}' method={form.get('method','')} fields={len(form.get('fields',[]))}")
+                for f in form.get("fields", [])[:10]:
+                    form_lines.append(f"  - [{f.get('type')}] name='{f.get('name')}' id='{f.get('id')}' label='{f.get('label')}' placeholder='{f.get('placeholder')}' sel={f.get('selectors')}")
+            msg = f"Found {data['form_count']} form(s) with {data['field_count']} field(s) at {data['url']}.\n" + "\n".join(form_lines) if form_lines else f"No forms detected at {data['url']}."
+            return ActionResult(tool, True, msg, data)
+        if tool == "save_identity":
+            import json as _json
+            profile = args["profile"].strip().lower()
+            fields_raw = args["fields_json"].strip()
+            try:
+                fields = _json.loads(fields_raw)
+                if not isinstance(fields, dict):
+                    raise ValueError("fields_json must decode to an object")
+                # normalize keys/values to strings
+                clean = {str(k).strip().lower(): str(v).strip() for k, v in fields.items() if str(v).strip()}
+            except Exception as exc:
+                raise AutomationError(f"Invalid fields_json: {exc}") from exc
+            saved = self.identity_vault.save_profile(
+                profile, clean,
+                display_name=args.get("display_name", "") or profile.title(),
+                make_default=bool(args.get("make_default", False)),
+            )
+            return ActionResult(tool, True, f"Saved identity '{saved.name}' with {len(saved.fields)} field(s): {', '.join(sorted(saved.fields.keys()))}.", saved.to_dict())
+        if tool == "list_identities":
+            profiles = self.identity_vault.list_profiles()
+            if not profiles:
+                return ActionResult(tool, True, "No identity profiles saved yet. Save one with: save my identity as personal: first_name=..., email=...", {"profiles": []})
+            lines = []
+            for p in profiles:
+                star = "★" if p.is_default else " "
+                preview = ", ".join(f"{k}={('*' + v[-4:] if k in {'pan','aadhaar','card_number','card_cvv'} and len(v)>4 else v[:30])}" for k,v in list(p.fields.items())[:6])
+                lines.append(f"{star} {p.name} ({p.display_name}): {len(p.fields)} fields — {preview}")
+            return ActionResult(tool, True, "Saved identities:\n" + "\n".join(lines), {"profiles": [p.to_dict() for p in profiles]})
+        if tool == "get_identity":
+            name = args.get("profile", "").strip().lower()
+            prof = self.identity_vault.get_profile(name) if name else self.identity_vault.get_default()
+            if not prof:
+                hint = f" '{name}'" if name else ""
+                return ActionResult(tool, False, f"No identity profile{hint} found. List with 'list identities'.", {"found": False})
+            # Mask sensitive for display
+            from hinata.core.identity_vault import SENSITIVE_FIELDS
+            masked = {}
+            for k,v in prof.fields.items():
+                if k in SENSITIVE_FIELDS and len(v) > 4:
+                    masked[k] = "***" + v[-4:]
+                elif k in SENSITIVE_FIELDS:
+                    masked[k] = "***"
+                else:
+                    masked[k] = v
+            return ActionResult(tool, True, f"Identity '{prof.name}' ({prof.display_name}, default={prof.is_default}):\n" + "\n".join(f"  {k}: {v}" for k,v in masked.items()), {"profile": prof.to_dict(), "masked": masked})
+        if tool == "delete_identity":
+            ok = self.identity_vault.delete_profile(args["profile"])
+            if not ok:
+                return ActionResult(tool, False, f"No profile named '{args['profile']}' to delete.", {"deleted": False})
+            return ActionResult(tool, True, f"Deleted identity profile '{args['profile']}'.", {"deleted": True})
+        if tool == "web_autofill":
+            import json as _json
+            url = args["url"]
+            prof_name = args.get("profile", "").strip().lower() or None
+            # Resolve profile fields (prefer explicit name, else default)
+            prof = self.identity_vault.get_profile(prof_name) if prof_name else self.identity_vault.get_default()
+            if not prof:
+                raise AutomationError(f"No identity profile found{' for ' + prof_name if prof_name else ''}. Save one first: save my identity as personal: first_name=John, email=john@example.com")
+            overrides = {}
+            if args.get("field_overrides_json"):
+                try:
+                    overrides = _json.loads(args["field_overrides_json"])
+                    if not isinstance(overrides, dict):
+                        overrides = {}
+                except Exception:
+                    overrides = {}
+            submit = bool(args.get("submit", False))
+            open_browser = args.get("open_browser", True)
+            if isinstance(open_browser, str):
+                open_browser = open_browser.lower() not in {"false","0","no"}
+            # Security: payment/card fields must never be blindly auto-submitted
+            payment_canonicals = {"card_number", "card_cvv", "card_expiry", "card_holder", "pan", "aadhaar", "passport_number"}
+            # Check if profile would contribute payment data to this form
+            has_payment = any(k in payment_canonicals for k in prof.fields.keys())
+            if has_payment and submit:
+                # Disable auto-submit for payment forms; user must review in browser
+                # (PIN-gated full auto-submit can be enabled by explicitly passing payment consent)
+                submit = False
+                # We'll add a warning to the final message
+            data = self.web_automation.autofill(
+                url,
+                profile_fields=prof.fields,
+                profile_name=prof.name,
+                field_overrides=overrides,
+                submit=submit,
+                open_browser=bool(open_browser),
+                browser=args.get("browser", "default"),
+                headless=bool(args.get("headless", False)),
+            )
+            plan = data["plan"]
+            # Post-process: if payment fields were mapped, warn and ensure no silent submit
+            payment_mapped = any(a.get("canonical") in payment_canonicals for a in plan.get("actions", []))
+            exec_info = data["execution"]
+            msg_lines = [
+                f"Autofill prepared for {data['url']} using profile '{prof.name}'.",
+                f"Detected {plan['total_fields']} field(s), {plan['mappable']} mapped from your profile, {plan['missing_in_profile']} missing.",
+            ]
+            for act in plan["actions"][:15]:
+                msg_lines.append(f"  → {act['canonical']} ({act['confidence']}) -> {act['selector']} = '{act['value'][:40]}'")
+            if exec_info.get("backend") == "native":
+                msg_lines.append("Browser opened. A JS autofill snippet is ready — paste it in DevTools Console (F12) to fill instantly.")
+                if plan.get("submit_selector"):
+                    msg_lines.append(f"Submit button: {plan['submit_selector']} (click after reviewing).")
+            else:
+                msg_lines.append(f"Executed via {exec_info.get('backend')}: filled {exec_info.get('filled',0)}/{exec_info.get('total',0)}.")
+                if exec_info.get("submitted"):
+                    msg_lines.append("Form submitted.")
+            if payment_mapped:
+                msg_lines.append("⚠️ Payment/ID fields were filled — for your safety, review in the browser before submitting. Auto-submit is disabled for payment forms.")
+                if has_payment and args.get("submit"):
+                    msg_lines.append("Tip: Remove payment details from the profile or confirm manually in the browser to submit.")
+            if data.get("js_snippet"):
+                msg_lines.append("JS snippet generated (see data.js_snippet — copy it to your clipboard with 'write clipboard <snippet>').")
+            return ActionResult(tool, True, "\n".join(msg_lines), data)
+        if tool == "web_fill_field":
+            data = self.web_automation.fill_field(args["url"], args["selector"], args["value"])
+            ok = data.get("result", {}).get("executed") or data.get("result", {}).get("clicked")
+            return ActionResult(tool, bool(ok) or data.get("result", {}).get("backend")=="native", f"Fill field {args['selector']} at {args['url']}: {data}", data)
+        if tool == "web_click":
+            data = self.web_automation.click_element(args["url"], args["selector"])
+            return ActionResult(tool, bool(data.get("clicked")), f"Click {args['selector']} at {args['url']}: {data}", data)
         if tool == "power_control":
             data = self.cockpit.power_control(args["action"])
             return ActionResult(

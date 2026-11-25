@@ -85,6 +85,16 @@ POLICY = {
     "capture_screen": PermissionLevel.CONFIRM,
     "list_processes": PermissionLevel.SAFE,
     "power_control": PermissionLevel.SENSITIVE,
+    # Web Automation & Identity Vault
+    "open_website": PermissionLevel.SAFE,
+    "inspect_forms": PermissionLevel.SAFE,
+    "list_identities": PermissionLevel.SAFE,
+    "get_identity": PermissionLevel.SAFE,
+    "save_identity": PermissionLevel.CONFIRM,
+    "delete_identity": PermissionLevel.CONFIRM,
+    "web_autofill": PermissionLevel.CONFIRM,
+    "web_fill_field": PermissionLevel.CONFIRM,
+    "web_click": PermissionLevel.CONFIRM,
 }
 
 

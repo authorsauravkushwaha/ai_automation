@@ -241,6 +241,97 @@ class IntentParser:
         if mode_match:
             return self._action("set_personality_mode", {"mode": mode_match.group(1).lower()}, text)
 
+        # ── HINATA Web Autofill & Identity Vault (high priority — before generic open) ──
+        #   open website / go to <url>
+        match = re.fullmatch(r"(?:please\s+)?(?:open|go\s+to|launch|visit)\s+(?:website\s+)?(?:https?://)?(\S+\.[^\s]+)(?:\s+in\s+(\w+)(?:\s+browser)?)?", stripped, re.I)
+        if match:
+            raw_url = match.group(1).strip()
+            if not raw_url.lower().startswith('http'):
+                raw_url = 'https://' + raw_url
+            args: dict[str, object] = {"url": raw_url}
+            if match.group(2):
+                args["browser"] = match.group(2).lower()
+            return self._action("open_website", args, text)
+        # explicit open website syntax
+        match = re.fullmatch(r"open\s+website\s+(\S+)(?:\s+in\s+(\w+))?", stripped, re.I)
+        if match:
+            raw_url = match.group(1).strip()
+            if not raw_url.lower().startswith('http'):
+                raw_url = 'https://' + raw_url
+            oargs: dict[str, object] = {"url": raw_url}
+            if match.group(2):
+                oargs["browser"] = match.group(2).lower()
+            return self._action("open_website", oargs, text)
+        match = re.fullmatch(r"inspect\s+(?:forms?\s+on|page)\s+(\S+)", stripped, re.I)
+        if match:
+            raw_url = match.group(1).strip()
+            if not raw_url.lower().startswith('http'):
+                raw_url = 'https://' + raw_url
+            return self._action("inspect_forms", {"url": raw_url}, text)
+        match = re.fullmatch(r"(?:save|store|remember|update)\s+(?:my\s+)?(?:identity|profile|details)(?:\s+as\s+(\w+))?(?::\s*(.+))?", stripped, re.I)
+        if match:
+            prof = (match.group(1) or 'personal').strip().lower()
+            rest = (match.group(2) or '').strip()
+            fields_json = rest
+            if rest and not (rest.strip().startswith('{') and rest.strip().endswith('}')):
+                import json as _json
+                kv: dict[str, str] = {}
+                import re as _re
+                parts = _re.split(r"\s*[;,]\s*", rest)
+                for part in parts:
+                    if '=' in part:
+                        k, v = part.split('=', 1)
+                        kv[k.strip().lower()] = v.strip()
+                    elif ':' in part:
+                        k, v = part.split(':', 1)
+                        kv[k.strip().lower()] = v.strip()
+                if kv:
+                    fields_json = _json.dumps(kv)
+                else:
+                    fields_json = _json.dumps({'full_name': rest})
+            if not fields_json:
+                fields_json = '{}'
+            return self._action("save_identity", {"profile": prof, "fields_json": fields_json}, text)
+        match = re.fullmatch(r"my\s+(email|phone|address|city|company|website)\s+is\s+(.+)", stripped, re.I)
+        if match:
+            key = match.group(1).strip().lower()
+            val = match.group(2).strip()
+            import json as _json
+            return self._action("save_identity", {"profile": "personal", "fields_json": _json.dumps({key: val})}, text)
+        match = re.fullmatch(r"list\s+(?:my\s+)?(?:identities|profiles|details|saved\s+info)", stripped, re.I)
+        if match:
+            return self._action("list_identities", {}, text)
+        match = re.fullmatch(r"(?:show|get|view)\s+(?:my\s+)?(?:identity|profile|details)(?:\s+(\w+))?", stripped, re.I)
+        if match:
+            prof = (match.group(1) or '').strip()
+            return self._action("get_identity", {"profile": prof} if prof else {}, text)
+        match = re.fullmatch(r"(?:delete|forget|remove)\s+(?:my\s+)?(?:identity|profile)\s+(\w+)", stripped, re.I)
+        if match:
+            return self._action("delete_identity", {"profile": match.group(1).strip().lower()}, text)
+        match = re.fullmatch(r"(?:please\s+)?(?:autofill|fill\s+(?:form|details|my\s+details|my\s+info)|complete\s+form)(?:\s+on|\s+at|\s+for)?\s+(\S+)(?:\s+with\s+(\w+)(?:\s+profile)?)?(?:\s+and\s+submit)?", stripped, re.I)
+        if match:
+            raw_url = match.group(1).strip().rstrip('.,!?')
+            if not raw_url.lower().startswith('http'):
+                raw_url = 'https://' + raw_url
+            fargs: dict[str, object] = {"url": raw_url}
+            if match.group(2):
+                fargs["profile"] = match.group(2).strip().lower()
+            if 'submit' in stripped.lower():
+                fargs["submit"] = True
+            return self._action("web_autofill", fargs, text)
+        match = re.fullmatch(r"fill\s+form\s+(\S+)", stripped, re.I)
+        if match:
+            raw_url = match.group(1).strip()
+            if not raw_url.lower().startswith('http'):
+                raw_url = 'https://' + raw_url
+            return self._action("web_autofill", {"url": raw_url}, text)
+        match = re.fullmatch(r"submit\s+form\s+(\S+)", stripped, re.I)
+        if match:
+            raw_url = match.group(1).strip()
+            if not raw_url.lower().startswith('http'):
+                raw_url = 'https://' + raw_url
+            return self._action("web_autofill", {"url": raw_url, "submit": True}, text)
+
         patterns: list[tuple[str, str, tuple[str, ...]]] = [
             (r"^(?:open|launch|start)\s+(.+)$", "open_application", ("name",)),
             (r"^(?:close|exit|quit)\s+(.+)$", "close_application", ("name",)),

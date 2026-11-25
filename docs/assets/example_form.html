@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HINATA Autofill Demo — Strongest Test Form</title>
+<style>
+  body{font-family:system-ui,Segoe UI,Arial;margin:40px;max-width:700px}
+  form{border:1px solid #ddd;padding:24px;border-radius:12px}
+  label{display:block;margin:8px 0 4px;font-weight:600}
+  input,select,textarea{width:100%;padding:8px;border:1px solid #bbb;border-radius:6px}
+  button{margin-top:16px;padding:10px 18px;background:#0b57d0;color:#fff;border:none;border-radius:8px;cursor:pointer}
+  .hint{color:#555;font-size:0.9em}
+</style>
+</head>
+<body>
+<h1>HINATA — Open • Fill • Submit — Demo Form</h1>
+<p class="hint">Use this page to test: <code>inspect forms on file:///path/to/example_form.html</code> then <code>autofill file:///path/to/example_form.html with personal</code>. All fields use common real-world names/ids.</p>
+
+<form action="https://httpbin.org/post" method="post" id="demo-form">
+  <h3>Personal</h3>
+  <label for="fname">First Name</label>
+  <input id="fname" name="first_name" placeholder="First name" autocomplete="given-name" required>
+
+  <label for="lname">Last Name</label>
+  <input id="lname" name="last_name" placeholder="Last name" autocomplete="family-name" required>
+
+  <label>Full Name (alias test)</label>
+  <input name="fullName" placeholder="Full Name">
+
+  <label>Email</label>
+  <input type="email" name="email" placeholder="you@example.com" autocomplete="email" required>
+
+  <label>Phone</label>
+  <input type="tel" name="phone_number" placeholder="+91 98765 43210" autocomplete="tel" required>
+
+  <h3>Address</h3>
+  <label>Street</label>
+  <input name="address_line1" placeholder="Street address" autocomplete="street-address">
+  <label>City</label>
+  <input name="city" autocomplete="address-level2">
+  <label>State</label>
+  <input name="state" autocomplete="address-level1">
+  <label>ZIP</label>
+  <input name="zipcode" placeholder="Postal code" autocomplete="postal-code">
+  <label>Country</label>
+  <select name="country" autocomplete="country">
+    <option value="">Select</option><option>India</option><option>United States</option><option>United Kingdom</option>
+  </select>
+
+  <h3>Work</h3>
+  <label>Company</label>
+  <input name="company" autocomplete="organization">
+  <label>Job Title</label>
+  <input name="job_title" autocomplete="organization-title">
+  <label>Website</label>
+  <input type="url" name="website" placeholder="https://..." autocomplete="url">
+
+  <label>Message</label>
+  <textarea name="message" placeholder="Anything else..."></textarea>
+
+  <button type="submit">Submit Application</button>
+  <p class="hint">Submits to httpbin.org for testing — check Network tab. HINATA fills all above from your saved identity.</p>
+</form>
+</body>
+</html>

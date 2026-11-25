@@ -27,6 +27,10 @@ automation.
 | Open an installed application | `open Spotify` or `list installed apps` | Searches configured apps, Start Menu/Desktop shortcuts, Windows registry, and packaged Start apps. |
 | Write code in a language | `write code in Rust: implement ...` | Supports 30+ languages; use `output_path` in a normal request to save inside permitted roots. |
 | Remember your name | `My name is Saurav` or `our names are Saurav and Priya` | Stored locally; installation asks interactively when a terminal is available. Settings can change it later. |
+| Open any website | `open website google.com` or `go to https://example.com in chrome` | Opens in default or named browser; normalizes bare domains; `headless:true` validates without opening. |
+| Save autofill details | `save my identity as personal: first_name=Saurav, last_name=Kushwaha, email=saurav@example.com, phone=9876543210` | Local vault; `list my identities`, `show my profile`, `my city is Kolkata` to update one field. |
+| Inspect & fill any form | `inspect forms on https://example.com` then `autofill https://example.com/form with personal` | Detects every field, maps 50+ aliases (`fname`, `zipcode`, `tel`), works via Playwright/Selenium or one-paste JS snippet. |
+| Fill + submit | `autofill https://example.com/apply with personal and submit` | Fills then clicks submit; payment/ID fields are filled but auto-submit is blocked for safety — review first. |
 | See your machine's status | `system info` | Deterministic; no model needed. |
 | Search local notes | `index document Documents/notes.txt` then `search knowledge for project` | Indexing requires approval. Files must be under an allowed root. |
 | Remember a preference | `remember that my editor is vim` then `list preferences` | Saving requires approval; memory is stored locally in unencrypted SQLite. |

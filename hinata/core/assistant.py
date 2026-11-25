@@ -106,6 +106,11 @@ class HinataAssistant:
         )
         self.files = FileManager(self.config.security)
         self.cockpit = DesktopCockpit(self.files)
+        # Identity vault + web automation (local, no cloud)
+        from hinata.core.identity_vault import IdentityVault
+        from hinata.automation.web_automation import WebAutomation
+        self.identity_vault = IdentityVault(self.database)
+        self.web_automation = WebAutomation(files=self.files, windows=WindowsControl(), vault=self.vault)
         self.knowledge = KnowledgeIndex(self.database, self.files, self.embeddings)
         self.knowledge_watcher = ThrottledKnowledgeWatcher(self.knowledge)
         self.tasks = TaskStore(self.database, max_revisions=max(1, self.config.agentic.max_replans))
@@ -164,6 +169,8 @@ class HinataAssistant:
             system=SystemInfo(),
             llm_enabled=self.config.ollama.enabled if llm_enabled is None else llm_enabled,
             pull_missing_model=self.config.ollama.auto_pull,
+            web_automation=self.web_automation,
+            identity_vault=self.identity_vault,
         )
         self.microphone = Microphone(self.config.speech.microphone, self.config.speech.sample_rate)
         self.stt = SpeechToText(self.config.speech)

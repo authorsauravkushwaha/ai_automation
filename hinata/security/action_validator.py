@@ -299,6 +299,72 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "action": ("enum", ["lock", "sleep", "hibernate"]),
         },
     },
+    "open_website": {
+        "required": ["url"],
+        "properties": {
+            "url": ("string", 3, 2048),
+            "browser": ("string", 0, 80),
+            "headless": ("boolean",),
+        },
+    },
+    "inspect_forms": {
+        "required": ["url"],
+        "properties": {
+            "url": ("string", 3, 2048),
+        },
+    },
+    "save_identity": {
+        "required": ["profile", "fields_json"],
+        "properties": {
+            "profile": ("string", 1, 64),
+            "fields_json": ("string", 2, 20000),
+            "display_name": ("string", 0, 120),
+            "make_default": ("boolean",),
+        },
+    },
+    "list_identities": {
+        "required": [],
+        "properties": {},
+    },
+    "get_identity": {
+        "required": [],
+        "properties": {
+            "profile": ("string", 0, 64),
+        },
+    },
+    "delete_identity": {
+        "required": ["profile"],
+        "properties": {
+            "profile": ("string", 1, 64),
+        },
+    },
+    "web_autofill": {
+        "required": ["url"],
+        "properties": {
+            "url": ("string", 3, 2048),
+            "profile": ("string", 0, 64),
+            "field_overrides_json": ("string", 0, 5000),
+            "submit": ("boolean",),
+            "browser": ("string", 0, 80),
+            "headless": ("boolean",),
+            "open_browser": ("boolean",),
+        },
+    },
+    "web_fill_field": {
+        "required": ["url", "selector", "value"],
+        "properties": {
+            "url": ("string", 3, 2048),
+            "selector": ("string", 1, 500),
+            "value": ("string", 1, 2000),
+        },
+    },
+    "web_click": {
+        "required": ["url", "selector"],
+        "properties": {
+            "url": ("string", 3, 2048),
+            "selector": ("string", 1, 500),
+        },
+    },
 }
 
 

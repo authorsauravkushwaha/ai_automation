@@ -104,6 +104,15 @@ DEFAULT_MANIFESTS: tuple[ToolManifest, ...] = (
     ToolManifest("capture_screen", "1.0", "Capture desktop screen to permitted .png file with optional local vision/OCR", "local_write", "medium", "deduplicated", False, 20.0),
     ToolManifest("list_processes", "1.0", "Inspect running local processes sorted by memory footprint", "read_only", "low", "idempotent", True, 10.0),
     ToolManifest("power_control", "1.0", "PIN-gated workstation lock, sleep, or hibernate power state control", "destructive", "high", "non_idempotent", False, 10.0),
+    ToolManifest("open_website", "1.0", "Open any URL in default or named system browser (SSRF-safe)", "process_control", "low", "non_idempotent", False, 10.0),
+    ToolManifest("inspect_forms", "1.0", "Fetch page and enumerate all fillable form fields with selectors", "read_only", "low", "idempotent", True, 15.0),
+    ToolManifest("save_identity", "1.0", "Save/update local identity profile for autofill (never stores raw passwords)", "local_write", "medium", "idempotent", False, 8.0),
+    ToolManifest("list_identities", "1.0", "List all local identity profiles (fields preview redacted)", "read_only", "low", "idempotent", True, 5.0),
+    ToolManifest("get_identity", "1.0", "Show a single identity profile (sensitive fields masked)", "read_only", "low", "idempotent", True, 5.0),
+    ToolManifest("delete_identity", "1.0", "Delete a local identity profile", "local_write", "medium", "non_idempotent", False, 5.0),
+    ToolManifest("web_autofill", "1.0", "Intelligent web form autofill: open + fill + submit any website with your saved profile", "ui_focus", "medium", "non_idempotent", False, 30.0),
+    ToolManifest("web_fill_field", "1.0", "Fill a single web form field via precise CSS selector", "ui_focus", "medium", "non_idempotent", False, 15.0),
+    ToolManifest("web_click", "1.0", "Click a web page element via precise CSS selector", "ui_focus", "medium", "non_idempotent", False, 15.0),
 )
 
 
