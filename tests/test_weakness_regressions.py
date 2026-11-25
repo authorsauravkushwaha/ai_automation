@@ -8,6 +8,8 @@ return. The audit evidence (probe commands and observed output) is recorded in
 from __future__ import annotations
 
 import datetime as dt
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -19,6 +21,7 @@ from hinata.automation.communication_center import CommunicationCenter
 from hinata.automation.dev_assistant import DevAssistant
 from hinata.automation.file_manager import FileManager
 from hinata.automation.smart_scraper import _narrow_html_to_hint
+from hinata.automation.workspace import WorkspaceManager
 from hinata.config import HinataConfig, SecurityConfig
 from hinata.core.identity_vault import IdentityVault
 from hinata.core.observability import TraceRecorder
@@ -363,6 +366,61 @@ class ReminderAndDraftLimitTests(unittest.TestCase):
 
     def test_due_reminders_clamps_non_positive_limit(self) -> None:
         self.assertEqual(self.center.due_reminders(limit=-1), [])
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class GitErrorReportingTests(unittest.TestCase):
+    """`git status` must work on a fresh repo and must explain its failures."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "root"
+        self.root.mkdir()
+        config = HinataConfig(data_dir=Path(self.tmp.name) / "data", security=SecurityConfig(allowed_roots=[self.root]))
+        config.validate()
+        self.files = FileManager(config.security)
+        self.database = Database(Path(self.tmp.name) / "git.db")
+        self.dev = DevAssistant(
+            files=self.files,
+            workspace_manager=WorkspaceManager(self.database, [self.root]),
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _init(self, name: str) -> Path:
+        repo = self.root / name
+        repo.mkdir()
+        for cmd in (["git", "init", "-q", "-b", "trunk"],
+                    ["git", "config", "user.email", "a@b.c"],
+                    ["git", "config", "user.name", "T"]):
+            subprocess.run(cmd, cwd=repo, check=True, capture_output=True)
+        return repo
+
+    def test_status_works_on_a_repo_with_no_commits(self) -> None:
+        repo = self._init("fresh")
+        (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+        result = self.dev.git_status(workspace="fresh")
+        # The header is "## No commits yet on trunk"; the branch is "trunk", not "No".
+        self.assertEqual(result["branch"], "trunk")
+        self.assertEqual(result["changed_files"], 1)
+        self.assertEqual(result["log"], [])
+
+    def test_failure_message_carries_gits_own_reason(self) -> None:
+        plain = self.root / "plain"
+        plain.mkdir()
+        with self.assertRaises(AutomationError) as ctx:
+            self.dev.git_status(workspace="plain")
+        message = str(ctx.exception)
+        self.assertIn("not a git repository", message.lower())
+        self.assertNotIn("returned non-zero exit status", message)
+
+    def test_diff_failure_names_the_reason_not_the_usage_block(self) -> None:
+        plain = self.root / "plain2"
+        plain.mkdir()
+        with self.assertRaises(AutomationError) as ctx:
+            self.dev.git_diff(workspace="plain2")
+        self.assertIn("not a git repository", str(ctx.exception).lower())
 
 
 if __name__ == "__main__":

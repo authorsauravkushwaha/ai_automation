@@ -31,6 +31,28 @@ def _git_env() -> dict[str, str]:
     return env
 
 
+def _git_failure(exc: subprocess.CalledProcessError) -> str:
+    """Return git's own explanation, not Python's.
+
+    ``str(CalledProcessError)`` is just "Command '[...]' returned non-zero exit
+    status 128", which told the user nothing. git puts the actual reason on
+    stderr ("fatal: not a git repository", "nothing to commit", …), so prefer
+    that, then stdout, and fall back to the exception text.
+    """
+    stderr = (getattr(exc, "stderr", "") or "").strip()
+    stdout = (getattr(exc, "output", "") or "").strip()
+    detail = stderr or stdout
+    if detail:
+        lines = [line.strip() for line in detail.splitlines() if line.strip()]
+        # ``git diff`` prints its whole usage block on a bad invocation, so the
+        # last line is a random option. Prefer the actual diagnostic.
+        for line in lines:
+            if line.startswith(("fatal:", "error:", "warning:")):
+                return line[:400]
+        return (lines[0] if lines else detail)[:400]
+    return str(exc)[:400]
+
+
 def _python_executable() -> str:
     """Interpreter to run tests with; ``python`` may not exist on Linux/macOS."""
     return sys.executable or ("python" if os.name == "nt" else "python3")
@@ -46,18 +68,35 @@ class DevAssistant:
         try:
             # ``git status -b`` always emits a branch header. The tracked change list
             # comes from --porcelain so the summary is accurate.
-            status = subprocess.check_output(_GIT_BASE + ["status", "--porcelain=v1", "-b"], cwd=root, text=True, timeout=10, env=_git_env())
+            status = subprocess.check_output(
+                _GIT_BASE + ["status", "--porcelain=v1", "-b"], cwd=root, text=True,
+                timeout=10, env=_git_env(), stderr=subprocess.STDOUT
+            )
             branch = ""
             ahead_behind = ""
             for line in status.splitlines():
                 if line.startswith("##"):
                     header = line[3:].strip()
-                    branch = header.split("...")[0].split(" ")[0].strip()
+                    # On an unborn branch git says "No commits yet on master";
+                    # splitting on the first space reported the branch as "No".
+                    if header.startswith("No commits yet on "):
+                        branch = header[len("No commits yet on ") :].strip()
+                    else:
+                        branch = header.split("...")[0].split(" ")[0].strip()
                     if "[" in header and header.endswith("]"):
                         ahead_behind = header[header.index("[") + 1 : -1]
                     break
             changed = [line for line in status.splitlines() if line.strip() and not line.startswith("##")]
-            log = subprocess.check_output(_GIT_BASE + ["log", "--oneline", "-5"], cwd=root, text=True, timeout=10, env=_git_env())
+            try:
+                log = subprocess.check_output(
+                    _GIT_BASE + ["log", "--oneline", "-5"], cwd=root, text=True,
+                    timeout=10, env=_git_env(), stderr=subprocess.DEVNULL,
+                )
+            except subprocess.CalledProcessError:
+                # A freshly ``git init``'d repository has no commits, so ``git
+                # log`` exits 128 ("does not have any commits yet"). That is a
+                # normal first-day state, not a failure of ``git status``.
+                log = ""
             diff_stat = subprocess.check_output(_GIT_BASE + ["diff", "--stat"], cwd=root, text=True, timeout=10, env=_git_env())
             return {
                 "root": str(root),
@@ -68,8 +107,10 @@ class DevAssistant:
                 "diff_stat": diff_stat[:1000],
                 "porcelain": status[:2000],
             }
-        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-            raise AutomationError(f"git status failed in {root}: {exc}") from exc
+        except subprocess.CalledProcessError as exc:
+            raise AutomationError(f"git status failed in {root}: {_git_failure(exc)}") from exc
+        except FileNotFoundError as exc:
+            raise AutomationError("git is not installed or not on PATH") from exc
 
     def git_diff(self, workspace: str = "", *, staged: bool = False) -> dict[str, Any]:
         root = self._resolve_workspace(workspace)
@@ -77,10 +118,14 @@ class DevAssistant:
         if staged:
             args.insert(len(_GIT_BASE) + 1, "--cached")
         try:
-            out = subprocess.check_output(args, cwd=root, text=True, timeout=10, env=_git_env())
+            out = subprocess.check_output(
+                args, cwd=root, text=True, timeout=10, env=_git_env(), stderr=subprocess.STDOUT
+            )
             return {"root": str(root), "staged": staged, "diff": out[:10000], "truncated": len(out) > 10000}
-        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-            raise AutomationError(f"git diff failed: {exc}") from exc
+        except subprocess.CalledProcessError as exc:
+            raise AutomationError(f"git diff failed: {_git_failure(exc)}") from exc
+        except FileNotFoundError as exc:
+            raise AutomationError("git is not installed or not on PATH") from exc
 
     def git_commit(self, message: str, workspace: str = "", *, add_all: bool = False) -> dict[str, Any]:
         if not message or len(message.strip()) < 3:
@@ -92,14 +137,25 @@ class DevAssistant:
             if add_all:
                 subprocess.check_output(_GIT_BASE + ["add", "-A"], cwd=root, timeout=10, env=_git_env())
             # Only commit if there's something to commit
-            status = subprocess.check_output(_GIT_BASE + ["status", "--porcelain"], cwd=root, text=True, timeout=10, env=_git_env())
+            status = subprocess.check_output(
+                _GIT_BASE + ["status", "--porcelain"], cwd=root, text=True,
+                timeout=10, env=_git_env(), stderr=subprocess.STDOUT
+            )
             if not status.strip():
                 return {"root": str(root), "committed": False, "note": "No changes to commit"}
-            out = subprocess.check_output(_GIT_BASE + ["commit", "-m", message.strip()], cwd=root, text=True, timeout=10, env=_git_env())
-            rev = subprocess.check_output(_GIT_BASE + ["rev-parse", "--short", "HEAD"], cwd=root, text=True, timeout=10, env=_git_env()).strip()
+            out = subprocess.check_output(
+                _GIT_BASE + ["commit", "-m", message.strip()], cwd=root, text=True,
+                timeout=10, env=_git_env(), stderr=subprocess.STDOUT
+            )
+            rev = subprocess.check_output(
+                _GIT_BASE + ["rev-parse", "--short", "HEAD"], cwd=root, text=True,
+                timeout=10, env=_git_env(), stderr=subprocess.STDOUT
+            ).strip()
             return {"root": str(root), "committed": True, "rev": rev, "output": out[:1000]}
         except subprocess.CalledProcessError as exc:
-            raise AutomationError(f"git commit failed: {exc.output if hasattr(exc, 'output') else exc}") from exc
+            raise AutomationError(f"git commit failed: {_git_failure(exc)}") from exc
+        except FileNotFoundError as exc:
+            raise AutomationError("git is not installed or not on PATH") from exc
 
     def code_review(self, path: str = "", workspace: str = "") -> dict[str, Any]:
         """Heuristic review: long functions, missing docstrings, broad except, hardcoded secrets."""

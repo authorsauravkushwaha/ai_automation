@@ -1,6 +1,6 @@
 # Defect hunt — verified findings
 
-30 defects found and fixed, each re-verified by an executable probe, plus one
+33 defects found and fixed, each re-verified by an executable probe, plus one
 candidate investigated and **rejected as sound** (see the end). Every entry below
 names the observable symptom, the fix and the check that proves the fix.
 
@@ -36,6 +36,9 @@ names the observable symptom, the fix and the check that proves the fix.
 | D28 | security | tool failure text reached the user **unredacted** (the last copy of a secret) |
 | D29 | system_tuner | second backup of the same folder within one clock second failed outright |
 | D30 | system_tuner | backing up into the source archived the live zip into itself, nesting every run |
+| D31 | dev_assistant | `git_status` crashed on a repo with **no commits yet** |
+| D32 | dev_assistant | git failures printed an empty reason (stderr was never captured) |
+| D33 | dev_assistant | an unborn repo's branch was reported as `"No"` |
 
 ---
 
@@ -178,3 +181,20 @@ names the observable symptom, the fix and the check that proves the fix.
 **Checked and cleared:** `quick_cleanup` already clamps (`max(0, min_age_days)`) and refuses symlinks.
 
 **Regression tests:** `SameSecondBackupTests` (2).
+
+## D31 — `git_status` crashed on a repository with no commits yet
+- **Evidence:** after `git init` + config, `git_status` raised `AutomationError("git status failed in …: Command '[...git log --oneline -5]' returned non-zero exit status 128")`. `git log` legitimately fails on an unborn branch. A brand-new project is the first thing a user points this at.
+- **Fix:** tolerate `CalledProcessError` from `git log` and report `log: []`.
+- **Verified:** fresh repo → `changed_files=1`, `log=[]`, no exception.
+
+## D32 — git failures printed no reason at all
+- **Evidence:** `git_commit` on an untracked-only repo produced `AutomationError("git commit failed: ")` — empty. `str(CalledProcessError)` is "Command '[...]' returned non-zero exit status N", but the code interpolated `exc.output`, which is `""` because the original calls did not capture stderr.
+- **Fix:** capture stderr on all five guarded `check_output` calls (`stderr=subprocess.STDOUT`) and route messages through a new `_git_failure()` helper that prefers git's own `fatal:`/`error:`/`warning:` line.
+- **Verified:** three failure paths now report `fatal: not a git repository (or any of the parent directories): .git` (and `warning: Not a git repository…` for `git diff`), instead of an empty or usage-block tail.
+
+## D33 — a fresh repo's branch was reported as `"No"`
+- **Evidence:** git prints `## No commits yet on trunk` on an unborn branch; the parser took `header.split(" ")[0]`, yielding `branch="No"`.
+- **Fix:** recognise the `No commits yet on <branch>` header.
+- **Verified:** `git init -b trunk` → `branch == "trunk"`; after the first commit, still `trunk`.
+
+**Regression tests:** `GitErrorReportingTests` (3, skipped when git is absent).
