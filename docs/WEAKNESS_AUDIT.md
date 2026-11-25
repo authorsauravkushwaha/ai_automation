@@ -500,6 +500,14 @@ are split and pinned by tests, `_run_tool` is a guarded dispatcher, `MainWindow`
 is an 8-line composition over three slices, and the window's appearance is
 verified by rendering it rather than inferred from its slots firing.
 
+## Detailed remediation log
+
+Every defect in this document, plus the ones found by probing coverage-poor
+modules afterwards (bounded parsers, dropped evidence, ignored `fmt`, negative
+slice bounds, negative SQL `LIMIT`, unredacted failure text), is written up with
+its evidence, fix and verification in [`docs/REMEDIATION_LOG.md`](REMEDIATION_LOG.md):
+28 fixed entries and one candidate investigated and rejected as sound.
+
 ## Verification after the changes
 
 ```text
