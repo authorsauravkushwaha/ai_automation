@@ -30,6 +30,7 @@ from hinata.core.permissions import PermissionManager
 from hinata.core.personality import PersonalityManager
 from hinata.core.planner import Planner
 from hinata.core.providers import HardwareCapabilityService
+from hinata.core.reasoning import ReflectionStore, ThinkingEngine
 from hinata.core.tool_registry import ToolRegistry
 from hinata.core.types import ActionRequest, AssistantResponse
 from hinata.database.database import Database
@@ -153,6 +154,13 @@ class HinataAssistant:
             max_replans=self.config.agentic.max_replans,
             per_tool_timeout_seconds=self.config.agentic.per_tool_timeout_seconds,
         )
+        self.thinking = ThinkingEngine(
+            self.llm,
+            mode=self.config.thinking.mode,
+            reflections=ReflectionStore(self.memory),
+            max_seconds=self.config.thinking.max_seconds,
+            max_model_calls=self.config.thinking.max_model_calls,
+        )
         self.orchestrator = Orchestrator(
             validator=self.validator,
             parser=self.parser,
@@ -194,6 +202,12 @@ class HinataAssistant:
             system_tuner=self.system_tuner,
             researcher=self.researcher,
             dev_assistant=self.dev_assistant,
+            thinking=self.thinking,
+            thinking_enabled=(
+                self.config.thinking.enabled
+                and (self.config.ollama.enabled if llm_enabled is None else llm_enabled)
+                and self.config.thinking.mode != "off"
+            ),
         )
         self.microphone = Microphone(self.config.speech.microphone, self.config.speech.sample_rate)
         self.stt = SpeechToText(self.config.speech)
@@ -225,6 +239,21 @@ class HinataAssistant:
 
     def process_text(self, text: str, *, autonomy_mode: str | None = None) -> AssistantResponse:
         return self.orchestrator.process(text, source="text", autonomy_mode=autonomy_mode)
+
+    def set_thinking_mode(self, mode: str) -> str:
+        """Change how hard HINATA thinks before answering; persists for this session."""
+        resolved = self.thinking.set_mode(mode)
+        self.orchestrator.thinking_enabled = bool(self.config.thinking.enabled) and resolved != "off"
+        return resolved
+
+    def thinking_status(self) -> dict[str, Any]:
+        status = self.thinking.status()
+        status["enabled"] = self.orchestrator.thinking_enabled
+        status["maximums"] = {
+            "max_seconds": self.config.thinking.max_seconds,
+            "max_model_calls": self.config.thinking.max_model_calls,
+        }
+        return status
 
     def process_voice(self, duration_seconds: float = 5.0) -> tuple[VoiceResult, AssistantResponse]:
         voice = self.voice.listen(duration_seconds)
@@ -401,6 +430,7 @@ class HinataAssistant:
             "log": str(self.config.log_path),
             "allowed_roots": [str(path) for path in self.config.security.allowed_roots],
             "autonomy_mode": self.orchestrator.autonomy_mode,
+            "thinking": self.thinking_status(),
             "tactical_override": self.override_controller.status(),
             "offline_policy": self.offline_guard.status(),
             "web_search": {

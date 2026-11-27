@@ -37,6 +37,7 @@ automation.
 | Reminders | `remind me call mom in 2 hours` / `create reminder standup at tomorrow 9am` | Natural time parsing (`in X hours`, `tomorrow 3pm`). |
 | System health | `health check` / `network diag` / `backup Docs to Backups` | Disk/memory/CPU + backup pruning + cleanup dry-run. |
 | Deep research | `deep research on quantum computing` / `compare X vs Y` | 4 parallel queries, synthesis + citations; `summarize url https://...` |
+| Make it *think* harder | `hinata think deep` (or the `Think:` dropdown) | Bounded recon → self-critique → revision → verification loop around model answers and plans. Thinking never grants permissions. See [Thinking layer](docs/THINKING_LAYER.md). |
 | Dev help | `git status` / `code review` / `dependency audit` / `run tests` | Local git, heuristic review (secrets, bare except), pytest. |
 | See your machine's status | `system info` | Deterministic; no model needed. |
 | Search local notes | `index document Documents/notes.txt` then `search knowledge for project` | Indexing requires approval. Files must be under an allowed root. |
@@ -344,7 +345,13 @@ whisper_compute_type = "int8"
 # microphone = 0
 
 [personality]
-mode = "friend"  # friend, advisor, technical, strategist, professional
+mode = "friend"  # friend, advisor, technical, strategist, professional, jarvis
+
+[thinking]
+enabled = true
+mode = "balanced"      # off | quick | balanced | deep | ultra
+max_seconds = 150.0    # hard wall-clock ceiling for one request's deliberation
+max_model_calls = 7    # hard cap on extra local model calls
 
 [security]
 # allowed_roots = ['C:\Users\YOUR_NAME\Documents', 'C:\Users\YOUR_NAME\Downloads']

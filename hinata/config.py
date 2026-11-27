@@ -286,6 +286,44 @@ class SecurityConfig:
 
 
 @dataclass(slots=True)
+class ThinkingConfig:
+    """Owner-facing controls for HINATA's deliberate reasoning layer.
+
+    Thinking only ever adds review passes around an answer or a proposed plan.
+    It never grants tool authority: every action still passes the permission
+    manager and the normal approval flow.
+    """
+
+    enabled: bool = True
+    mode: str = "balanced"
+    max_seconds: float = 150.0
+    max_model_calls: int = 7
+    memory_budget_chars: int = 1400
+    knowledge_budget_chars: int = 1200
+    require_min_confidence: bool = False
+
+    def validate(self) -> None:
+        _require_bool(self.enabled, "thinking.enabled")
+        _require_bool(self.require_min_confidence, "thinking.require_min_confidence")
+        if self.mode not in {"off", "quick", "balanced", "deep", "ultra"}:
+            raise ConfigError(
+                "thinking.mode must be one of: off, quick, balanced, deep, ultra"
+            )
+        seconds = _require_finite_number(self.max_seconds, "thinking.max_seconds")
+        if not 10.0 <= seconds <= 900.0:
+            raise ConfigError("thinking.max_seconds must be between 10 and 900")
+        calls = _require_int(self.max_model_calls, "thinking.max_model_calls")
+        if not 1 <= calls <= 20:
+            raise ConfigError("thinking.max_model_calls must be between 1 and 20")
+        memory_chars = _require_int(self.memory_budget_chars, "thinking.memory_budget_chars")
+        if not 0 <= memory_chars <= 8000:
+            raise ConfigError("thinking.memory_budget_chars must be between 0 and 8000")
+        knowledge_chars = _require_int(self.knowledge_budget_chars, "thinking.knowledge_budget_chars")
+        if not 0 <= knowledge_chars <= 8000:
+            raise ConfigError("thinking.knowledge_budget_chars must be between 0 and 8000")
+
+
+@dataclass(slots=True)
 class AgenticConfig:
     autonomy_mode: str = "APPROVED_PLAN"
     max_plan_steps: int = 12
@@ -402,6 +440,7 @@ class HinataConfig:
     interface: InterfaceConfig = field(default_factory=InterfaceConfig)
     personality: PersonalityConfig = field(default_factory=PersonalityConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    thinking: ThinkingConfig = field(default_factory=ThinkingConfig)
     applications: dict[str, Application] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -414,6 +453,7 @@ class HinataConfig:
         self.interface.validate()
         self.personality.validate()
         self.memory.validate()
+        self.thinking.validate()
         if not self.applications:
             self.applications = default_applications()
         normalized: dict[str, Application] = {}
@@ -529,7 +569,7 @@ def load_config(path: str | Path | None = None) -> HinataConfig:
 
     known = {
         "data_dir", "ollama", "speech", "security", "agentic", "wake_word", "interface",
-        "personality", "memory", "applications",
+        "personality", "memory", "thinking", "applications",
     }
     unknown = set(raw) - known
     if unknown:
@@ -557,6 +597,7 @@ def load_config(path: str | Path | None = None) -> HinataConfig:
         interface=_section(InterfaceConfig, raw.get("interface", {}), "interface"),
         personality=_section(PersonalityConfig, raw.get("personality", {}), "personality"),
         memory=_section(MemoryConfig, raw.get("memory", {}), "memory"),
+        thinking=_section(ThinkingConfig, raw.get("thinking", {}), "thinking"),
         applications=apps,
     )
     try:

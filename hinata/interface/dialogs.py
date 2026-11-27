@@ -82,6 +82,49 @@ class SettingsDialog(QDialog):
         form.addRow("Model changes", QLabel("Edit config.toml and restart HINATA"))
         tabs.addTab(general, "General")
 
+        thinking = QWidget()
+        thinking_form = QFormLayout(thinking)
+        self.thinking_enabled_checkbox = QCheckBox(
+            "Deliberate before answering (recon, self-critique, revision, verification)"
+        )
+        self.thinking_enabled_checkbox.setChecked(
+            assistant.config.thinking.enabled and assistant.orchestrator.thinking_active
+        )
+        thinking_form.addRow(self.thinking_enabled_checkbox)
+        self.thinking_mode_combo = QComboBox()
+        for profile in assistant.thinking.status()["available_modes"]:
+            self.thinking_mode_combo.addItem(
+                f"{profile['label']} — {profile['description']}", profile["key"]
+            )
+        mode_index = self.thinking_mode_combo.findData(assistant.thinking.mode)
+        if mode_index >= 0:
+            self.thinking_mode_combo.setCurrentIndex(mode_index)
+        self.thinking_mode_combo.setToolTip(
+            "Higher profiles take longer on the same local model but catch more mistakes first."
+        )
+        thinking_form.addRow("Profile", self.thinking_mode_combo)
+        self.thinking_seconds_spin = QDoubleSpinBox()
+        self.thinking_seconds_spin.setRange(10.0, 900.0)
+        self.thinking_seconds_spin.setSingleStep(15.0)
+        self.thinking_seconds_spin.setValue(float(assistant.config.thinking.max_seconds))
+        thinking_form.addRow("Hard time limit (seconds)", self.thinking_seconds_spin)
+        self.thinking_calls_spin = QSpinBox()
+        self.thinking_calls_spin.setRange(1, 20)
+        self.thinking_calls_spin.setValue(int(assistant.config.thinking.max_model_calls))
+        thinking_form.addRow("Maximum extra model calls", self.thinking_calls_spin)
+        thinking_form.addRow(
+            "Reflection lessons",
+            QLabel(f"{assistant.thinking.reflections.count()} stored locally"),
+        )
+        thinking_hint = QLabel(
+            "Thinking only reviews answers and proposed plans. Every action still passes the "
+            "permission manager and the normal approval flow."
+        )
+        thinking_hint.setWordWrap(True)
+        thinking_hint.setObjectName("muted")
+        thinking_form.addRow(thinking_hint)
+        tabs.addTab(thinking, "Thinking")
+
         voice = QWidget()
         voice_layout = QVBoxLayout(voice)
         voice_form = QFormLayout()
@@ -144,6 +187,16 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
         self._current_device = current_device
         QTimer.singleShot(0, self.refresh_devices)
+
+    @property
+    def thinking_settings(self) -> dict[str, Any]:
+        """Return the chosen thinking profile so the window can apply it live."""
+        return {
+            "enabled": self.thinking_enabled_checkbox.isChecked(),
+            "mode": str(self.thinking_mode_combo.currentData()),
+            "max_seconds": float(self.thinking_seconds_spin.value()),
+            "max_model_calls": int(self.thinking_calls_spin.value()),
+        }
 
     @property
     def hands_free_settings(self) -> HandsFreeSettings:

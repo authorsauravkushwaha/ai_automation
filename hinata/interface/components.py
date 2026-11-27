@@ -11,7 +11,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QTextBrowser, QVBoxLayout
+from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QTextBrowser, QVBoxLayout
 
 LOGGER = logging.getLogger(__name__)
 
@@ -104,6 +104,36 @@ class ConversationView(QTextBrowser):
     def jump_to_latest(self) -> None:
         scrollbar = self.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+
+class ThinkingSelector(QComboBox):
+    """Header control that picks HINATA's deliberation profile.
+
+    Lives here, not in the window slice, so the window keeps one concern per
+    method and this control stays unit-testable without a full window.
+    """
+
+    TOOLTIP = (
+        "How hard HINATA reasons before answering: recon, self-critique, revision, "
+        "verification. It never grants extra permissions."
+    )
+
+    def __init__(self, profiles: list[dict[str, Any]], current: str, parent: Any = None) -> None:
+        super().__init__(parent)
+        for profile in profiles:
+            self.addItem(f"Think: {profile['label']}", profile["key"])
+        index = self.findData(current)
+        if index >= 0:
+            self.setCurrentIndex(index)
+        self.setToolTip(self.TOOLTIP)
+
+    @property
+    def selected_mode(self) -> str:
+        return str(self.currentData() or "balanced")
+
+    @property
+    def selected_label(self) -> str:
+        return self.currentText().split(": ", 1)[-1]
 
 
 class WorkerSignals(QObject):

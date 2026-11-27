@@ -31,7 +31,7 @@ from hinata import __version__
 from hinata.core.assistant import HinataAssistant
 from hinata.core.types import AssistantResponse
 from hinata.interface.canvas import OrbLogo, SceneCanvas
-from hinata.interface.components import ConversationView, StatusPill, Worker
+from hinata.interface.components import ConversationView, StatusPill, ThinkingSelector, Worker
 from hinata.interface.control_center import AgentControlCenterDialog
 from hinata.interface.dialogs import EnrollmentDialog, MemoryDialog, SettingsDialog, StatusDialog
 from hinata.interface.styles import STYLE_SHEET
@@ -78,6 +78,7 @@ class _MainWindowSlices(QMainWindow):
         def _voice_tick(self, *args: Any, **kwargs: Any) -> Any: ...
         def apply_connection_state(self, *args: Any, **kwargs: Any) -> Any: ...
         def change_personality_mode(self, *args: Any, **kwargs: Any) -> Any: ...
+        def change_thinking_mode(self, *args: Any, **kwargs: Any) -> Any: ...
         def closeEvent(self, *args: Any, **kwargs: Any) -> Any: ...
         def connect_ollama(self, *args: Any, **kwargs: Any) -> Any: ...
         def connection_error(self, *args: Any, **kwargs: Any) -> Any: ...
@@ -124,6 +125,7 @@ class _MainWindowSlices(QMainWindow):
         processing_pill: StatusPill
         reconnect_button: QPushButton
         send_button: QPushButton
+        thinking_combo: ThinkingSelector
         speak_responses: bool
         speaking_pill: StatusPill
         speech_signals: SpeechSignals
@@ -186,6 +188,14 @@ class WindowChromeMixin(_MainWindowSlices):
         if mode:
             selected = self.assistant.personality.set_mode(str(mode))
             self.statusBar().showMessage(f"HINATA is now in {selected.label} mode", 4000)
+
+    def change_thinking_mode(self, index: int) -> None:
+        del index
+        self.assistant.set_thinking_mode(self.thinking_combo.selected_mode)
+        state = "" if self.assistant.orchestrator.thinking_active else " (deliberation disabled)"
+        self.statusBar().showMessage(
+            f"Thinking profile set to {self.thinking_combo.selected_label}{state}", 4000
+        )
 
     def _load_ui_settings(self) -> None:
         self.speak_responses = speaking_enabled(self.assistant.config.interface, self.assistant.database)
@@ -268,6 +278,12 @@ class WindowChromeMixin(_MainWindowSlices):
         self.mode_combo.setToolTip("Choose HINATA's conversational style; security permissions stay unchanged")
         self.mode_combo.currentIndexChanged.connect(self.change_personality_mode)
         header_layout.addWidget(self.mode_combo)
+        self.thinking_combo = ThinkingSelector(
+            self.assistant.thinking.status()["available_modes"],
+            self.assistant.thinking.mode,
+        )
+        self.thinking_combo.currentIndexChanged.connect(self.change_thinking_mode)
+        header_layout.addWidget(self.thinking_combo)
         self.reconnect_button = QPushButton("Reconnect")
         self.reconnect_button.setToolTip("Start the local Ollama service and check the local model")
         self.reconnect_button.clicked.connect(self.reconnect_ollama)
@@ -435,6 +451,14 @@ class WindowChromeMixin(_MainWindowSlices):
             return
         self.speak_responses = dialog.speak_checkbox.isChecked()
         self.assistant.orchestrator.llm_enabled = dialog.llm_checkbox.isChecked()
+        thinking_choice = dialog.thinking_settings
+        self.assistant.thinking.max_seconds = thinking_choice["max_seconds"]
+        self.assistant.thinking.max_model_calls = thinking_choice["max_model_calls"]
+        self.assistant.thinking.set_mode(thinking_choice["mode"])
+        self.assistant.orchestrator.thinking_enabled = bool(thinking_choice["enabled"])
+        combo_index = self.thinking_combo.findData(thinking_choice["mode"])
+        if combo_index >= 0:
+            self.thinking_combo.setCurrentIndex(combo_index)
         self.assistant.personality.set_owner_name(dialog.owner_name_input.text())
         web_enabled = dialog.web_search_checkbox.isChecked()
         self.assistant.config.security.web_search_enabled = web_enabled
@@ -553,6 +577,9 @@ class ResponseHandlingMixin(_MainWindowSlices):
 
     def handle_response(self, response: AssistantResponse, voice: VoiceResult | None = None) -> None:
         self.conversation.add_message("HINATA", response.text)
+        thinking = response.data.get("thinking") if isinstance(response.data, dict) else None
+        if isinstance(thinking, dict) and thinking.get("engaged") and thinking.get("badge"):
+            self.conversation.add_message("THINKING", str(thinking["badge"]))
         retry = response.data.get("browser_retry_query")
         web = self.assistant.orchestrator.web_search
         self._set_browser_retry(retry if isinstance(retry, str) and retry and web.enabled and not web.strict_offline else None)

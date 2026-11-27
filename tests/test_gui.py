@@ -77,6 +77,63 @@ class DesktopTests(unittest.TestCase):
             self.window.handle_response(result)
         self.assertEqual(self.assistant.tasks.get(task_id)["state"], "COMPLETED")
 
+    def test_thinking_selector_is_present_and_switches_profile(self) -> None:
+        from hinata.interface.components import ThinkingSelector
+
+        self.assertIsInstance(self.window.thinking_combo, ThinkingSelector)
+        profiles = {self.window.thinking_combo.itemData(i) for i in range(self.window.thinking_combo.count())}
+        self.assertEqual(profiles, {"off", "quick", "balanced", "deep", "ultra"})
+        index = self.window.thinking_combo.findData("deep")
+        self.window.thinking_combo.setCurrentIndex(index)
+        self.assertEqual(self.assistant.thinking.mode, "deep")
+        off_index = self.window.thinking_combo.findData("off")
+        self.window.thinking_combo.setCurrentIndex(off_index)
+        self.assertFalse(self.assistant.orchestrator.thinking_active)
+        self.window.thinking_combo.setCurrentIndex(self.window.thinking_combo.findData("balanced"))
+        self.assertTrue(self.assistant.orchestrator.thinking_active)
+
+    def test_deliberated_reply_shows_only_a_compact_badge(self) -> None:
+        from hinata.core.types import AssistantResponse
+
+        self.window.speak_responses = False
+        trace = {
+            "engaged": True,
+            "badge": "balanced ×2 passes · 1 fix · high confidence",
+            "confidence": "high",
+            "critique": [{"title": "Internal reviewer note", "severity": "gap", "detail": "private"}],
+        }
+        self.window.handle_response(AssistantResponse("Final answer", True, "completed", data={"thinking": trace}))
+        text = self.window.conversation.toPlainText()
+        self.assertIn("balanced ×2 passes", text)
+        self.assertNotIn("Internal reviewer note", text)
+
+    def test_thinking_can_be_disabled_from_settings(self) -> None:
+        from hinata.interface.dialogs import SettingsDialog
+
+        dialog = SettingsDialog(
+            self.assistant,
+            speak_responses=False,
+            llm_enabled=True,
+            parent=self.window,
+        )
+        try:
+            # make_assistant() starts with the local model disabled, so the
+            # checkbox must reflect the live state rather than the config wish.
+            self.assertEqual(
+                dialog.thinking_enabled_checkbox.isChecked(),
+                self.assistant.orchestrator.thinking_active,
+            )
+            self.assertIn(dialog.thinking_settings["mode"], {"off", "quick", "balanced", "deep", "ultra"})
+            dialog.thinking_enabled_checkbox.setChecked(False)
+            dialog.thinking_mode_combo.setCurrentIndex(dialog.thinking_mode_combo.findData("ultra"))
+            choice = dialog.thinking_settings
+            self.assertFalse(choice["enabled"])
+            self.assertEqual(choice["mode"], "ultra")
+            self.assertGreaterEqual(choice["max_seconds"], 10.0)
+            self.assertGreaterEqual(choice["max_model_calls"], 1)
+        finally:
+            dialog.deleteLater()
+
     def test_conversation_escapes_model_html(self) -> None:
         self.window.conversation.add_message("HINATA", "<img src=x onerror=alert(1)>")
         self.assertIn("<img src=x onerror=alert(1)>", self.window.conversation.toPlainText())

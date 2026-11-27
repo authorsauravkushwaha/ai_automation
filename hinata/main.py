@@ -8,6 +8,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -89,6 +90,21 @@ def build_parser() -> argparse.ArgumentParser:
     image.add_argument("operation", choices=["status", "setup"])
 
     commands.add_parser("agents", help="Show registered specialist agents, manifests, and recent activity")
+    think = commands.add_parser(
+        "think", help="Inspect or change how hard HINATA reasons before answering"
+    )
+    think.add_argument(
+        "mode",
+        nargs="?",
+        choices=["status", "off", "quick", "balanced", "deep", "ultra"],
+        default="status",
+        help="Set the thinking profile for this session, or show status",
+    )
+    think.add_argument(
+        "--remember",
+        action="store_true",
+        help="Also persist the mode to config.toml (owner action, not a model action)",
+    )
     tasks = commands.add_parser("tasks", help="Inspect, reconcile, or safely resume saved plan checkpoints")
     tasks.add_argument("id", nargs="?", help="Task ID; omit to list recent tasks")
     task_action = tasks.add_mutually_exclusive_group()
@@ -314,6 +330,19 @@ def main(argv: list[str] | None = None) -> int:
                     indent=2,
                 )
             )
+            return 0
+        if args.command == "think":
+            if args.mode == "status":
+                print(json.dumps(assistant.thinking_status(), indent=2))
+                return 0
+            resolved = assistant.set_thinking_mode(args.mode)
+            thinking_report: dict[str, Any] = {
+                "mode": resolved,
+                "active": assistant.orchestrator.thinking_active,
+            }
+            if args.remember:
+                thinking_report["persisted"] = persist_thinking_mode(assistant.config, resolved)
+            print(json.dumps(thinking_report, indent=2))
             return 0
         if args.command == "workspaces":
             if args.register:
@@ -553,6 +582,50 @@ def main(argv: list[str] | None = None) -> int:
             assistant.close()
 
 
+def persist_thinking_mode(config: Any, mode: str) -> str:
+    """Write ``thinking.mode`` into config.toml, preserving every other setting.
+
+    This is an explicit owner action; a model can never rewrite configuration.
+    Returns the path written.  A missing section is appended, and a malformed
+    file is refused rather than clobbered.
+    """
+    import tomllib
+
+    config_path = Path(
+        os.environ.get(
+            "HINATA_CONFIG",
+            os.environ.get(
+                "FRIDAY_CONFIG", str(Path(__file__).resolve().parent.parent / "config.toml")
+            ),
+        )
+    )
+    text = ""
+    if config_path.exists():
+        text = config_path.read_text(encoding="utf-8")
+        try:
+            tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"Refusing to rewrite malformed {config_path}: {exc}") from exc
+    quoted = f'"{mode}"'
+    section = re.search(r"(?ms)^\[thinking\]\s*$.*?(?=^\[|\Z)", text)
+    if section:
+        block = section.group(0)
+        if re.search(r"(?m)^mode\s*=", block):
+            updated = re.sub(r"(?m)^mode\s*=\s*\"[^\"]*\"", f"mode = {quoted}", block, count=1)
+        else:
+            updated = block.rstrip("\n") + f"\nmode = {quoted}\n"
+        text = text[: section.start()] + updated + text[section.end():]
+    else:
+        text = text.rstrip("\n") + f"\n\n[thinking]\nmode = {quoted}\n"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(text, encoding="utf-8")
+    try:
+        config.thinking.mode = mode
+    except Exception:
+        pass
+    return str(config_path)
+
+
 def desktop_import_error(exc: ImportError | OSError) -> str:
     """Distinguish a missing Python package from a missing native Qt dependency."""
     if isinstance(exc, ModuleNotFoundError) and exc.name and (
@@ -618,6 +691,9 @@ def emit_with_approvals(
     source = "voice" if voice is not None else "text"
     while True:
         print(f"HINATA: {response.text}")
+        thinking = response.data.get("thinking") if isinstance(response.data, dict) else None
+        if isinstance(thinking, dict) and thinking.get("engaged"):
+            print(f"  [thinking] {thinking.get('badge', 'engaged')}")
         if not say(spoken_reply(response), block=wait_for_speech or speech_required or response.needs_plan_confirmation
                    or response.needs_confirmation or response.needs_pin):
             return 1
@@ -723,7 +799,8 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False, speech_requi
         if text == "/help":
             print(EXAMPLES)
             print(
-                "\nShell: /briefing /lockdown /unlock /commander /standdown /voice /speak /stop /reconnect /status /memory /pin /forget /quit"
+                "\nShell: /briefing /lockdown /unlock /commander /standdown /voice /speak /stop /reconnect "
+                "/status /memory /pin /forget /think [off|quick|balanced|deep|ultra] /quit"
             )
             continue
         if text == "/briefing":
@@ -750,6 +827,17 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False, speech_requi
             continue
         if text == "/standdown":
             print(json.dumps(assistant.stand_down_commander_mode(), indent=2))
+            continue
+        if text.startswith("/think"):
+            pieces = text.split()
+            if len(pieces) == 1:
+                print(json.dumps(assistant.thinking_status(), indent=2))
+            else:
+                resolved = assistant.set_thinking_mode(pieces[1])
+                print(
+                    f"Thinking profile: {resolved} "
+                    f"({'active' if assistant.orchestrator.thinking_active else 'deliberation off'})"
+                )
             continue
         if text == "/reconnect":
             report = assistant.orchestrator.recheck_model(

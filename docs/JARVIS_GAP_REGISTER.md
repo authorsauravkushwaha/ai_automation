@@ -103,6 +103,14 @@ This register is intentionally maintained as machine-readable JSON inside this M
       "limitation": "Python interception is not an OS firewall; Windows Firewall/Sandbox and native-process escape tests are not run in this Linux audit."
     },
     {
+      "id": "CAP-DELIBERATE-REASONING",
+      "request_path": "model draft -> ThinkingEngine (recon, critique, revise, verify, reflect) -> validated parser/planner -> owner approval",
+      "state": "IMPLEMENTED_AND_TESTED",
+      "evidence": ["hinata/core/reasoning.py", "hinata/core/orchestrator.py", "tests/test_reasoning_engine.py", "docs/THINKING_LAYER.md"],
+      "validation": ["profile gating (off/quick/balanced/deep/ultra)", "critique acceptance gate", "unsafe-claim revision rejection", "cancellation propagation", "model-call and wall-clock ceilings", "reflection redaction and persistence", "plan approval is never bypassed"],
+      "limitation": "Critique and revision use the same local model in a stricter role, so quality is bounded by that model; confidence is a deterministic heuristic over requirement coverage, self-consistency and risk flags, not a calibrated probability. No chain-of-thought is exposed. Latency grows with profile."
+    },
+    {
       "id": "CAP-MEMORY-RAG",
       "request_path": "local documents/conversations -> structured memory/index -> cited retrieval -> redacted persistence",
       "state": "IMPLEMENTED_AND_TESTED",
