@@ -235,6 +235,7 @@ class DevAssistant:
                 capture_output=True,
                 text=True,
                 timeout=60,
+                check=False,
                 env=offline_child_env(),
                 creationflags=_NO_WINDOW,
             )

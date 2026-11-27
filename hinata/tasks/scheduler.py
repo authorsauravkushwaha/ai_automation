@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 from hinata.database.database import Database
+from hinata.security.redaction import redact_text
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class TaskScheduler:
         self.database = database
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self.last_background_error: str = ""
 
     def schedule(
         self,
@@ -170,8 +172,14 @@ class TaskScheduler:
                 try:
                     online = online_mode_getter() if online_mode_getter else False
                     self.tick(runner, online_mode_enabled=online)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # A silent background failure leaves scheduled tasks pending
+                    # with no explanation. Keep the loop alive but make it visible.
+                    self.last_background_error = redact_text(str(exc))[:300]
+                    LOGGER.error(
+                        "Background scheduler tick failed: %s",
+                        self.last_background_error,
+                    )
 
         self._thread = threading.Thread(target=_loop, name="hinata-scheduler", daemon=True)
         self._thread.start()

@@ -105,7 +105,13 @@ class LocalVault:
             self._cached_key = raw
             return raw
         key = secrets.token_bytes(32)
-        write_private(self.key_path, key)
+        if not _create_private_key_if_absent(self.key_path, key):
+            # Another process won the creation race; use its key, never replace it.
+            raw = read_private(self.key_path)
+            if len(raw) < 32:
+                raise ProtectionError("Local vault key is corrupted")
+            self._cached_key = raw
+            return raw
         self._cached_key = key
         return key
 
@@ -228,6 +234,43 @@ def write_private(path: Path, data: bytes) -> None:
         temporary.chmod(0o600)
     temporary.replace(path)
     restrict_private_path(path)
+
+
+def _create_private_key_if_absent(path: Path, key: bytes) -> bool:
+    """Atomically create a 0600/DPAPI-protected key without replacing another.
+
+    ``write_private`` deliberately overwrites for key rotation. Two processes
+    creating the *initial* vault key must instead converge on one file: the old
+    replace-based path could silently lose the key used to encrypt existing data.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    restrict_private_path(path.parent)
+    payload = protect_bytes(key)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError:
+        return False
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("short write while creating the local vault key")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+    except Exception:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(descriptor)
+    if os.name != "nt":
+        path.chmod(0o600)
+    restrict_private_path(path)
+    return True
 
 
 def read_private(path: Path) -> bytes:

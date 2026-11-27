@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
+import math
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -242,9 +243,33 @@ class ToolRegistry:
                 "ERR_NO_EXECUTOR",
                 f"No executor is registered for {action.tool}",
             )
-        timeout = timeout_override or (manifest.timeout_seconds if manifest else 30.0)
-        if timeout <= 0:
-            return handler(action)
+        if timeout_override is None:
+            timeout = float(manifest.timeout_seconds if manifest else 30.0)
+            if not math.isfinite(timeout) or timeout <= 0:
+                return handler(action)
+        else:
+            # ``or`` used to turn an explicit 0 into the manifest timeout, while
+            # a negative override bypassed the timeout thread entirely.
+            if isinstance(timeout_override, bool):
+                raise ClassifiedError(
+                    ErrorCategory.PERMANENT,
+                    "ERR_INVALID_TIMEOUT_OVERRIDE",
+                    "Tool timeout override must be a finite positive number",
+                )
+            try:
+                timeout = float(timeout_override)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ClassifiedError(
+                    ErrorCategory.PERMANENT,
+                    "ERR_INVALID_TIMEOUT_OVERRIDE",
+                    "Tool timeout override must be a finite positive number",
+                ) from exc
+            if not math.isfinite(timeout) or not 0 < timeout <= 3600:
+                raise ClassifiedError(
+                    ErrorCategory.PERMANENT,
+                    "ERR_INVALID_TIMEOUT_OVERRIDE",
+                    "Tool timeout override must be between 0 and 3600 seconds",
+                )
         with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="hinata-tool") as pool:
             future = pool.submit(handler, action)
             try:

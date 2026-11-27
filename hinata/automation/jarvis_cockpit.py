@@ -359,16 +359,27 @@ class DesktopCockpit:
             else:
                 raise AutomationError("No local clipboard utility available on this OS")
 
-        had_secrets = contains_secrets(text)
-        redacted = redact_text(text)[: max(1, min(max_chars, 20000))]
+        try:
+            cap = max(1, min(int(max_chars), 20_000))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise AutomationError("Clipboard max_chars must be a finite integer") from exc
+        full_length = len(text or "")
+        # Redaction and secret scanning used to run on an unbounded clipboard
+        # string before the result was sliced. Bound the untrusted input first.
+        bounded_text = (text or "")[:cap]
+        had_secrets = contains_secrets(bounded_text)
+        redacted = redact_text(bounded_text)
         return {
             "content": redacted,
-            "length": len(text),
+            "length": full_length,
+            "truncated": full_length > cap,
             "secrets_redacted": had_secrets,
             "untrusted_clipboard": True,
         }
 
     def write_clipboard(self, text: str) -> dict[str, Any]:
+        if not isinstance(text, str):
+            raise AutomationError("Clipboard text must be a string")
         if len(text) > 50_000:
             raise AutomationError("Clipboard write exceeds 50,000 character limit")
         if os.name == "nt" and self._user32 is None:

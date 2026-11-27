@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -32,6 +33,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 from hinata.automation.app_control import AutomationError
+from hinata.security.net_guards import build_public_web_opener
 
 try:
     from hinata.automation.browser_search import open_browser_search  # type: ignore
@@ -41,6 +43,19 @@ except Exception:  # pragma: no cover
 LOGGER = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- URL helpers
+
+
+def _url_policy(url: str, *, resolve: bool, allow_loopback: bool = True) -> bool:
+    """Use the web-search SSRF policy without importing it at module load time."""
+    from hinata.automation.web_search import is_safe_public_url
+
+    return is_safe_public_url(url, resolve=resolve, allow_loopback=allow_loopback)
+
+
+def ensure_public_fetch_url(url: str, *, allow_loopback: bool = True) -> None:
+    """Reject a fetch target unless it is public (or an explicit loopback literal)."""
+    if not _url_policy(url, resolve=True, allow_loopback=allow_loopback):
+        raise AutomationError(f"Refused non-public or invalid URL: {url}")
 
 
 def normalize_url(raw: str, *, allow_private: bool = False) -> str:
@@ -53,24 +68,11 @@ def normalize_url(raw: str, *, allow_private: bool = False) -> str:
     parsed = urllib.parse.urlsplit(raw)
     if parsed.scheme not in {"http", "https"}:
         raise AutomationError(f"Only http(s) URLs are supported, got: {parsed.scheme or raw[:40]}")
-    if not allow_private:
-        host = (parsed.hostname or "").lower()
-        # Allow loopback/localhost for local development and autofill testing
-        # but still block .local mDNS and other private ranges unless allow_private=True
-        if host.endswith(".local"):
-            raise AutomationError(f"mDNS .local URL blocked: {host}")
-        if host.startswith("10.") or host.startswith("192.168.") or host.startswith("172."):
-            try:
-                import ipaddress
-                ip = ipaddress.ip_address(host)
-                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
-                    raise AutomationError(f"Private IP URL blocked: {host}")
-            except ValueError:
-                pass  # domain name like 192.com — allow
-        else:
-            # For hostname-like private names, still block loopback only if strict
-            # Actually allow 127.0.0.1 / localhost for web_automation local testing
-            pass
+    if not allow_private and not _url_policy(raw, resolve=False, allow_loopback=True):
+        # Literal 127.0.0.0/8 and localhost remain usable for local development;
+        # private ranges, metadata IPs, mDNS names, URL credentials and numeric
+        # IP spellings are refused. DNS-backed resolution happens before fetching.
+        raise AutomationError(f"Refused non-public or invalid URL: {raw}")
     return raw
 
 
@@ -676,18 +678,45 @@ class WebAutomation:
             raise AutomationError(f"Could not open browser for {target}: {exc}") from exc
 
     # -------- fetch & inspect
-    def fetch_page(self, url: str, *, max_bytes: int = 300_000, timeout: int = 12, allow_private: bool = True) -> dict[str, Any]:
+    def fetch_page(
+        self,
+        url: str,
+        *,
+        max_bytes: int = 300_000,
+        timeout: int = 12,
+        allow_private: bool = False,
+    ) -> dict[str, Any]:
         target = normalize_url(url, allow_private=allow_private)
-        req = urllib.request.Request(target, headers={"User-Agent": "Mozilla/5.0 HINATA Autofill/1.0"})
+        byte_limit = max(0, min(int(max_bytes), 300_000))
+        request_timeout = max(1, min(int(timeout), 60))
+        if not allow_private:
+            ensure_public_fetch_url(target)
+
+        def _check_redirect(resolved: str) -> None:
+            if not allow_private:
+                ensure_public_fetch_url(resolved)
+
+        opener = (
+            build_public_web_opener(_check_redirect)
+            if not allow_private
+            else urllib.request.build_opener()
+        )
+        req = urllib.request.Request(
+            target,
+            headers={"User-Agent": "Mozilla/5.0 HINATA Autofill/1.0"},
+            method="GET",
+        )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read(max_bytes)
+            with opener.open(req, timeout=request_timeout) as resp:
+                raw = resp.read(byte_limit)
                 charset = resp.headers.get_content_charset() or "utf-8"
                 try:
                     html = raw.decode(charset, errors="replace")
-                except Exception:
+                except (LookupError, UnicodeError):
                     html = raw.decode("utf-8", errors="replace")
                 return {"url": target, "html": html, "status": getattr(resp, "status", 200), "bytes": len(raw)}
+        except AutomationError:
+            raise
         except urllib.error.HTTPError as exc:
             raise AutomationError(f"Page fetch failed ({exc.code} {exc.reason}) for {target}") from exc
         except urllib.error.URLError as exc:
@@ -695,7 +724,7 @@ class WebAutomation:
         except OSError as exc:
             raise AutomationError(f"Network error fetching {target}: {exc}") from exc
 
-    def inspect_url(self, url: str, *, allow_private: bool = True) -> dict[str, Any]:
+    def inspect_url(self, url: str, *, allow_private: bool = False) -> dict[str, Any]:
         target = normalize_url(url, allow_private=allow_private)
         page = self.fetch_page(target, allow_private=allow_private)
         inspection = inspect_html(page["html"], base_url=target)
@@ -719,6 +748,7 @@ class WebAutomation:
         browser: str = "default",
         headless: bool = False,
         wait_seconds: float = 1.0,
+        allow_private: bool = False,
     ) -> dict[str, Any]:
         """
         Full workflow: open the site, inspect forms, map to profile, execute fill (and optionally submit).
@@ -726,7 +756,7 @@ class WebAutomation:
         Returns a detailed report that is truthful about what was actually automated vs. what needs
         user review (since not every site can be driven headlessly without installed drivers).
         """
-        target = normalize_url(url, allow_private=True)
+        target = normalize_url(url, allow_private=allow_private)
         if not profile_fields:
             raise AutomationError("No identity profile provided — save your details first with save_identity.")
 
@@ -737,7 +767,7 @@ class WebAutomation:
                 if v and str(v).strip():
                     effective[k.strip().lower()] = str(v).strip()
 
-        inspection = self.inspect_url(target)
+        inspection = self.inspect_url(target, allow_private=allow_private)
         plan = build_fill_plan(inspection, effective, submit=submit)
 
         # Backend selection
@@ -758,7 +788,12 @@ class WebAutomation:
             # No driver: open browser for user + provide JS snippet + try keyboard assist if Windows
             if open_browser and not headless:
                 try:
-                    self.open_website(target, browser=browser, headless=False)
+                    self.open_website(
+                        target,
+                        browser=browser,
+                        headless=False,
+                        allow_private=allow_private,
+                    )
                     execution_report["browser_opened"] = True
                     execution_report["note"] = "Opened in system browser. Use the generated JS snippet to fill instantly."
                 except AutomationError as exc:
@@ -910,10 +945,10 @@ class WebAutomation:
                     pass
 
     # -------- single-field helpers (for granular control)
-    def fill_field(self, url: str, selector: str, value: str, *, wait_seconds: float = 1.0, allow_private: bool = True) -> dict[str, Any]:
+    def fill_field(self, url: str, selector: str, value: str, *, wait_seconds: float = 1.0, allow_private: bool = False) -> dict[str, Any]:
         target = normalize_url(url, allow_private=allow_private)
         # For now, synthesize a plan with one action and run via best backend
-        inspection = self.inspect_url(target)
+        inspection = self.inspect_url(target, allow_private=allow_private)
         # Reuse the inspection: report whether the selector matches a detected
         # field instead of throwing the fetched document away.
         known_selectors: set[str] = set()
@@ -932,7 +967,7 @@ class WebAutomation:
         else:
             # Native fallback: open browser and advise JS (don't crash if headless env has no browser)
             try:
-                self.open_website(target)
+                self.open_website(target, allow_private=allow_private)
                 opened = True
             except Exception as exc:
                 opened = False
@@ -953,8 +988,12 @@ class WebAutomation:
             "result": res,
         }
 
-    def click_element(self, url: str, selector: str, *, wait_seconds: float = 1.0, allow_private: bool = True) -> dict[str, Any]:
+    def click_element(self, url: str, selector: str, *, wait_seconds: float = 1.0, allow_private: bool = False) -> dict[str, Any]:
         target = normalize_url(url, allow_private=allow_private)
+        if not allow_private:
+            # Drivers perform their own HTTP request, so validate again with DNS
+            # instead of relying only on the static normaliser.
+            ensure_public_fetch_url(target)
         backend = self._detect_backend()
         if backend == "playwright":
             try:

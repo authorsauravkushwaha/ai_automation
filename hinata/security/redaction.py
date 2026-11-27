@@ -17,9 +17,15 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{30,255}\b")),
     ("openai_key", re.compile(r"\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,255}\b")),
     ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    # Credentials embedded in URLs: postgres://user:pass@host, https://token@host, ...
-    ("url_credentials", re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/\s:@]+:[^/\s@]+@")),
-    ("slack_token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,255}\b")),
+    # Credentials embedded in URLs: postgres://user:pass@host, redis://:pass@host, ...
+    ("url_credentials", re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/\s@]*:[^/\s@]+@")),
+    ("slack_token", re.compile(r"\bxox[a-z]{1,2}-[0-9A-Za-z-]{10,255}\b")),
+    ("slack_app_token", re.compile(r"\bxapp-[0-9A-Za-z-]{20,255}\b")),
+    ("gitlab_token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,255}\b")),
+    ("npm_token", re.compile(r"\bnpm_[A-Za-z0-9]{30,255}\b")),
+    ("huggingface_token", re.compile(r"\bhf_[A-Za-z0-9]{30,255}\b")),
+    ("sendgrid_key", re.compile(r"\bSG\.[A-Za-z0-9_-]{16,64}\.[A-Za-z0-9_-]{16,128}\b")),
+    ("telegram_bot_token", re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,50}\b")),
     # Google API keys are a fixed, unmistakable shape (AIza + 35 chars).
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     # Stripe/Anthropic-style sk_live_/sk_test_/sk-ant- keys.
@@ -43,7 +49,10 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "credential_assignment",
         re.compile(
-            r"(?i)\b(password|passwd|pwd|api[_-]?key|apikey|access[_-]?token|secret[_-]?key|client[_-]?secret|pin|aws_secret_access_key|secret|master[_-]?password)\s*(?::|=|\bis\b)\s*([^\s,;\"']{4,256}|\"[^\"]{4,256}\"|'[^']{4,256}')"
+            r"(?i)\b(password|passwd|pwd|api[_-]?key|apikey|access[_-]?token|secret[_-]?key|client[_-]?secret|pin|aws_secret_access_key|secret|master[_-]?password"
+            r"|account[_-]?key|shared[_-]?access[_-]?key|primary[_-]?account[_-]?key"
+            r"|secondary[_-]?account[_-]?key|storage[_-]?account[_-]?key|sas[_-]?token)"
+            r"\s*(?::|=|\bis\b)\s*([^\s,;\"']{4,256}|\"[^\"]{4,256}\"|'[^']{4,256}')"
         ),
     ),
     ("payment_card", re.compile(r"\b(?:\d[ -]*?){13,19}\b")),
@@ -54,7 +63,8 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "auth_header",
         re.compile(
-            r"(?i)\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)"
+            r"(?i)\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key"
+            r"|x-auth-token|x-csrf-token|x-xsrf-token|x-session-token|x-amz-security-token)"
             r"\s*:\s*([^\r\n]{4,2048})"
         ),
     ),

@@ -15,13 +15,15 @@ import csv
 import json
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 from typing import Any
 
 from hinata.automation.app_control import AutomationError
-from hinata.automation.web_automation import normalize_url
+from hinata.automation.web_automation import ensure_public_fetch_url, normalize_url
+from hinata.security.net_guards import build_public_web_opener
 
 
 def _narrow_html_to_hint(html: str, selector_hint: str) -> str:
@@ -175,19 +177,45 @@ class SmartScraper:
     def __init__(self, files=None) -> None:
         self.files = files
 
-    def fetch(self, url: str, *, timeout: int = 12, allow_private: bool = True) -> str:
+    def fetch(self, url: str, *, timeout: int = 12, allow_private: bool = False) -> str:
         target = normalize_url(url, allow_private=allow_private)
-        req = urllib.request.Request(target, headers={"User-Agent": "Mozilla/5.0 HINATA Scraper/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read(500_000)
-            charset = resp.headers.get_content_charset() or "utf-8"
-            try:
-                return raw.decode(charset, errors="replace")
-            except Exception:
-                return raw.decode("utf-8", errors="replace")
+        request_timeout = max(1, min(int(timeout), 60))
+        if not allow_private:
+            ensure_public_fetch_url(target)
 
-    def scrape_tables(self, url: str, *, max_tables: int = 5) -> dict[str, Any]:
-        html = self.fetch(url)
+        def _check_redirect(resolved: str) -> None:
+            if not allow_private:
+                ensure_public_fetch_url(resolved)
+
+        opener = (
+            build_public_web_opener(_check_redirect)
+            if not allow_private
+            else urllib.request.build_opener()
+        )
+        req = urllib.request.Request(
+            target,
+            headers={"User-Agent": "Mozilla/5.0 HINATA Scraper/1.0"},
+            method="GET",
+        )
+        try:
+            with opener.open(req, timeout=request_timeout) as resp:
+                raw = resp.read(500_000)
+                charset = resp.headers.get_content_charset() or "utf-8"
+                try:
+                    return raw.decode(charset, errors="replace")
+                except (LookupError, UnicodeError):
+                    return raw.decode("utf-8", errors="replace")
+        except AutomationError:
+            raise
+        except urllib.error.HTTPError as exc:
+            raise AutomationError(f"Scrape fetch failed ({exc.code} {exc.reason}) for {target}") from exc
+        except urllib.error.URLError as exc:
+            raise AutomationError(f"Scrape fetch failed ({exc.reason}) for {target}") from exc
+        except OSError as exc:
+            raise AutomationError(f"Network error fetching {target}: {exc}") from exc
+
+    def scrape_tables(self, url: str, *, max_tables: int = 5, allow_private: bool = False) -> dict[str, Any]:
+        html = self.fetch(url, allow_private=allow_private)
         parser = TableParser()
         parser.feed(html)
         # A negative count used to slice from the end (4 tables -> 3 "shown");
@@ -200,9 +228,15 @@ class SmartScraper:
             "summary": f"Found {len(parser.tables)} table(s). Showing {len(tables)}.",
         }
 
-    def scrape_lists(self, url: str, *, selector_hint: str = "") -> dict[str, Any]:
+    def scrape_lists(
+        self,
+        url: str,
+        *,
+        selector_hint: str = "",
+        allow_private: bool = False,
+    ) -> dict[str, Any]:
         """Extract list-like content: <li>, cards, articles."""
-        html = self.fetch(url)
+        html = self.fetch(url, allow_private=allow_private)
         if selector_hint:
             # A selector hint narrows the region we scan; it never replaces the
             # real extraction below, so hinted and unhinted calls agree.
@@ -241,8 +275,8 @@ class SmartScraper:
             "total_headings": len(clean_headings),
         }
 
-    def monitor_price(self, url: str) -> dict[str, Any]:
-        html = self.fetch(url)
+    def monitor_price(self, url: str, *, allow_private: bool = False) -> dict[str, Any]:
+        html = self.fetch(url, allow_private=allow_private)
         parser = PriceParser()
         parser.feed(html)
         text_preview = " ".join(parser._text[:80])[:800]
@@ -254,19 +288,27 @@ class SmartScraper:
             "text_preview": text_preview,
         }
 
-    def crawl_pages(self, start_url: str, *, max_pages: int = 5, link_pattern: str = "") -> dict[str, Any]:
-        """Follow pagination / next links up to max_pages."""
+    def crawl_pages(
+        self,
+        start_url: str,
+        *,
+        max_pages: int = 5,
+        link_pattern: str = "",
+        allow_private: bool = False,
+    ) -> dict[str, Any]:
+        """Follow pagination / next links up to a clamped page budget."""
+        page_budget = max(0, min(int(max_pages), 20))
         visited: set[str] = set()
-        to_visit = [normalize_url(start_url, allow_private=True)]
+        to_visit = [normalize_url(start_url, allow_private=allow_private)] if page_budget else []
         results: list[dict[str, Any]] = []
         pattern = re.compile(link_pattern, re.I) if link_pattern else None
-        while to_visit and len(visited) < max_pages:
+        while to_visit and len(visited) < page_budget:
             url = to_visit.pop(0)
             if url in visited:
                 continue
             visited.add(url)
             try:
-                html = self.fetch(url)
+                html = self.fetch(url, allow_private=allow_private)
             except Exception as exc:
                 results.append({"url": url, "error": str(exc)})
                 continue
@@ -280,12 +322,16 @@ class SmartScraper:
                 if href.startswith("#") or href.startswith("javascript:"):
                     continue
                 abs_url = urllib.parse.urljoin(url, href)
-                if normalize_url(abs_url, allow_private=True) not in visited and len(to_visit) + len(visited) < max_pages:
+                try:
+                    candidate = normalize_url(abs_url, allow_private=allow_private)
+                except AutomationError:
+                    continue
+                if candidate not in visited and len(to_visit) + len(visited) < page_budget:
                     if pattern and not pattern.search(href) and not pattern.search(abs_url):
                         continue
                     parsed = urllib.parse.urlsplit(abs_url)
-                    if parsed.scheme in {"http", "https"} and abs_url not in to_visit:
-                        to_visit.append(abs_url)
+                    if parsed.scheme in {"http", "https"} and candidate not in to_visit:
+                        to_visit.append(candidate)
             time.sleep(0.2)
         return {"start_url": start_url, "visited": len(visited), "pages": results}
 

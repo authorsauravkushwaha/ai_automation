@@ -66,6 +66,8 @@ def undefined_symbols(library: pathlib.Path, search_path: str) -> dict[str, str 
         ["nm", "-D", "--undefined-only", "--with-symbol-versions", str(library)],
         capture_output=True,
         text=True,
+        check=False,
+        timeout=30,
         env={"LD_LIBRARY_PATH": search_path},
     )
     found: dict[str, str | None] = {}

@@ -19,6 +19,7 @@ import difflib
 import errno
 import hashlib
 import json
+import math
 import os
 import shutil
 import signal
@@ -34,6 +35,13 @@ from hinata.automation.app_control import AutomationError
 from hinata.core.errors import CancellationToken
 from hinata.database.database import Database
 from hinata.security.redaction import redact_text
+
+try:
+    import resource as _resource_module
+
+    _RESOURCE: Any = _resource_module
+except ImportError:  # pragma: no cover - Windows has no resource module
+    _RESOURCE = None
 
 BLOCKED_WORKSPACE_PATTERNS = {
     ".env",
@@ -52,6 +60,24 @@ ALLOWED_SOURCE_SUFFIXES = {
 }
 MAX_PATCH_BYTES = 200_000
 MAX_OUTPUT_CHARS = 16_000
+
+
+def _clamp_int(value: object, *, low: int, high: int, default: int) -> int:
+    try:
+        number = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(low, min(number, high))
+
+
+def _clamp_float(value: object, *, low: float, high: float, default: float) -> float:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return max(low, min(number, high))
 
 
 def _linux_netns_supported() -> bool:
@@ -253,6 +279,12 @@ class IsolatedSandboxRunner:
     ) -> dict[str, Any]:
         if not argv or any(not part or "\x00" in part for part in argv):
             raise AutomationError("Invalid sandbox command vector")
+        timeout_seconds = _clamp_float(
+            timeout_seconds, low=1.0, high=180.0, default=30.0
+        )
+        max_memory_mb = _clamp_int(
+            max_memory_mb, low=256, high=4096, default=1024
+        )
         cwd = cwd.resolve(strict=True)
         guard_dir = tempfile.TemporaryDirectory(prefix="hinata_sbx_")
         try:
@@ -275,8 +307,8 @@ class IsolatedSandboxRunner:
             clean_env = {
                 "PATH": os.environ.get("PATH", ""),
                 "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
-                "TEMP": os.environ.get("TEMP", "/tmp"),
-                "TMP": os.environ.get("TMP", "/tmp"),
+                "TEMP": os.environ.get("TEMP") or tempfile.gettempdir(),
+                "TMP": os.environ.get("TMP") or tempfile.gettempdir(),
                 "HOME": str(cwd),
                 "PYTHONPATH": f"{guard_dir.name}{os.pathsep}{cwd}",
                 "PYTHONNOUSERSITE": "1",
@@ -295,19 +327,44 @@ class IsolatedSandboxRunner:
                 if unshare:
                     exec_argv = [unshare, "--user", "--map-root-user", "--net", "--fork", *exec_argv]
 
-            def _preexec() -> None:
-                if os.name != "nt":
-                    os.setsid()
-                    try:
-                        import resource
+            mem_bytes = max(256, max_memory_mb) * 1024 * 1024
+            cpu_secs = max(5, int(timeout_seconds) + 2)
+            # preexec_fn is unsafe in a threaded process (HINATA's GUI and model
+            # workers use threads). On Linux, set the same limits from the parent
+            # with prlimit() immediately after spawn and use start_new_session for
+            # the process group. Keep the old hook only on POSIX platforms that
+            # lack prlimit().
+            post_spawn_limits = (
+                os.name != "nt"
+                and _RESOURCE is not None
+                and hasattr(_RESOURCE, "prlimit")
+            )
 
-                        mem_bytes = max(256, max_memory_mb) * 1024 * 1024
-                        cpu_secs = max(5, int(timeout_seconds) + 2)
-                        resource.setrlimit(resource.RLIMIT_CPU, (cpu_secs, cpu_secs))
-                        resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-                        resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
-                    except (ImportError, OSError, ValueError):
-                        pass
+            def _preexec() -> None:
+                if os.name == "nt" or post_spawn_limits or _RESOURCE is None:
+                    return
+                try:
+                    _RESOURCE.setrlimit(_RESOURCE.RLIMIT_CPU, (cpu_secs, cpu_secs))
+                    _RESOURCE.setrlimit(_RESOURCE.RLIMIT_AS, (mem_bytes, mem_bytes))
+                    _RESOURCE.setrlimit(_RESOURCE.RLIMIT_NOFILE, (256, 256))
+                except (OSError, ValueError, AttributeError):
+                    pass
+
+            def _apply_post_spawn_limits(pid: int) -> None:
+                if not post_spawn_limits or _RESOURCE is None:
+                    return
+                for limit_id, bound in (
+                    (_RESOURCE.RLIMIT_CPU, cpu_secs),
+                    (_RESOURCE.RLIMIT_AS, mem_bytes),
+                    (_RESOURCE.RLIMIT_NOFILE, 256),
+                ):
+                    try:
+                        _RESOURCE.prlimit(pid, limit_id, (bound, bound))
+                    except (OSError, ValueError, AttributeError, TypeError):
+                        # The child may already have exited, or the platform may
+                        # refuse one particular limit. The socket guard and the
+                        # communicate() timeout still bound the execution.
+                        continue
 
             started = time.monotonic()
             win_job: _WindowsJobSandbox | None = None
@@ -337,9 +394,11 @@ class IsolatedSandboxRunner:
                         errors="replace",
                         shell=False,
                         close_fds=True,
-                        preexec_fn=_preexec if os.name != "nt" else None,
+                        start_new_session=os.name != "nt",
+                        preexec_fn=_preexec if os.name != "nt" and not post_spawn_limits else None,
                         creationflags=creationflags,
                     )
+                    _apply_post_spawn_limits(proc.pid)
                 except OSError:
                     # Fallback on Windows hosts nested inside non-breakaway parent jobs.
                     if os.name != "nt":
@@ -357,8 +416,11 @@ class IsolatedSandboxRunner:
                         errors="replace",
                         shell=False,
                         close_fds=True,
+                        start_new_session=os.name != "nt",
+                        preexec_fn=_preexec if os.name != "nt" and not post_spawn_limits else None,
                         creationflags=creationflags,
                     )
+                    _apply_post_spawn_limits(proc.pid)
 
                 if win_job is not None:
                     proc_handle = int(getattr(proc, "_handle", 0) or 0)

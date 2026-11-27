@@ -6,18 +6,65 @@ Configuration is read from ``config.toml`` in the checkout, or from the path in
 
 from __future__ import annotations
 
+import math
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
+from hinata.security.offline_guard import validate_public_domain
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class ConfigError(ValueError):
     """Raised when configuration is invalid or unsafe."""
+
+
+def _require_bool(value: Any, label: str) -> None:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{label} must be a boolean")
+
+
+def _require_finite_number(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{label} must be a finite number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ConfigError(f"{label} must be a finite number")
+    return number
+
+
+def _require_int(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"{label} must be an integer")
+    return int(value)
+
+
+def _require_loopback_http_url(value: Any, label: str, *, allow_empty: bool = False) -> None:
+    if not isinstance(value, str) or len(value) > 300 or "\x00" in value:
+        raise ConfigError(f"{label} must be a plain HTTP loopback URL")
+    if allow_empty and not value:
+        return
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ConfigError(f"{label} must be a plain HTTP loopback URL with a valid port") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise ConfigError(f"{label} must be a plain HTTP loopback URL")
 
 
 @dataclass(slots=True)
@@ -46,16 +93,20 @@ class OllamaConfig:
     auto_pull: bool = False
 
     def validate(self) -> None:
-        parsed = urlsplit(self.host)
-        if (
-            parsed.scheme != "http"
-            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
+        _require_loopback_http_url(self.host, "ollama.host")
+        _require_loopback_http_url(
+            self.image_backend_url,
+            "ollama.image_backend_url",
+            allow_empty=True,
+        )
+        for label, value in (
+            ("ollama.enabled", self.enabled),
+            ("ollama.allow_model_fallback", self.allow_model_fallback),
+            ("ollama.strict_model_pin", self.strict_model_pin),
+            ("ollama.auto_start", self.auto_start),
+            ("ollama.auto_pull", self.auto_pull),
         ):
-            raise ConfigError("ollama.host must be a plain HTTP loopback URL")
+            _require_bool(value, label)
         # An empty model means "use whichever model is already present locally",
         # which keeps a fresh install usable before the configured model downloads.
         for label, model_val in (
@@ -67,34 +118,28 @@ class OllamaConfig:
         ):
             if not isinstance(model_val, str) or len(model_val) > 150 or ("\x00" in model_val) or model_val != model_val.strip():
                 raise ConfigError(f"{label} must be a local model name of at most 150 characters")
-        if self.image_backend_url:
-            img_parsed = urlsplit(self.image_backend_url)
-            if (
-                img_parsed.scheme != "http"
-                or img_parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
-                or img_parsed.username
-                or img_parsed.password
-                or img_parsed.query
-                or img_parsed.fragment
-                or img_parsed.path not in {"", "/"}
-            ):
-                raise ConfigError("ollama.image_backend_url must be empty or a plain HTTP loopback URL")
         if not isinstance(self.embedding_model, str) or not self.embedding_model or len(self.embedding_model) > 150 or self.embedding_model != self.embedding_model.strip() or "\x00" in self.embedding_model:
             raise ConfigError("ollama.embedding_model must be a local model name of at most 150 characters")
-        if self.hardware_profile not in {"auto", "conservative_cpu", "balanced", "accelerated", "lenovo_loq_i5"}:
+        if not isinstance(self.hardware_profile, str) or self.hardware_profile not in {"auto", "conservative_cpu", "balanced", "accelerated", "lenovo_loq_i5"}:
             raise ConfigError("ollama.hardware_profile must be auto, conservative_cpu, balanced, accelerated, or lenovo_loq_i5")
-        if not 1 <= self.timeout_seconds <= 600:
-            raise ConfigError("ollama.timeout_seconds must be between 1 and 600")
-        if not 16 <= self.max_tokens <= 4096:
-            raise ConfigError("ollama.max_tokens must be between 16 and 4096")
-        if not 512 <= self.context_tokens <= 8192:
-            raise ConfigError("ollama.context_tokens must be between 512 and 8192 on this profile")
-        if not 1 <= self.threads <= 16:
-            raise ConfigError("ollama.threads must be between 1 and 16")
+        for numeric_label, raw_value, low, high in (
+            ("ollama.timeout_seconds", self.timeout_seconds, 1, 600),
+            ("ollama.max_tokens", self.max_tokens, 16, 4096),
+            ("ollama.context_tokens", self.context_tokens, 512, 8192),
+            ("ollama.threads", self.threads, 1, 16),
+        ):
+            number = _require_int(raw_value, numeric_label)
+            if not low <= number <= high:
+                raise ConfigError(f"{numeric_label} must be between {low} and {high}")
+        temperature = _require_finite_number(self.temperature, "ollama.temperature")
+        if not 0.0 <= temperature <= 2.0:
+            raise ConfigError("ollama.temperature must be between 0 and 2")
         if isinstance(self.keep_alive, bool) or not isinstance(self.keep_alive, (int, str)):
             raise ConfigError("ollama.keep_alive must be a duration string (e.g. '5m') or integer seconds")
         if isinstance(self.keep_alive, str) and (len(self.keep_alive) > 20 or "\x00" in self.keep_alive):
             raise ConfigError("ollama.keep_alive string must be at most 20 characters")
+        if isinstance(self.keep_alive, int) and self.keep_alive < -1:
+            raise ConfigError("ollama.keep_alive integer must be -1 or non-negative")
 
 
 @dataclass(slots=True)
@@ -127,7 +172,8 @@ class SpeechConfig:
             raise ConfigError("speech.tts_backend must be 'pyttsx3', 'edge-tts', or 'piper'")
         if self.tts_voice_gender not in {"female", "male", "any"}:
             raise ConfigError("speech.tts_voice_gender must be 'female', 'male', or 'any'")
-        if not 100 <= self.tts_rate <= 250:
+        tts_rate = _require_int(self.tts_rate, "speech.tts_rate")
+        if not 100 <= tts_rate <= 250:
             raise ConfigError("speech.tts_rate must be between 100 and 250")
         if isinstance(self.tts_volume, bool) or not isinstance(self.tts_volume, (int, float)) or not 0.1 <= float(self.tts_volume) <= 1.0:
             raise ConfigError("speech.tts_volume must be between 0.1 and 1.0")
@@ -135,8 +181,26 @@ class SpeechConfig:
             raise ConfigError("speech.edge_tts_voice must be a valid voice name")
         if self.sample_rate != 16000:
             raise ConfigError("Only a 16000 Hz microphone stream is supported by this build")
-        if not 0.0 <= self.speaker_threshold <= 1.0:
+        speaker_threshold = _require_finite_number(self.speaker_threshold, "speech.speaker_threshold")
+        if not 0.0 <= speaker_threshold <= 1.0:
             raise ConfigError("speech.speaker_threshold must be between 0 and 1")
+        for label, value in (
+            ("speech.whisper_model", self.whisper_model),
+            ("speech.whisper_compute_type", self.whisper_compute_type),
+            ("speech.vosk_model_path", self.vosk_model_path),
+            ("speech.tts_voice", self.tts_voice),
+            ("speech.piper_executable", self.piper_executable),
+            ("speech.piper_model", self.piper_model),
+            ("speech.piper_config", self.piper_config),
+            ("speech.speaker_profile", self.speaker_profile),
+        ):
+            if not isinstance(value, str) or len(value) > 1024 or "\x00" in value:
+                raise ConfigError(f"{label} must be a string of at most 1024 characters")
+        if self.microphone is not None and (
+            isinstance(self.microphone, bool)
+            or not isinstance(self.microphone, (str, int))
+        ):
+            raise ConfigError("speech.microphone must be a string, integer index, or null")
 
 
 @dataclass(slots=True)
@@ -167,15 +231,52 @@ class SecurityConfig:
         if not self.allowed_roots:
             home = Path.home()
             self.allowed_roots = [home / "Desktop", home / "Documents", home / "Downloads"]
-        self.allowed_roots = [Path(p).expanduser().resolve() for p in self.allowed_roots]
+        if not isinstance(self.allowed_roots, list) or not all(
+            isinstance(root, (str, Path)) and str(root) and "\x00" not in str(root)
+            for root in self.allowed_roots
+        ):
+            raise ConfigError("security.allowed_roots must be a list of paths")
+        try:
+            self.allowed_roots = [Path(p).expanduser().resolve() for p in self.allowed_roots]
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise ConfigError(f"security.allowed_roots contains an invalid path: {exc}") from exc
+        if not isinstance(self.text_extensions, list) or not all(
+            isinstance(suffix, str) for suffix in self.text_extensions
+        ):
+            raise ConfigError("security.text_extensions must be a list of file suffixes")
         self.text_extensions = [
             suffix.lower() if suffix.startswith(".") else f".{suffix.lower()}"
             for suffix in self.text_extensions
         ]
-        if not 1 <= self.max_read_bytes <= 10_000_000:
+        for suffix in self.text_extensions:
+            if not re.fullmatch(r"\.[a-z0-9]{1,15}", suffix):
+                raise ConfigError(f"security.text_extensions contains an invalid suffix: {suffix!r}")
+        max_read_bytes = _require_int(self.max_read_bytes, "security.max_read_bytes")
+        if not 1 <= max_read_bytes <= 10_000_000:
             raise ConfigError("security.max_read_bytes must be between 1 and 10000000")
-        if not 0.1 <= self.search_timeout_seconds <= 30:
+        if not 0.1 <= _require_finite_number(self.search_timeout_seconds, "security.search_timeout_seconds") <= 30:
             raise ConfigError("security.search_timeout_seconds must be between 0.1 and 30")
+        max_directories = _require_int(self.search_max_directories, "security.search_max_directories")
+        if not 1 <= max_directories <= 100_000:
+            raise ConfigError("security.search_max_directories must be between 1 and 100000")
+        for label, value in (
+            ("security.encrypt_at_rest", self.encrypt_at_rest),
+            ("security.strict_offline", self.strict_offline),
+            ("security.online_mode_enabled", self.online_mode_enabled),
+            ("security.web_search_enabled", self.web_search_enabled),
+            ("security.discover_installed_apps", self.discover_installed_apps),
+        ):
+            _require_bool(value, label)
+        if not isinstance(self.allowed_online_domains, list) or not all(
+            isinstance(domain, str) for domain in self.allowed_online_domains
+        ):
+            raise ConfigError("security.allowed_online_domains must be a list of domain names")
+        try:
+            self.allowed_online_domains = [
+                validate_public_domain(domain) for domain in self.allowed_online_domains
+            ]
+        except ValueError as exc:
+            raise ConfigError(f"security.allowed_online_domains: {exc}") from exc
         if self.database_encryption_backend not in {"envelope", "sqlcipher", "auto"}:
             raise ConfigError(
                 "security.database_encryption_backend must be 'envelope', 'sqlcipher', or 'auto'"
@@ -207,24 +308,24 @@ class AgenticConfig:
         }
         if self.autonomy_mode not in valid_modes:
             raise ConfigError(f"agentic.autonomy_mode must be one of: {', '.join(sorted(valid_modes))}")
-        if not 1 <= self.max_plan_steps <= 32:
-            raise ConfigError("agentic.max_plan_steps must be between 1 and 32")
-        if not 1 <= self.max_iterations <= 32:
-            raise ConfigError("agentic.max_iterations must be between 1 and 32")
-        if not 1.0 <= self.max_duration_seconds <= 3600.0:
+        for label, value, low, high in (
+            ("agentic.max_plan_steps", self.max_plan_steps, 1, 32),
+            ("agentic.max_iterations", self.max_iterations, 1, 32),
+            ("agentic.max_model_calls", self.max_model_calls, 1, 50),
+            ("agentic.max_tool_calls", self.max_tool_calls, 1, 64),
+            ("agentic.max_replans", self.max_replans, 0, 5),
+            ("agentic.max_delegation_depth", self.max_delegation_depth, 1, 5),
+            ("agentic.max_parallel_readonly", self.max_parallel_readonly, 1, 4),
+        ):
+            number = _require_int(value, label)
+            if not low <= number <= high:
+                raise ConfigError(f"{label} must be between {low} and {high}")
+        duration = _require_finite_number(self.max_duration_seconds, "agentic.max_duration_seconds")
+        tool_timeout = _require_finite_number(self.per_tool_timeout_seconds, "agentic.per_tool_timeout_seconds")
+        if not 1.0 <= duration <= 3600.0:
             raise ConfigError("agentic.max_duration_seconds must be between 1 and 3600")
-        if not 1 <= self.max_model_calls <= 50:
-            raise ConfigError("agentic.max_model_calls must be between 1 and 50")
-        if not 1 <= self.max_tool_calls <= 64:
-            raise ConfigError("agentic.max_tool_calls must be between 1 and 64")
-        if not 0 <= self.max_replans <= 5:
-            raise ConfigError("agentic.max_replans must be between 0 and 5")
-        if not 1.0 <= self.per_tool_timeout_seconds <= 300.0:
+        if not 1.0 <= tool_timeout <= 300.0:
             raise ConfigError("agentic.per_tool_timeout_seconds must be between 1 and 300")
-        if not 1 <= self.max_delegation_depth <= 5:
-            raise ConfigError("agentic.max_delegation_depth must be between 1 and 5")
-        if not 1 <= self.max_parallel_readonly <= 4:
-            raise ConfigError("agentic.max_parallel_readonly must be between 1 and 4")
 
 
 @dataclass(slots=True)
@@ -234,12 +335,28 @@ class WakeWordConfig:
     threshold: float = 0.5
     cooldown_seconds: float = 2.0
 
+    def validate(self) -> None:
+        _require_bool(self.enabled, "wake_word.enabled")
+        if not isinstance(self.model_path, str) or len(self.model_path) > 1024 or "\x00" in self.model_path:
+            raise ConfigError("wake_word.model_path must be a path of at most 1024 characters")
+        threshold = _require_finite_number(self.threshold, "wake_word.threshold")
+        cooldown = _require_finite_number(self.cooldown_seconds, "wake_word.cooldown_seconds")
+        if not 0.0 <= threshold <= 1.0:
+            raise ConfigError("wake_word.threshold must be between 0 and 1")
+        if not 0.0 <= cooldown <= 60.0:
+            raise ConfigError("wake_word.cooldown_seconds must be between 0 and 60")
+
 
 @dataclass(slots=True)
 class InterfaceConfig:
     dark_theme: bool = True
     start_minimized: bool = False
     speak_responses: bool = True
+
+    def validate(self) -> None:
+        _require_bool(self.dark_theme, "interface.dark_theme")
+        _require_bool(self.start_minimized, "interface.start_minimized")
+        _require_bool(self.speak_responses, "interface.speak_responses")
 
 
 @dataclass(slots=True)
@@ -248,9 +365,8 @@ class MemoryConfig:
     conversation_limit: int = 1000
 
     def validate(self) -> None:
-        if isinstance(self.conversation_limit, bool) or not isinstance(self.conversation_limit, int):
-            raise ConfigError("memory.conversation_limit must be an integer")
-        if not 1 <= self.conversation_limit <= 100000:
+        limit = _require_int(self.conversation_limit, "memory.conversation_limit")
+        if not 1 <= limit <= 100000:
             raise ConfigError("memory.conversation_limit must be between 1 and 100000")
 
 
@@ -260,7 +376,7 @@ class PersonalityConfig:
     user_name: str = ""
 
     def validate(self) -> None:
-        if self.mode not in {"friend", "advisor", "technical", "strategist", "professional", "jarvis"}:
+        if not isinstance(self.mode, str) or self.mode not in {"friend", "advisor", "technical", "strategist", "professional", "jarvis"}:
             raise ConfigError(
                 "personality.mode must be friend, advisor, technical, strategist, professional, or jarvis"
             )
@@ -294,6 +410,8 @@ class HinataConfig:
         self.speech.validate()
         self.security.validate()
         self.agentic.validate()
+        self.wake_word.validate()
+        self.interface.validate()
         self.personality.validate()
         self.memory.validate()
         if not self.applications:
@@ -301,9 +419,14 @@ class HinataConfig:
         normalized: dict[str, Application] = {}
         for name, app in self.applications.items():
             key = name.strip().lower()
-            if not key or not app.command or any(not part for part in app.command):
-                raise ConfigError(f"Application {name!r} needs a non-empty command")
-            if any("\x00" in part for part in app.command + app.process_names):
+            parts = app.command + app.process_names
+            if (
+                not key
+                or not app.command
+                or not all(isinstance(part, str) and part for part in parts)
+            ):
+                raise ConfigError(f"Application {name!r} needs a non-empty string command")
+            if any("\x00" in part for part in parts):
                 raise ConfigError(f"Application {name!r} contains an invalid null byte")
             normalized[key] = app
         self.applications = normalized
