@@ -79,6 +79,24 @@ per_tool_timeout_seconds = 30.0
 max_delegation_depth = 3
 max_parallel_readonly = 2
 
+[thinking]
+# The deliberation layer that reviews answers and plans before HINATA acts.
+# off      = single fast pass (previous behaviour)
+# quick    = one self-critique of conversational answers
+# balanced = recon -> critique -> revise -> verify -> reflect (default)
+# deep     = balanced plus one bounded second opinion when confidence is low
+# ultra    = deep with a mandatory revision pass and the largest budgets
+enabled = true
+mode = "balanced"
+# Hard ceilings. A profile can lower these, never raise them.
+max_seconds = 150.0
+max_model_calls = 7
+# Untrusted evidence handed to the thinking loop, in characters.
+memory_budget_chars = 1400
+knowledge_budget_chars = 1200
+# When true, low-confidence answers say so in the reply text instead of only in metadata.
+require_min_confidence = false
+
 [wake_word]
 # Disabled to avoid continuous CPU/RAM use. Requires your own trained Hey HINATA ONNX model.
 enabled = false

@@ -71,6 +71,7 @@ class AgentControlCenterDialog(QDialog):
         self.dashboard_view = self._add_readonly_tab("Dashboard & Metrics")
         self.tasks_view = self._build_tasks_tab()
         self.agents_view = self._add_readonly_tab("Specialist Agents")
+        self.thinking_view = self._add_readonly_tab("Thinking & Reflection")
         self.models_view = self._add_readonly_tab("Models & Hardware")
         self.memory_view = self._add_readonly_tab("Structured Memory")
         self.knowledge_view = self._add_readonly_tab("Knowledge & RAG")
@@ -244,6 +245,39 @@ class AgentControlCenterDialog(QDialog):
                 ensure_ascii=False,
             )
         )
+        thinking_rows: list[dict[str, Any]] = []
+        try:
+            thinking_rows = [
+                dict(row) for row in self.assistant.thinking.reflections.recent(10)
+            ]
+        except Exception:
+            thinking_rows = []
+        recent_reasoning: list[dict[str, Any]] = []
+        try:
+            for run in self.assistant.tracer.recent_runs(15):
+                payload = run.get("payload") if isinstance(run, dict) else None
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except ValueError:
+                        payload = None
+                if isinstance(payload, dict) and payload.get("confidence"):
+                    recent_reasoning.append(payload)
+        except Exception:
+            recent_reasoning = []
+        self.thinking_view.setPlainText(
+            json.dumps(
+                {
+                    "profile": self.assistant.thinking.status(),
+                    "active": self.assistant.orchestrator.thinking_active,
+                    "stored_lessons": thinking_rows,
+                    "recent_traces": recent_reasoning,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+
         from hinata.core.jarvis_models import select_optimal_fleet_pack
         from hinata.core.local_image import is_model_ready, model_directory
 

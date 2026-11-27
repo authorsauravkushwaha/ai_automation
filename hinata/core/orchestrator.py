@@ -62,6 +62,14 @@ from hinata.core.permissions import PermissionLevel, PermissionManager
 from hinata.core.personality import PersonalityManager
 from hinata.core.planner import AUTONOMY_MODES, ExecutionPlan, Planner, PlanningError, PlanNode
 from hinata.core.providers import HardwareCapabilityService
+from hinata.core.reasoning import (
+    ReasoningTrace,
+    ReflectionStore,
+    ThinkingContext,
+    ThinkingEngine,
+    ThinkingResult,
+    thinking_mode,
+)
 from hinata.core.tool_registry import ToolRegistry
 from hinata.core.types import ActionRequest, ActionResult, AssistantResponse
 from hinata.knowledge.index import KnowledgeIndex, verify_claim_citations
@@ -109,6 +117,8 @@ class Orchestrator:
         system_tuner: Any | None = None,
         researcher: Any | None = None,
         dev_assistant: Any | None = None,
+        thinking: ThinkingEngine | None = None,
+        thinking_enabled: bool = False,
     ) -> None:
         self.validator = validator
         self.parser = parser
@@ -132,6 +142,12 @@ class Orchestrator:
         self.tool_registry = tool_registry or ToolRegistry(memory.database)
         self.agent_registry = agent_registry or AgentRegistry(memory.database)
         self.agent_executor = AgentExecutor(llm, enabled=llm_enabled)
+        # Deliberate reasoning layer. The engine only ever reviews answers and
+        # proposed plans; execution authority stays with the permission manager.
+        self.thinking = thinking or ThinkingEngine(
+            llm, mode="balanced", reflections=ReflectionStore(memory)
+        )
+        self.thinking_enabled = bool(thinking_enabled)
         self.tracer = tracer or TraceRecorder(memory.database)
         self.cockpit = cockpit or DesktopCockpit(files)
         self.hardware_profiler = HardwareCapabilityService()
@@ -307,10 +323,33 @@ class Orchestrator:
                 try:
                     self.tracer.update_run(run_id, state="PLANNING")
                     t0 = time.monotonic()
-                    raw_plan = self._model_reply(cleaned)
+                    draft_reply = self._model_reply(cleaned)
+                    # The draft's shape decides which thinking domain applies: a
+                    # chat reply is reviewed as prose, a tool/plan reply is
+                    # reviewed as strict JSON and stays under planner control.
+                    raw_plan = draft_reply
+                    thinking_result = None
+                    if self.thinking_active:
+                        if self._draft_is_conversational(draft_reply):
+                            thinking_result = self._deliberate_answer(
+                                cleaned, self._draft_prose(draft_reply),
+                                source=source, token=token, budget=budget,
+                            )
+                        else:
+                            thinking_result = self.thinking.think(
+                                cleaned,
+                                draft_fn=lambda: draft_reply,
+                                context=self._thinking_context(cleaned),
+                                budget=budget,
+                                cancel_token=token,
+                                source=source,
+                                domain="plan",
+                            )
+                            raw_plan = thinking_result.text
                     model_ms = (time.monotonic() - t0) * 1000.0
                     budget.record_model_call(tokens=max(1, len(raw_plan) // 4))
                     self.tracer.record_model_metric(latency_ms=model_ms, tokens=max(1, len(raw_plan) // 4), success=True)
+                    self._record_thinking(run_id, thinking_result)
                     if self._cancelled(token):
                         response = self._cancel_response()
                         self.tracer.update_run(run_id, state="CANCELLED", summary=response.text)
@@ -333,11 +372,17 @@ class Orchestrator:
                             else None
                         )
                         if effective_mode == "SUGGEST_ONLY":
+                            suggest_data = {
+                                "task_id": task_id,
+                                "run_id": run_id,
+                                "autonomy_mode": effective_mode,
+                            }
+                            suggest_data.update(self._thinking_data(thinking_result))
                             response = AssistantResponse(
                                 plan.preview() + "\n[SUGGEST_ONLY mode: actions are displayed for review and not executed.]",
                                 True,
                                 "completed",
-                                data={"task_id": task_id, "run_id": run_id, "autonomy_mode": effective_mode},
+                                data=suggest_data,
                                 plan_actions=list(plan.steps),
                             )
                             self.tracer.update_run(run_id, state="SUCCEEDED", task_id=task_id, summary="Suggested plan in SUGGEST_ONLY mode")
@@ -364,19 +409,34 @@ class Orchestrator:
                             usage=budget.snapshot(),
                             summary="Plan validated and awaiting approval",
                         )
+                        plan_data = {
+                            "task_id": task_id,
+                            "run_id": run_id,
+                            "plan_hash": plan.plan_hash(),
+                        }
+                        plan_data.update(self._thinking_data(thinking_result))
                         response = AssistantResponse(
                             plan.preview(),
                             False,
                             "plan_confirmation_required",
-                            data={"task_id": task_id, "run_id": run_id, "plan_hash": plan.plan_hash()},
+                            data=plan_data,
                             plan_actions=list(plan.steps),
                         )
                         self.memory.add_message("assistant", "[Plan proposed; awaiting approval.]", source)
                         return response
                     else:
                         state = "CLARIFYING" if kind == "clarify" else "SUCCEEDED"
+                        answer_text = str(payload)
+                        if (
+                            kind == "chat"
+                            and thinking_result is not None
+                            and thinking_result.improved
+                            and thinking_result.text.strip()
+                        ):
+                            answer_text = thinking_result.text.strip()
                         response = AssistantResponse(
-                            str(payload), True, "clarification" if kind == "clarify" else "completed"
+                            answer_text, True, "clarification" if kind == "clarify" else "completed",
+                            data=self._thinking_data(thinking_result),
                         )
                         self.tracer.update_run(
                             run_id,
@@ -1165,6 +1225,112 @@ class Orchestrator:
             return self.llm.complete(*arguments, connect=True, pull_missing=self._pull_missing, role=classify_task_model_role(text))
         except TypeError:
             return self.llm.complete(*arguments)
+
+    # ----------------------------------------------------------- thinking layer
+    @property
+    def thinking_active(self) -> bool:
+        return bool(self.thinking_enabled) and thinking_mode(self.thinking.mode).key != "off"
+
+    @staticmethod
+    def _draft_is_conversational(raw: str) -> bool:
+        """True when a model draft is a chat/clarify envelope rather than a plan.
+
+        Malformed drafts are treated as conversational: the thinking layer then
+        repairs them as prose, and the existing recovery path still handles a
+        reply that cannot be parsed at all.
+        """
+        from hinata.core.reasoning import draft_kind
+
+        return draft_kind(raw) in {"chat", "clarify", "unknown"}
+
+    @staticmethod
+    def _draft_prose(raw: str) -> str:
+        from hinata.core.reasoning import draft_prose
+
+        return draft_prose(raw)
+
+    def _thinking_context(self, text: str) -> ThinkingContext:
+        """Assemble redacted, bounded evidence for the reasoning loop.
+
+        Assembly lives here (not in the engine) so the orchestrator keeps one
+        redaction/bounding policy.  Every prose field is untrusted data.
+        """
+        memory_lines: list[str] = []
+        try:
+            records = self.memory.retrieve_relevant(text, limit=4)
+        except Exception:
+            records = []
+        for row in records:
+            content = str(row.get("content", "")).strip()
+            if content:
+                memory_lines.append(f"- ({row.get('namespace', 'memory')}) {content[:300]}")
+        knowledge_lines: list[str] = []
+        if self.knowledge is not None and len(text.split()) >= 4:
+            try:
+                hits = self.knowledge.search(text, limit=3)
+            except Exception:
+                hits = []
+            for row in hits:
+                snippet = str(row.get("content", "")).strip().replace("\n", " ")
+                if snippet:
+                    knowledge_lines.append(f"- {Path(str(row.get('path', 'doc'))).name}: {snippet[:280]}")
+        try:
+            preference_text = "; ".join(
+                f"{row['key']}={row['value']}" for row in self.memory.preferences()[:12]
+            )
+        except Exception:
+            preference_text = ""
+        return ThinkingContext(
+            memory="\n".join(memory_lines),
+            knowledge="\n".join(knowledge_lines),
+            preferences=preference_text,
+            tool_names=tuple(sorted(self.validator.tool_descriptions().keys()))[:48],
+        )
+
+    def _deliberate_answer(
+        self,
+        text: str,
+        draft: str,
+        *,
+        source: str,
+        token: CancellationToken | None,
+        budget: BudgetTracker | None,
+    ) -> ThinkingResult:
+        """Review an already-produced conversational answer with the same loop."""
+        if not self.thinking_active:
+            mode = thinking_mode("off")
+            return ThinkingResult(text=draft, trace=ReasoningTrace(mode=mode.key, mode_label=mode.label))
+        return self.thinking.think(
+            text,
+            draft_fn=lambda: draft,
+            context=self._thinking_context(text),
+            budget=budget,
+            cancel_token=token,
+            source=source,
+            domain="chat",
+        )
+
+    @staticmethod
+    def _thinking_data(result: ThinkingResult | None) -> dict[str, Any]:
+        if result is None or not result.trace.engaged:
+            return {}
+        return {"thinking": result.trace.to_dict()}
+
+    def _record_thinking(self, run_id: str, result: ThinkingResult | None) -> None:
+        """Persist the thinking trace as an audit event; never raises."""
+        if result is None or not result.trace.engaged:
+            return
+        try:
+            self.tracer.record_event(
+                run_id=run_id,
+                event_type="reasoning",
+                status=result.trace.confidence,
+                model_identity=str(getattr(self.llm, "last_model_identity", ""))[:200],
+                duration_ms=result.trace.total_ms,
+                payload=result.trace.to_dict(),
+            )
+        except Exception:
+            LOGGER.debug("Thinking trace could not be recorded", exc_info=True)
 
     @staticmethod
     def _model_failure_text(exc: Exception) -> str:
