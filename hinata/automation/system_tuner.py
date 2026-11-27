@@ -102,6 +102,12 @@ class SystemTuner:
             return {"host": host, "ok": False, "error": str(exc)[:120]}
 
     def backup_create(self, source: str, dest_dir: str, *, max_age_days: int = 30) -> dict[str, Any]:
+        if (
+            isinstance(max_age_days, bool)
+            or not isinstance(max_age_days, int)
+            or not 0 <= max_age_days <= 3650
+        ):
+            raise AutomationError("Backup max_age_days must be an integer between 0 and 3650")
         if not self.files:
             raise AutomationError("File manager not required for backup")
         src = self.files.resolve(source)

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import socket
 import threading
 from collections.abc import Iterator
@@ -22,6 +23,52 @@ from typing import Any
 from urllib.parse import urlsplit
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+_DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+_PUBLIC_SUFFIX = re.compile(r"(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})\Z")
+_UNSAFE_DOMAIN_SUFFIXES = (
+    ".local",
+    ".internal",
+    ".localhost",
+    ".test",
+    ".invalid",
+    ".example",
+    ".onion",
+)
+
+
+def validate_public_domain(domain: str) -> str:
+    """Return a normalised public DNS domain or raise ``ValueError``.
+
+    A bare suffix such as ``com`` would allow every ``*.com`` host through the
+    suffix-matching rule in :meth:`OfflineGuard.check_host`; a scheme, wildcard,
+    path, IP literal or leading dot would likewise not mean what the user wrote.
+    """
+    if not isinstance(domain, str):
+        raise ValueError("Online allowlist entries must be domain-name strings")
+    cleaned = domain.strip().lower()
+    if not cleaned or any(ch.isspace() for ch in cleaned):
+        raise ValueError("Online allowlist entries must not contain whitespace")
+    if any(token in cleaned for token in ("://", "/", "@", "?", "#", "\\")) or cleaned.startswith("*"):
+        raise ValueError("Online allowlist entries must be bare domain names")
+    cleaned = cleaned.rstrip(".")
+    if not cleaned or cleaned.startswith(".") or ":" in cleaned or len(cleaned) > 253:
+        raise ValueError("Online allowlist entries must be bare domain names")
+    if "." not in cleaned:
+        raise ValueError("Online allowlist entries must include a domain and a suffix")
+    labels = cleaned.split(".")
+    if not _PUBLIC_SUFFIX.fullmatch(labels[-1]) or not all(
+        _DOMAIN_LABEL.fullmatch(label) for label in labels
+    ):
+        raise ValueError("Online allowlist entries must be valid DNS domains")
+    if cleaned.endswith(_UNSAFE_DOMAIN_SUFFIXES):
+        raise ValueError("Special-use domain suffixes are not valid online allowlist entries")
+    try:
+        ipaddress.ip_address(cleaned)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("IP addresses are not valid online allowlist entries")
+    return cleaned
 
 
 class OfflinePolicyError(PermissionError):
@@ -82,9 +129,13 @@ class OfflineGuard:
             raise ValueError("strict_offline and online_mode_enabled cannot both be enabled")
         self.strict_offline = strict_offline
         self.online_mode_enabled = online_mode_enabled
-        self.allowed_online_domains = tuple(
-            sorted({d.strip().lower().lstrip(".") for d in (allowed_online_domains or []) if d.strip()})
-        )
+        try:
+            domains = {
+                validate_public_domain(d) for d in (allowed_online_domains or []) if str(d).strip()
+            }
+        except ValueError as exc:
+            raise ValueError(f"Invalid online domain allowlist: {exc}") from exc
+        self.allowed_online_domains = tuple(sorted(domains))
         self._blocked_attempts: list[dict[str, Any]] = []
         self._allowed_online_events: list[dict[str, Any]] = []
         self._events_lock = threading.Lock()
@@ -119,10 +170,18 @@ class OfflineGuard:
 
     def check_url(self, url: str, *, purpose: str = "http") -> None:
         parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"}:
+            raise OfflinePolicyError(f"URL '{url}' must use HTTP(S) for this policy check")
+        if "@" in parsed.netloc or parsed.username or parsed.password:
+            raise OfflinePolicyError(f"URL '{url}' must not contain credentials")
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise OfflinePolicyError(f"URL '{url}' has an invalid port") from exc
         host = parsed.hostname or ""
         if not host:
             raise OfflinePolicyError(f"URL '{url}' has no valid hostname")
-        self.check_host(host, parsed.port, purpose=purpose)
+        self.check_host(host, port, purpose=purpose)
 
     def status(self) -> dict[str, Any]:
         with self._events_lock:

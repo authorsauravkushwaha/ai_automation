@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
+
+from hinata.security.redaction import redact_text
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ErrorCategory(StrEnum):
@@ -90,8 +95,11 @@ class CancellationToken:
         for callback in callbacks:
             try:
                 callback()
-            except Exception:
-                pass
+            except Exception as exc:
+                LOGGER.error(
+                    "Cancellation callback failed: %s",
+                    redact_text(str(exc))[:300],
+                )
 
     @property
     def is_cancelled(self) -> bool:
@@ -119,8 +127,11 @@ class CancellationToken:
         if call_now:
             try:
                 callback()
-            except Exception:
-                pass
+            except Exception as exc:
+                LOGGER.error(
+                    "Cancellation callback failed: %s",
+                    redact_text(str(exc))[:300],
+                )
 
 
 class CancellationRegistry:

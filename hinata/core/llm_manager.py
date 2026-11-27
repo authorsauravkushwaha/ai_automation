@@ -38,6 +38,16 @@ from hinata.security.net_guards import build_loopback_opener
 LOGGER = logging.getLogger(__name__)
 
 
+def _bounded_timeout(value: object, *, low: float, high: float, default: float) -> float:
+    try:
+        number = float(str(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return max(low, min(number, high))
+
+
 class OllamaError(RuntimeError):
     pass
 
@@ -199,6 +209,7 @@ class LLMManager:
             return False
 
     def _request(self, endpoint: str, payload: dict[str, Any] | None = None, timeout: int = 5) -> dict[str, Any]:
+        bounded_timeout = _bounded_timeout(timeout, low=1.0, high=300.0, default=5.0)
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             self.base_url + endpoint,
@@ -207,7 +218,7 @@ class LLMManager:
             method="GET" if data is None else "POST",
         )
         try:
-            response = self._opener.open(request, timeout=timeout)
+            response = self._opener.open(request, timeout=bounded_timeout)
             with self._response_lock:
                 self._active_response = response
             try:
@@ -476,7 +487,12 @@ class LLMManager:
                 method="POST",
             )
             try:
-                response = self._opener.open(request, timeout=self.config.timeout_seconds)
+                response = self._opener.open(
+                    request,
+                    timeout=_bounded_timeout(
+                        self.config.timeout_seconds, low=1.0, high=600.0, default=90.0
+                    ),
+                )
             except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
                 self.circuit_breaker.record_failure("ollama_chat", str(exc))
                 raise self._explain(

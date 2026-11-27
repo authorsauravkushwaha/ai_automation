@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import socket
@@ -29,6 +30,17 @@ from hinata.config import OllamaConfig
 from hinata.security.net_guards import build_loopback_opener
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _bounded_timeout(value: object, *, low: float, high: float, default: float) -> float:
+    try:
+        number = float(str(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return max(low, min(number, high))
+
 
 READY = "ready"
 MODEL_MISSING = "model_missing"
@@ -98,6 +110,7 @@ class OllamaService:
 
     # ------------------------------------------------------------------ probes
     def _probe(self, timeout: float = 1.5) -> dict[str, Any] | None:
+        timeout = _bounded_timeout(timeout, low=0.1, high=30.0, default=1.5)
         request = urllib.request.Request(self.base_url + "/api/tags", method="GET")
         try:
             with self._opener.open(request, timeout=timeout) as response:
@@ -108,6 +121,7 @@ class OllamaService:
 
     def _port_open(self, timeout: float = 0.4) -> bool:
         """True when something already listens on the configured loopback port."""
+        timeout = _bounded_timeout(timeout, low=0.1, high=10.0, default=0.4)
         parts = urlsplit(self.base_url)
         try:
             with socket.create_connection((parts.hostname or "127.0.0.1", parts.port or 11434), timeout):
@@ -330,6 +344,7 @@ class OllamaService:
 
     def install_model(self, *, timeout: int = 1800) -> dict[str, Any]:
         """Download the configured model with ``ollama pull`` (setup step only)."""
+        bounded_timeout = _bounded_timeout(timeout, low=30.0, high=3600.0, default=1800.0)
         executable = self._executable or find_ollama_executable()
         self._executable = executable
         if executable is None:
@@ -345,7 +360,7 @@ class OllamaService:
                 env=environment,
                 shell=False,
                 check=False,
-                timeout=timeout,
+                timeout=bounded_timeout,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {

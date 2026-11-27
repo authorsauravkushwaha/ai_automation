@@ -12,6 +12,7 @@ import concurrent.futures
 import html
 import ipaddress
 import json
+import math
 import re
 import socket
 import urllib.error
@@ -32,6 +33,24 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) HINATA-Assistant/1.0 Safari/537.36"
 )
 MAX_DOWNLOAD_BYTES = 260_000
+
+
+def _clamp_int(value: object, *, low: int, high: int, default: int) -> int:
+    try:
+        number = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(low, min(number, high))
+
+
+def _clamp_float(value: object, *, low: float, high: float, default: float) -> float:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return max(low, min(number, high))
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,32 +236,89 @@ def extract_core_search_query(raw_text: str) -> str:
     return cleaned[:160]
 
 
-def is_safe_public_url(url: str) -> bool:
-    """Validate HTTP(S) URL and block SSRF to loopback, private, link-local, or reserved IPs."""
+_UNSAFE_HOST_SUFFIXES = (
+    ".local",
+    ".internal",
+    ".localhost",
+    ".test",
+    ".invalid",
+    ".example",
+    ".onion",
+)
+
+
+def _is_literal_loopback(host: str) -> bool:
+    """Recognise only explicit loopback spellings, not names that resolve there."""
+    if host == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(ip.version == 4 and ip.is_loopback)
+
+
+def _is_unsafe_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def is_safe_public_url(
+    url: str,
+    *,
+    resolve: bool = True,
+    allow_loopback: bool = False,
+) -> bool:
+    """Validate HTTP(S) URL and block SSRF to private/link-local/reserved targets.
+
+    ``resolve=False`` performs the deterministic checks only; it is used when a
+    caller merely normalises a URL and will re-check with DNS before connecting.
+    ``allow_loopback=True`` permits *literal* 127.0.0.0/8 and ``localhost`` so the
+    local development server used by the web-automation tests can still be
+    fetched. It never permits a hostname that merely resolves to loopback.
+    """
     parsed = urlsplit(url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return False
-    if parsed.username or parsed.password:
-        return False
-    host = parsed.hostname.strip("[]").lower()
-    if host in {"localhost", "0.0.0.0"} or host.endswith(".local") or host.endswith(".internal"):
+    # Reject userinfo of any shape, including "http://:password@host".
+    if "@" in parsed.netloc or parsed.username or parsed.password:
         return False
     try:
-        ip = ipaddress.ip_address(host)
-        return not (
-            ip.is_loopback
-            or ip.is_private
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        )
+        port = parsed.port
+    except ValueError:
+        return False
+    host = parsed.hostname.strip("[]").lower().rstrip(".")
+    if not host or len(host) > 253:
+        return False
+    if allow_loopback and _is_literal_loopback(host):
+        return True
+    if host == "localhost" or host.endswith(_UNSAFE_HOST_SUFFIXES):
+        return False
+    # Decimal, hexadecimal and dotted-octal IP spellings bypass ipaddress but
+    # many HTTP stacks still interpret them as addresses.
+    if re.fullmatch(r"(?:0x[0-9a-f]+|\d+|[0-9.]+)", host):
+        return False
+    try:
+        return not _is_unsafe_ip(ipaddress.ip_address(host))
     except ValueError:
         pass
+    if not resolve:
+        return True
     try:
-        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(
+            host,
+            port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
     except OSError:
-        # Fail closed: do not hand an unresolvable hostname to urllib's independent resolver.
+        # Fail closed: do not hand an unresolvable hostname to urllib's
+        # independent resolver. OfflinePolicyError is an OSError subclass.
         return False
     for info in infos:
         sockaddr = info[4]
@@ -252,14 +328,7 @@ def is_safe_public_url(url: str) -> bool:
             resolved_ip = ipaddress.ip_address(str(sockaddr[0]).split("%")[0])
         except ValueError:
             continue
-        if (
-            resolved_ip.is_loopback
-            or resolved_ip.is_private
-            or resolved_ip.is_link_local
-            or resolved_ip.is_multicast
-            or resolved_ip.is_reserved
-            or resolved_ip.is_unspecified
-        ):
+        if _is_unsafe_ip(resolved_ip):
             return False
     return True
 
@@ -278,7 +347,9 @@ class WebSearchEngine:
         self.enabled = enabled
         self.strict_offline = strict_offline
         self.offline_guard = offline_guard
-        self.timeout_seconds = max(1.5, min(float(timeout_seconds), 20.0))
+        self.timeout_seconds = _clamp_float(
+            timeout_seconds, low=1.5, high=20.0, default=6.0
+        )
         self._opener = build_public_web_opener(self._check_policy)
 
     def _check_web_enabled(self) -> None:
@@ -340,12 +411,17 @@ class WebSearchEngine:
             },
             method="GET",
         )
+        read_limit = _clamp_int(
+            max_bytes, low=0, high=MAX_DOWNLOAD_BYTES, default=MAX_DOWNLOAD_BYTES
+        )
         with self._opener.open(req, timeout=self.timeout_seconds) as resp:
             ctype = str(resp.headers.get("Content-Type", ""))
-            body = resp.read(max_bytes)
+            # resp.read(-1) would disable the download cap entirely.
+            body = resp.read(read_limit)
         return body, ctype
 
     def _search_duckduckgo_html(self, query: str, limit: int = 8) -> list[WebSearchResult]:
+        limit = _clamp_int(limit, low=0, high=12, default=8)
         encoded = urllib.parse.urlencode({"q": query})
         raw, _ = self._http_get(f"https://html.duckduckgo.com/html/?{encoded}")
         parser = _DuckDuckGoHTMLParser()
@@ -356,6 +432,7 @@ class WebSearchEngine:
 
     def _search_duckduckgo_lite(self, query: str, limit: int = 6) -> list[WebSearchResult]:
         """Accessible text-only DuckDuckGo endpoint as an HTML search fallback."""
+        limit = _clamp_int(limit, low=0, high=12, default=6)
         encoded = urllib.parse.urlencode({"q": query})
         raw, _ = self._http_get(f"https://lite.duckduckgo.com/lite/?{encoded}")
         parser = _DuckDuckGoHTMLParser()
@@ -401,6 +478,7 @@ class WebSearchEngine:
         return out
 
     def _search_wikipedia(self, query: str, limit: int = 3) -> list[WebSearchResult]:
+        limit = _clamp_int(limit, low=0, high=12, default=3)
         params = urllib.parse.urlencode(
             {
                 "action": "query",
@@ -436,6 +514,7 @@ class WebSearchEngine:
         return results
 
     def _search_openlibrary(self, query: str, limit: int = 4) -> list[WebSearchResult]:
+        limit = _clamp_int(limit, low=0, high=12, default=4)
         # Strip role prefix like "author " so OpenLibrary matches the author/book cleanly
         clean_q = re.sub(r"^\b(?:author|writer|novelist|books?\s+by)\b\s+", "", query, flags=re.IGNORECASE).strip() or query
         params = urllib.parse.urlencode({"q": clean_q, "limit": str(limit)})
@@ -470,6 +549,7 @@ class WebSearchEngine:
         return out
 
     def _search_github(self, query: str, limit: int = 4) -> list[WebSearchResult]:
+        limit = _clamp_int(limit, low=0, high=12, default=4)
         clean_q = re.sub(r"^\b(?:author|developer|creator|github)\b\s+", "", query, flags=re.IGNORECASE).strip() or query
         compact_handle = re.sub(r"[^a-zA-Z0-9]", "", query).lower()
         out: list[WebSearchResult] = []
@@ -562,7 +642,7 @@ class WebSearchEngine:
 
     def fetch_webpage(self, url: str, *, max_chars: int = 4000) -> dict[str, Any]:
         """Fetch and extract readable plain text from a public HTTP/HTTPS webpage."""
-        cap = max(200, min(int(max_chars), 15_000))
+        cap = _clamp_int(max_chars, low=200, high=15_000, default=4_000)
         try:
             raw, ctype = self._http_get(url)
         except AutomationError:
@@ -602,7 +682,7 @@ class WebSearchEngine:
         if not full_query:
             raise AutomationError("Search query must not be empty")
         core_query = extract_core_search_query(full_query)
-        cap = max(1, min(int(max_results), 12))
+        cap = _clamp_int(max_results, low=1, high=12, default=8)
 
         provider_calls: list[tuple[str, Any]] = [
             ("ddg_html", lambda: self._search_duckduckgo_html(core_query, limit=cap)),

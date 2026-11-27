@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import subprocess
@@ -9,6 +10,7 @@ import sys
 import webbrowser
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from hinata.automation.app_control import AutomationError
 
@@ -24,8 +26,60 @@ _BROWSER_ALIASES = {
 
 
 def browser_key(name: str) -> str:
+    if not isinstance(name, str):
+        raise AutomationError("Browser name must be a string")
     key = " ".join(name.casefold().split()).removesuffix(".exe")
     return _BROWSER_ALIASES.get(key, key)
+
+
+_UNSAFE_HOST_SUFFIXES = (
+    ".local",
+    ".localhost",
+    ".internal",
+    ".test",
+    ".invalid",
+    ".example",
+)
+
+
+def _validate_browser_url(url: str) -> None:
+    """Only hand an ordinary public HTTP(S) URL to an external browser."""
+    if (
+        not isinstance(url, str)
+        or len(url) > 4096
+        or any(char in url for char in ("\r", "\n", "\x00"))
+    ):
+        raise AutomationError("Browser URL must be a short HTTP(S) URL without control characters")
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise AutomationError("Browser URL has an invalid port") from exc
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not host
+        or parsed.username
+        or parsed.password
+        or (port is not None and not 1 <= port <= 65535)
+        or host == "localhost"
+        or host.endswith(_UNSAFE_HOST_SUFFIXES)
+    ):
+        raise AutomationError("Browser URL must be a public HTTP(S) URL without credentials")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if (
+        not address.is_global
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_private
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        raise AutomationError("Browser URL must not target a private or special-use IP address")
 
 
 def _registered_browsers() -> Iterator[tuple[str, str, Path]]:
@@ -60,6 +114,7 @@ def _registered_browsers() -> Iterator[tuple[str, str, Path]]:
 
 def open_browser_search(url: str, browser: str = "default") -> str:
     """Open a caller-built fixed-provider URL; return the browser handed the request."""
+    _validate_browser_url(url)
     key = browser_key(browser)
     try:
         if key in {"default", "browser", "default browser", "my browser"}:

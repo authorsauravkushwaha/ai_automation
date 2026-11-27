@@ -6,6 +6,7 @@ Templates and reminders are stored in the local DB.
 
 from __future__ import annotations
 
+import math
 import re
 import time
 import uuid
@@ -14,6 +15,7 @@ from typing import Any
 
 from hinata.automation.app_control import AutomationError
 from hinata.database.database import Database
+from hinata.security.redaction import redact_text
 
 TEMPLATES: dict[str, str] = {
     "job_application": "Subject: Application for {position} at {company}\n\nDear Hiring Manager,\n\nI am writing to apply for the {position} role at {company}. {intro}\n\nKey highlights:\n{highlights}\n\nI have attached my resume and would love to discuss how I can contribute to {company}.\n\nWarm regards,\n{full_name}\n{email} | {phone}",
@@ -33,7 +35,8 @@ class CommunicationCenter:
             self._ensure_table()
 
     def _ensure_table(self) -> None:
-        assert self.db
+        if self.db is None:
+            raise AutomationError("A database is required to store communication records")
         with self.db.connect() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS email_drafts (
@@ -70,8 +73,23 @@ class CommunicationCenter:
         profile_name: str = "personal",
         save_path: str = "",
     ) -> dict[str, Any]:
+        if not all(
+            isinstance(value, str)
+            for value in (to, subject, body, template, profile_name, save_path)
+        ):
+            raise AutomationError("Email draft fields must be strings")
+        if template_vars is not None and (
+            not isinstance(template_vars, dict)
+            or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in template_vars.items()
+            )
+        ):
+            raise AutomationError("Email template variables must be string key/value pairs")
         vars_filled = dict(template_vars or {})
-        # Auto-fill from identity vault if available
+        autofill_warning = ""
+        # Auto-fill from identity vault if available. A failure must be visible:
+        # silently producing a draft with placeholders is a plausible wrong answer.
         if self.vault or (self.db and template):
             try:
                 from hinata.core.identity_vault import IdentityVault
@@ -85,8 +103,8 @@ class CommunicationCenter:
                     # Ensure full_name alias
                     if "full_name" in prof.fields:
                         vars_filled.setdefault("full_name", prof.fields["full_name"])
-            except Exception:
-                pass
+            except Exception as exc:
+                autofill_warning = redact_text(f"Identity autofill unavailable: {exc}")[:300]
 
         if template:
             tpl = TEMPLATES.get(template.lower())
@@ -115,6 +133,16 @@ class CommunicationCenter:
             raise AutomationError("Either subject or body is required")
         if len(subject) > 500 or len(body) > 20000:
             raise AutomationError("Subject/body exceeds limits")
+        # The .eml writer rejects CR/LF in headers, but the DB row and returned
+        # draft did not: reject header injection at the boundary for every path.
+        header_values = (
+            ("To", to),
+            ("Subject", subject or "(no subject)"),
+            ("From", str(vars_filled.get("email", "me@local.hinata"))),
+        )
+        for label, value in header_values:
+            if any(char in value for char in ("\r", "\n", "\x00")):
+                raise AutomationError(f"Email {label} contains a newline or null byte")
 
         draft_id = uuid.uuid4().hex[:12]
         # Create .eml draft file if files manager available
@@ -140,7 +168,17 @@ class CommunicationCenter:
                 "INSERT INTO email_drafts(draft_id, to_addr, subject, body, template, file_path) VALUES(?,?,?,?,?,?)",
                 (draft_id, to, subject, body, template, file_path),
             )
-        return {"draft_id": draft_id, "to": to, "subject": subject, "body_preview": body[:400], "template": template, "file_path": file_path}
+        result = {
+            "draft_id": draft_id,
+            "to": to,
+            "subject": subject,
+            "body_preview": body[:400],
+            "template": template,
+            "file_path": file_path,
+        }
+        if autofill_warning:
+            result["autofill_warning"] = autofill_warning
+        return result
 
     def list_drafts(self, limit: int = 20) -> dict[str, Any]:
         if not self.db:
@@ -160,20 +198,36 @@ class CommunicationCenter:
         return {"found": True, "template": name, "content": tpl, "variables": vars_needed}
 
     def create_reminder(self, title: str, message: str, when_epoch: float | None = None, when_str: str = "", repeat_seconds: int = 0, channel: str = "local") -> dict[str, Any]:
+        if not all(isinstance(value, str) for value in (title, message, when_str, channel)):
+            raise AutomationError("Reminder title, message, time and channel must be strings")
         if not title.strip():
             raise AutomationError("Reminder title is required")
+        if len(when_str) > 200 or len(channel) > 40 or any(ord(ch) < 32 for ch in channel):
+            raise AutomationError("Reminder time or channel exceeds its allowed format")
+        try:
+            interval = float(repeat_seconds)
+        except (TypeError, ValueError) as exc:
+            raise AutomationError("Reminder repeat interval must be a number") from exc
+        if not math.isfinite(interval) or interval < 0:
+            raise AutomationError("Reminder repeat interval must be zero or a positive finite number")
         if when_epoch is None:
             # Parse simple human time: "in 2 hours", "tomorrow 3pm", "2026-12-01 10:00"
             epoch = self._parse_when(when_str) if when_str else time.time() + 3600
         else:
-            epoch = float(when_epoch)
+            try:
+                epoch = float(when_epoch)
+            except (TypeError, ValueError) as exc:
+                raise AutomationError("Reminder timestamp must be a number") from exc
+        if not math.isfinite(epoch):
+            raise AutomationError("Reminder timestamp must be finite")
         if epoch < time.time() - 60:
             raise AutomationError("Reminder time is in the past")
         rid = uuid.uuid4().hex[:12]
+        clean_channel = channel.strip().lower() or "local"
         if self.db:
             self.db.execute(
                 "INSERT INTO reminders(reminder_id, title, message, remind_at_epoch, repeat_interval, channel) VALUES(?,?,?,?,?,?)",
-                (rid, title.strip()[:160], message.strip()[:1000], epoch, float(repeat_seconds), channel),
+                (rid, title.strip()[:160], message.strip()[:1000], epoch, interval, clean_channel),
             )
         return {"reminder_id": rid, "title": title, "remind_at": epoch, "remind_at_human": time.ctime(epoch), "message": message[:200]}
 
@@ -243,7 +297,8 @@ class CommunicationCenter:
             # today / tonight without an explicit hour
             base = time.localtime(now)
             clock = self._clock(21, 0, "") if word == "tonight" else self._clock(9, 0, "")
-            assert clock is not None
+            if clock is None:
+                raise AutomationError(f"Invalid default time in '{s}'")
             candidate = time.mktime((base.tm_year, base.tm_mon, base.tm_mday, clock[0], clock[1], 0, 0, 0, -1))
             return candidate if candidate > now else candidate + 86400
 
@@ -308,11 +363,17 @@ class CommunicationCenter:
         """
         if not self.db:
             return []
-        now = time.time() if now_epoch is None else float(now_epoch)
+        try:
+            now = time.time() if now_epoch is None else float(now_epoch)
+            bounded_limit = max(0, min(int(limit), 200))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise AutomationError("Reminder query bounds must be finite numbers") from exc
+        if not math.isfinite(now):
+            raise AutomationError("Reminder timestamp must be finite")
         return self.db.fetch_all(
             "SELECT * FROM reminders WHERE status = 'pending' AND remind_at_epoch <= ? "
             "ORDER BY remind_at_epoch ASC LIMIT ?",
-            (now, max(0, int(limit))),
+            (now, bounded_limit),
         )
 
     def fire_due_reminders(self, *, now_epoch: float | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -325,14 +386,34 @@ class CommunicationCenter:
         """
         if self.db is None:
             return []
-        now = time.time() if now_epoch is None else float(now_epoch)
+        try:
+            now = time.time() if now_epoch is None else float(now_epoch)
+            bounded_limit = max(0, min(int(limit), 200))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise AutomationError("Reminder firing bounds must be finite numbers") from exc
+        if not math.isfinite(now):
+            raise AutomationError("Reminder timestamp must be finite")
         fired: list[dict[str, Any]] = []
-        for row in self.due_reminders(now_epoch=now, limit=limit):
-            interval = float(row["repeat_interval"] or 0)
-            if interval > 0:
-                next_at = float(row["remind_at_epoch"])
-                while next_at <= now:
-                    next_at += interval
+        for row in self.due_reminders(now_epoch=now, limit=bounded_limit):
+            try:
+                interval = float(row["repeat_interval"] or 0)
+                scheduled = float(row["remind_at_epoch"])
+            except (TypeError, ValueError, OverflowError):
+                interval, scheduled = 0.0, now
+            if math.isfinite(interval) and interval > 0:
+                # A sub-second repeat interval could otherwise spin for years of
+                # simulated missed occurrences. Treat 60 seconds as the floor.
+                interval = max(60.0, interval)
+                if not math.isfinite(scheduled):
+                    scheduled = now
+                elapsed = now - scheduled
+                if not math.isfinite(elapsed) or elapsed > interval * 10_000:
+                    next_at = now + interval
+                else:
+                    missed = max(1, math.floor(elapsed / interval) + 1)
+                    next_at = scheduled + missed * interval
+                    if next_at <= now:
+                        next_at = now + interval
                 self.db.execute(
                     "UPDATE reminders SET remind_at_epoch = ?, status = 'pending' WHERE reminder_id = ?",
                     (next_at, row["reminder_id"]),
@@ -347,20 +428,40 @@ class CommunicationCenter:
 
     def broadcast(self, message: str, channels: list[str] | None = None) -> dict[str, Any]:
         """Mock broadcast — writes a notification file and returns what would be sent."""
-        chans = channels or ["local", "clipboard"]
+        if not isinstance(message, str):
+            raise AutomationError("Broadcast message must be a string")
+        if channels is None:
+            chans = ["local", "clipboard"]
+        elif isinstance(channels, list) and all(isinstance(item, str) for item in channels):
+            chans = [item.strip()[:40] for item in channels[:10] if item.strip()]
+        else:
+            raise AutomationError("Broadcast channels must be a list of strings")
         msg = message.strip()
         if not msg:
             raise AutomationError("Broadcast message cannot be empty")
         if len(msg) > 5000:
             raise AutomationError("Broadcast too long")
         # Write to clipboard if possible (via DesktopCockpit) would be done by orchestrator; here just mock
-        out = {"message": msg[:200], "channels": chans, "would_send": True, "note": "Local draft only — connect SMTP/Slack/Telegram in config to send for real."}
+        out: dict[str, Any] = {
+            "message": msg[:200],
+            "channels": chans,
+            "would_send": True,
+            "note": "Local draft only — connect SMTP/Slack/Telegram in config to send for real.",
+        }
         if self.files:
             try:
-                dst = self.files.resolve(f"broadcast_{int(time.time())}.txt", must_exist=False)
+                dst = self.files.resolve(
+                    f"broadcast_{int(time.time())}_{uuid.uuid4().hex[:8]}.txt",
+                    must_exist=False,
+                )
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.write_text(f"[{time.ctime()}] {msg}", encoding="utf-8")
                 out["local_file"] = str(dst)
-            except Exception:
-                pass
+                out["local_file_written"] = True
+            except Exception as exc:
+                # The broadcast still reports what *would* be sent, but a failed
+                # local notification write is no longer invisible.
+                out["local_file"] = ""
+                out["local_file_written"] = False
+                out["local_file_error"] = redact_text(str(exc))[:300]
         return out

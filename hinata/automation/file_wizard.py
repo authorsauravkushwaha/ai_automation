@@ -113,6 +113,16 @@ class FileWizard:
         root = self._resolve_root(path)
         if not root.is_dir():
             raise AutomationError(f"Not a directory: {root}")
+        group_limit = max(0, min(int(max_groups), 50))
+        size_floor = max(0, int(min_size_kb)) * 1024
+        empty = {
+            "root": str(root),
+            "duplicate_groups": [],
+            "groups_found": 0,
+            "hash_algorithm": "sha256",
+        }
+        if group_limit <= 0:
+            return empty
         # First group by size
         size_map: dict[int, list[Path]] = defaultdict(list)
         for dirpath, _, filenames in os.walk(root):
@@ -122,7 +132,7 @@ class FileWizard:
                     continue
                 try:
                     sz = fp.stat().st_size
-                    if sz < min_size_kb * 1024:
+                    if sz < size_floor:
                         continue
                     size_map[sz].append(fp)
                 except OSError:
@@ -137,7 +147,7 @@ class FileWizard:
             for p in paths:
                 try:
                     with p.open("rb") as f:
-                        h = hashlib.md5(f.read(4096)).hexdigest()
+                        h = hashlib.sha256(f.read(4096)).hexdigest()
                     quick_map[h].append(p)
                 except OSError:
                     continue
@@ -148,7 +158,7 @@ class FileWizard:
                 full_map: dict[str, list[Path]] = defaultdict(list)
                 for p in qpaths:
                     try:
-                        digest = hashlib.md5()
+                        digest = hashlib.sha256()
                         with p.open("rb") as f:
                             while chunk := f.read(8192):
                                 digest.update(chunk)
@@ -158,11 +168,16 @@ class FileWizard:
                 for fh, fps in full_map.items():
                     if len(fps) >= 2:
                         groups.append({"size": sz, "hash": fh[:12], "files": [str(x) for x in fps]})
-                        if len(groups) >= max_groups:
+                        if len(groups) >= group_limit:
                             break
-            if len(groups) >= max_groups:
+            if len(groups) >= group_limit:
                 break
-        return {"root": str(root), "duplicate_groups": groups, "groups_found": len(groups)}
+        return {
+            "root": str(root),
+            "duplicate_groups": groups,
+            "groups_found": len(groups),
+            "hash_algorithm": "sha256",
+        }
 
     def organize_folder(self, path: str, *, mode: str = "by_type", dry_run: bool = True) -> dict[str, Any]:
         root = self._resolve_root(path)
