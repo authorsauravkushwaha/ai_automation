@@ -76,12 +76,14 @@ jobs:
           from pathlib import Path
           path = Path('eval-results/ultron-local.json')
           if path.exists():
-              # A step is limited to ten notices. One lossless, ASCII-only notice
-              # preserves all sixteen rows and avoids Unicode log transformations.
+              # At most ten notices, each below the 4 KiB message truncation.
+              # ASCII transport preserves the original report's Unicode exactly.
               payload = base64.b64encode(zlib.compress(path.read_bytes())).decode('ascii')
-              if len(payload) > 48000:
+              chunks = [payload[i:i + 3500] for i in range(0, len(payload), 3500)]
+              if len(chunks) > 10:
                   raise SystemExit('Evidence exceeds annotation bound; use retained artifact')
-              print('::notice title=Evaluation report (zlib-base64)::' + payload)
+              for index, chunk in enumerate(chunks, 1):
+                  print(f'::notice title=Evaluation report zlib-base64 {index}/{len(chunks)}::' + chunk)
           else:
               print('::error::Evaluation did not produce a report; inspect preparation logs.')
           PY
