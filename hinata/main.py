@@ -13,7 +13,9 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -49,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="hinata", description="Private, offline-first Windows 11 personal assistant"
     )
     parser.add_argument("--config", help="Path to config.toml")
+    ultron = parser.add_mutually_exclusive_group()
+    ultron.add_argument("--ultron", dest="ultron", action="store_true", default=None,
+                        help="Enable Ultron (default unless disabled in config); approval gates unchanged")
+    ultron.add_argument("--no-ultron", dest="ultron", action="store_false",
+                        help="Start without Ultron, using configured thinking/autonomy settings")
     parser.add_argument("--no-llm", action="store_true", help="Use deterministic tools only")
     speech = parser.add_mutually_exclusive_group()
     speech.add_argument("--speak", action="store_true", help="Require offline speech output (fail if unavailable)")
@@ -159,11 +166,17 @@ def build_parser() -> argparse.ArgumentParser:
     ov_op.add_argument("--stand-down", action="store_true", help="Revoke active Commander Lease immediately")
     override.add_argument("--reason", default="Owner engaged Red Alert Lockdown", help="Lockdown reason note")
 
-    schedule = commands.add_parser("schedule", help="Manage bounded offline-only autonomous background jobs")
+    schedule = commands.add_parser("schedule", help="Manage bounded scheduled jobs; automation is opt-in")
     sc_op = schedule.add_mutually_exclusive_group()
-    sc_op.add_argument("--add", metavar="NAME", help="Schedule a recurring bounded offline job")
+    sc_op.add_argument("--add", metavar="NAME", help="Schedule a bounded job; suggest-only unless --autonomy is supplied")
     sc_op.add_argument("--tick", action="store_true", help="Execute one bounded scheduler tick now")
+    sc_op.add_argument("--watch", action="store_true", help="Run due jobs continuously in this foreground process; Ctrl+C to stop")
     sc_op.add_argument("--disable", metavar="JOB_ID", help="Disable a scheduled job")
+    schedule.add_argument("--autonomy", choices=["SUGGEST_ONLY", "LOW_RISK_AUTONOMY", "OFFLINE_AUTONOMY"], default="SUGGEST_ONLY", help="Saved policy for --add; never grants confirmation or PIN")
+    schedule.add_argument("--requires-online", action="store_true", help="Park this job while online mode is disabled")
+    schedule.add_argument("--poll-seconds", type=int, choices=range(1, 301), default=5, metavar="1..300", help="Polling interval for --watch")
+    schedule.add_argument("--id", help="Inspect one schedule and its attempt history")
+    schedule.add_argument("--offset", type=int, default=0, help="Pagination offset for schedules/history")
     schedule.add_argument("--request", default="executive briefing", help="Command/request for --add")
     schedule.add_argument("--interval", type=int, default=300, help="Interval in seconds for --add")
     schedule.add_argument("--max-runs", type=int, default=10, help="Bounded run cap for --add")
@@ -216,7 +229,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(json.dumps({"model": "stabilityai/sd-turbo", "ready": is_model_ready(folder), "path": str(folder)}, indent=2))
             return 0
-        assistant = HinataAssistant(config, llm_enabled=False if args.no_llm else None)
+        assistant = HinataAssistant(
+            config, llm_enabled=False if args.no_llm else None, ultron_enabled=args.ultron,
+        )
         if args.command == "setup-owner":
             name = args.name.strip()
             if not name:
@@ -474,7 +489,8 @@ def main(argv: list[str] | None = None) -> int:
                     request_text=args.request,
                     interval_seconds=args.interval,
                     max_runs=args.max_runs,
-                    requires_online=False,
+                    requires_online=args.requires_online,
+                    autonomy_mode=args.autonomy,
                 )
                 print(json.dumps({"schedule_id": sched_id, "title": args.add}, indent=2, ensure_ascii=False))
                 return 0
@@ -482,28 +498,33 @@ def main(argv: list[str] | None = None) -> int:
                 ok = assistant.scheduler.cancel(args.disable)
                 print(f"Scheduled job {args.disable} disabled." if ok else "Schedule ID not found.")
                 return 0 if ok else 1
-            if args.tick:
-                def _run_sched(row: dict[str, Any]) -> dict[str, Any]:
-                    res = assistant.process_text(
-                        str(row["request_text"]),
-                        autonomy_mode=str(row.get("autonomy_mode") or "SUGGEST_ONLY"),
+            if args.tick or args.watch:
+                if args.watch:
+                    print("Scheduler active. Saved job permissions apply; Ctrl+C to stop.", flush=True)
+                while True:
+                    ran = assistant.scheduler.tick(
+                        assistant.run_scheduled_task,
+                        online_mode_enabled=(
+                            assistant.config.security.online_mode_enabled
+                            and not assistant.config.security.strict_offline
+                        ),
                     )
-                    return {"status": res.status, "task_id": str(res.data.get("task_id", ""))}
-
-                ran = assistant.scheduler.tick(
-                    _run_sched,
-                    online_mode_enabled=assistant.config.security.online_mode_enabled,
-                )
-                due_reminders = [
-                    {"title": r["title"], "message": r["message"]}
-                    for r in assistant.fire_due_reminders()
-                ]
-                print(json.dumps(
-                    {"executed_jobs": ran, "due_reminders": due_reminders},
-                    indent=2, ensure_ascii=False,
-                ))
-                return 0
-            print(json.dumps(assistant.scheduler.list_schedules(), indent=2, ensure_ascii=False))
+                    due_reminders = [
+                        {"title": r["title"], "message": r["message"]}
+                        for r in assistant.fire_due_reminders()
+                    ]
+                    if ran or due_reminders or not args.watch:
+                        print(json.dumps(
+                            {"executed_jobs": ran, "due_reminders": due_reminders},
+                            indent=2, ensure_ascii=False,
+                        ), flush=True)
+                    if not args.watch:
+                        return 0
+                    time.sleep(args.poll_seconds)
+            if args.id:
+                print(json.dumps({"schedule": assistant.scheduler.get(args.id), "attempts": assistant.scheduler.attempts(args.id, offset=args.offset)}, indent=2))
+            else:
+                print(json.dumps(assistant.scheduler.list_schedules(offset=args.offset), indent=2, ensure_ascii=False))
             return 0
         if args.command == "tasks":
             if args.pause:
@@ -591,7 +612,7 @@ def persist_thinking_mode(config: Any, mode: str) -> str:
     """
     import tomllib
 
-    config_path = Path(
+    config_path = getattr(config, "source_path", None) or Path(
         os.environ.get(
             "HINATA_CONFIG",
             os.environ.get(
@@ -606,19 +627,38 @@ def persist_thinking_mode(config: Any, mode: str) -> str:
             tomllib.loads(text)
         except tomllib.TOMLDecodeError as exc:
             raise ConfigError(f"Refusing to rewrite malformed {config_path}: {exc}") from exc
+    if mode not in {"off", "quick", "balanced", "deep", "ultra"}:
+        raise ConfigError("Unsupported thinking mode")
+    original = text
     quoted = f'"{mode}"'
-    section = re.search(r"(?ms)^\[thinking\]\s*$.*?(?=^\[|\Z)", text)
+    section = re.search(r"(?ms)^[ \t]*\[thinking\][^\n]*\n.*?(?=^[ \t]*\[|\Z)", text)
     if section:
         block = section.group(0)
-        if re.search(r"(?m)^mode\s*=", block):
-            updated = re.sub(r"(?m)^mode\s*=\s*\"[^\"]*\"", f"mode = {quoted}", block, count=1)
+        if re.search(r"(?m)^[ \t]*mode\s*=", block):
+            updated = re.sub(r"(?m)^[ \t]*mode\s*=[^\n]*", f"mode = {quoted}", block, count=1)
         else:
             updated = block.rstrip("\n") + f"\nmode = {quoted}\n"
         text = text[: section.start()] + updated + text[section.end():]
     else:
         text = text.rstrip("\n") + f"\n\n[thinking]\nmode = {quoted}\n"
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(text, encoding="utf-8")
+    try:
+        persisted = tomllib.loads(text)
+        if persisted.get("thinking", {}).get("mode") != mode:
+            raise ConfigError("Cannot safely update this TOML layout")
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError("Refusing to write invalid TOML") from exc
+    fd, temporary = tempfile.mkstemp(prefix=".hinata-config-", dir=config_path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if (config_path.read_text(encoding="utf-8") if config_path.exists() else "") != original:
+            raise ConfigError("Configuration changed concurrently; retry")
+        os.replace(temporary, config_path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
     try:
         config.thinking.mode = mode
     except Exception:
@@ -800,7 +840,7 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False, speech_requi
             print(EXAMPLES)
             print(
                 "\nShell: /briefing /lockdown /unlock /commander /standdown /voice /speak /stop /reconnect "
-                "/status /memory /pin /forget /think [off|quick|balanced|deep|ultra] /quit"
+                "/status /memory /pin /forget /think [off|quick|balanced|deep|ultra] /ultron [on|off|status] /quit"
             )
             continue
         if text == "/briefing":
@@ -827,6 +867,15 @@ def interactive(assistant: HinataAssistant, *, speak: bool = False, speech_requi
             continue
         if text == "/standdown":
             print(json.dumps(assistant.stand_down_commander_mode(), indent=2))
+            continue
+        if text.split()[0] == "/ultron":
+            pieces = text.split()
+            operation = pieces[1] if len(pieces) == 2 else "status" if len(pieces) == 1 else "invalid"
+            if operation not in {"on", "off", "status"}:
+                print("Usage: /ultron [on|off|status]")
+            else:
+                report = assistant.ultron_status() if operation == "status" else assistant.set_ultron_mode(operation == "on")
+                print(json.dumps(report, indent=2))
             continue
         if text.startswith("/think"):
             pieces = text.split()

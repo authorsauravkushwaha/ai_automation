@@ -192,6 +192,15 @@ class ToolRegistry:
             "SELECT * FROM tool_idempotency WHERE idempotency_key = ?", (idempotency_key,)
         )
 
+    def claim_effect(self, key: str, *, task_id: str, step_id: str, tool: str) -> bool:
+        if self.database is None:
+            return True
+        with self.database.connect() as conn:
+            return conn.execute(
+                "INSERT OR IGNORE INTO tool_idempotency(idempotency_key, task_id, step_id, tool, effect_state, result_summary_json) VALUES(?, ?, ?, ?, 'IN_FLIGHT', '{}')",
+                (key, task_id, step_id, tool),
+            ).rowcount == 1
+
     def mark_effect(
         self,
         idempotency_key: str,

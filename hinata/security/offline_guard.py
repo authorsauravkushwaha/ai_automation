@@ -17,6 +17,7 @@ import os
 import re
 import socket
 import threading
+from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -136,8 +137,8 @@ class OfflineGuard:
         except ValueError as exc:
             raise ValueError(f"Invalid online domain allowlist: {exc}") from exc
         self.allowed_online_domains = tuple(sorted(domains))
-        self._blocked_attempts: list[dict[str, Any]] = []
-        self._allowed_online_events: list[dict[str, Any]] = []
+        self._blocked_attempts: deque[dict[str, Any]] = deque(maxlen=1000)
+        self._allowed_online_events: deque[dict[str, Any]] = deque(maxlen=1000)
         self._events_lock = threading.Lock()
 
     @property
@@ -192,8 +193,8 @@ class OfflineGuard:
                 "allowed_online_domains": list(self.allowed_online_domains),
                 "socket_guard_installed": OfflineGuard._active_guard is self,
                 "blocked_attempts_count": len(self._blocked_attempts),
-                "recent_blocked": list(self._blocked_attempts[-10:]),
-                "recent_online_allowed": list(self._allowed_online_events[-10:]),
+                "recent_blocked": list(self._blocked_attempts)[-10:],
+                "recent_online_allowed": list(self._allowed_online_events)[-10:],
             }
 
     def install_socket_guard(self) -> None:

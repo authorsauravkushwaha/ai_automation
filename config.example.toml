@@ -58,7 +58,7 @@ text_extensions = [".txt", ".md", ".log", ".json", ".csv", ".py", ".js", ".ts", 
 max_read_bytes = 1000000
 search_timeout_seconds = 5.0
 search_max_directories = 10000
-encrypt_at_rest = false  # Set true to encrypt sensitive records with a local vault key.
+encrypt_at_rest = false  # Envelope writes require .[secure-storage]; this does not encrypt every SQLite column.  # Set true to encrypt sensitive records with a local vault key.
 database_encryption_backend = "envelope"  # "envelope", "sqlcipher" (requires .[encrypted-db]), or "auto".
 strict_offline = false   # Set true to install process-wide non-loopback socket blocking.
 online_mode_enabled = false  # Generic online automation remains opt-in; this does not disable web search.
@@ -67,6 +67,10 @@ discover_installed_apps = true  # Discover and open user's installed Windows app
 allowed_online_domains = []
 
 [agentic]
+# Default startup preset: ultra reasoning + low-risk autonomy when no explicit mode is saved.
+# Explicit thinking.mode/autonomy_mode entries (including those below) take precedence.
+# Set false to disable the preset entirely; approval/PIN gates are always preserved.
+ultron_enabled = true
 # SUGGEST_ONLY, APPROVAL_EACH_STEP, APPROVED_PLAN, LOW_RISK_AUTONOMY, or OFFLINE_AUTONOMY
 autonomy_mode = "APPROVED_PLAN"
 max_plan_steps = 12
@@ -83,12 +87,12 @@ max_parallel_readonly = 2
 # The deliberation layer that reviews answers and plans before HINATA acts.
 # off      = single fast pass (previous behaviour)
 # quick    = one self-critique of conversational answers
-# balanced = recon -> critique -> revise -> verify -> reflect (default)
+# balanced = recon -> critique -> revise -> verify -> reflect (base profile without Ultron)
 # deep     = balanced plus one bounded second opinion when confidence is low
 # ultra    = deep with a mandatory revision pass and the largest budgets
 enabled = true
 mode = "balanced"
-# Hard ceilings. A profile can lower these, never raise them.
+# Cooperative wall-clock deadline and call ceiling. A profile can lower these, never raise them.
 max_seconds = 150.0
 max_model_calls = 7
 # Untrusted evidence handed to the thinking loop, in characters.

@@ -82,6 +82,8 @@ class ReplanningTests(unittest.TestCase):
                 self.assertEqual(result.status, "failed")
 
     def test_second_failure_does_not_propose_another_revision(self):
+        self.assistant.tasks.max_revisions = 1
+        self.assistant.orchestrator.max_replans = 1
         (self.root / "alternative").mkdir()
         initial = self.assistant.process_text("prepare folder")
         revised = self.assistant.execute_plan(initial.plan_actions, task_id=initial.data["task_id"])

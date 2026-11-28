@@ -43,6 +43,11 @@ def _compute_trace_hash(
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def _trace_v2(row: dict[str, Any]) -> str:
+    material = {key: value for key, value in row.items() if key not in {"id", "event_hash"}}
+    return "v2:" + hashlib.sha256(json.dumps(material, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+
+
 class TraceRecorder:
     """Records structured, secret-redacted, SHA-256 hash-chained audit trace events in SQLite."""
 
@@ -50,7 +55,6 @@ class TraceRecorder:
         self.database = database
         self.database.ensure_migrated()
         self._lock = threading.Lock()
-        self._sequences: dict[str, int] = {}
         self._last_hash: str | None = None
         self._metrics = {
             "model_calls": 0,
@@ -79,7 +83,6 @@ class TraceRecorder:
         run_id = uuid.uuid4().hex
         trace_id = uuid.uuid4().hex
         with self._lock:
-            self._sequences[run_id] = 0
             self._metrics["tasks_started"] += 1
         safe_goal = str(redact_value(user_goal))[:4000]
         self.database.execute(
@@ -154,17 +157,6 @@ class TraceRecorder:
             elif state in {"FAILED", "UNKNOWN_OUTCOME"}:
                 self._metrics["tasks_failed"] += 1
 
-    def _next_sequence(self, run_id: str) -> int:
-        with self._lock:
-            if run_id not in self._sequences:
-                row = self.database.fetch_one(
-                    "SELECT COALESCE(MAX(sequence), 0) AS max_seq FROM agent_trace_events WHERE run_id = ?",
-                    (run_id,),
-                )
-                self._sequences[run_id] = int(row["max_seq"]) if row else 0
-            self._sequences[run_id] += 1
-            return self._sequences[run_id]
-
     def record_event(
         self,
         *,
@@ -181,57 +173,28 @@ class TraceRecorder:
         retry_count: int = 0,
         payload: dict[str, Any] | None = None,
     ) -> int:
-        seq = self._next_sequence(run_id) if run_id else 0
-        sanitized_payload = json.dumps(redact_value(payload or {}), ensure_ascii=False, default=str)[:4000]
-        with self._lock:
-            # Always read the true chain tip. Caching it optimises a cheap SELECT
-            # but breaks the chain whenever a second writer exists -- another
-            # HINATA instance sharing the data directory (desktop + CLI), or a
-            # restart -- producing false "audit tampered" results on a healthy DB.
-            last_row = self.database.fetch_one(
-                "SELECT event_hash FROM agent_trace_events ORDER BY id DESC LIMIT 1"
-            )
-            self._last_hash = (
-                str(last_row["event_hash"]) if last_row and last_row.get("event_hash") else "GENESIS"
-            )
-            prev_hash = self._last_hash
-            event_hash = _compute_trace_hash(
-                prev_hash,
-                run_id=run_id,
-                task_id=task_id,
-                step_id=step_id,
-                seq=seq,
-                agent_id=agent_id,
-                tool_id=tool_id,
-                event_type=event_type,
-                status=status,
-                payload_json=sanitized_payload,
-            )
-            row_id = self.database.execute(
+        sanitized_payload = json.dumps(redact_value(payload or {}), ensure_ascii=False, default=str)
+        if len(sanitized_payload) > 4000:
+            sanitized_payload = json.dumps({"truncated": True, "preview": sanitized_payload[:3000]}, ensure_ascii=False)
+        # The database write lock, not an instance mutex, owns the chain tip and sequence.
+        with self.database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            seq = int(conn.execute("SELECT COALESCE(MAX(sequence), 0) FROM agent_trace_events WHERE run_id=?", (run_id,)).fetchone()[0]) + 1 if run_id else 0
+            tip = conn.execute("SELECT event_hash FROM agent_trace_events ORDER BY id DESC LIMIT 1").fetchone()
+            prev_hash = str(tip[0]) if tip and tip[0] else "GENESIS"
+            cursor = conn.execute(
                 """INSERT INTO agent_trace_events(
                     run_id, task_id, step_id, sequence, agent_id, tool_id,
                     correlation_id, event_type, status, model_identity,
                     duration_ms, retry_count, payload_json, prev_hash, event_hash
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    run_id,
-                    task_id,
-                    step_id,
-                    seq,
-                    agent_id,
-                    tool_id,
-                    correlation_id,
-                    event_type,
-                    status,
-                    model_identity[:200],
-                    round(float(duration_ms), 3),
-                    int(retry_count),
-                    sanitized_payload,
-                    prev_hash,
-                    event_hash,
-                ),
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')""",
+                (run_id, task_id, step_id, seq, agent_id, tool_id, correlation_id,
+                 event_type, status, model_identity[:200], round(float(duration_ms), 3),
+                 int(retry_count), sanitized_payload, prev_hash),
             )
-            self._last_hash = event_hash
+            row_id = int(cursor.lastrowid or 0)
+            row = dict(conn.execute("SELECT * FROM agent_trace_events WHERE id=?", (row_id,)).fetchone())
+            conn.execute("UPDATE agent_trace_events SET event_hash=? WHERE id=?", (_trace_v2(row), row_id))
             return row_id
 
     def record_model_metric(self, *, latency_ms: float, tokens: int = 0, success: bool = True) -> None:
@@ -277,6 +240,10 @@ class TraceRecorder:
     def metrics_snapshot(self) -> dict[str, Any]:
         with self._lock:
             m = dict(self._metrics)
+        states = self.database.fetch_all("SELECT state, COUNT(*) AS n FROM agent_runs GROUP BY state")
+        m["tasks_started"] = sum(int(row["n"]) for row in states)
+        m["tasks_succeeded"] = sum(int(row["n"]) for row in states if row["state"] in {"SUCCEEDED", "COMPLETED"})
+        m["tasks_failed"] = sum(int(row["n"]) for row in states if row["state"] in {"FAILED", "UNKNOWN_OUTCOME"})
         avg_model_ms = (
             round(m["model_total_latency_ms"] / m["model_calls"], 2) if m["model_calls"] else 0.0
         )
@@ -299,9 +266,7 @@ class TraceRecorder:
     def verify_integrity(self) -> dict[str, Any]:
         """Verify the cryptographic SHA-256 hash chain across all stored trace events."""
         rows = self.database.fetch_all(
-            """SELECT id, run_id, task_id, step_id, sequence, agent_id, tool_id,
-                      event_type, status, payload_json, prev_hash, event_hash
-               FROM agent_trace_events ORDER BY id ASC"""
+            "SELECT * FROM agent_trace_events ORDER BY id ASC"
         )
         expected_prev: str | None = None
         checked = 0
@@ -331,6 +296,8 @@ class TraceRecorder:
                 status=str(row["status"]),
                 payload_json=str(row["payload_json"]),
             )
+            if ev_hash.startswith("v2:"):
+                recomputed = _trace_v2(row)
             if recomputed != ev_hash:
                 return {
                     "intact": False,

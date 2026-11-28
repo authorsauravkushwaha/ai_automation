@@ -22,6 +22,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,7 @@ from hinata.core.reasoning import (
     ThinkingResult,
     thinking_mode,
 )
+from hinata.core.runtime_limits import CURRENT_BUDGET, NODE_TIMEOUT, bounded_operation, node_limits
 from hinata.core.tool_registry import ToolRegistry
 from hinata.core.types import ActionRequest, ActionResult, AssistantResponse
 from hinata.knowledge.index import KnowledgeIndex, verify_claim_citations
@@ -128,7 +130,10 @@ class Orchestrator:
         self.personality = personality
         self.permissions = permissions
         # >0 while a call stack has already been authorised by PermissionManager.
-        self._authorization_depth = 0
+        self._authorized_action: ContextVar[str] = ContextVar("authorized_action", default="")
+        self._inflight_lock = threading.Lock()
+        self._operation_lock = threading.RLock()
+        self._inflight_tools: set[concurrent.futures.Future] = set()
         self.apps = apps
         self.files = files
         self.web_search = web_search or WebSearchEngine()
@@ -243,6 +248,7 @@ class Orchestrator:
             "Stopped. Any action not already completed was not started.", False, "cancelled"
         )
 
+    @bounded_operation
     def process(
         self,
         text: str,
@@ -253,11 +259,18 @@ class Orchestrator:
         autonomy_mode: str | None = None,
         _compound_child: bool = False,
     ) -> AssistantResponse:
+        if not isinstance(text, str) or not text.strip() or len(text.strip()) > 4000:
+            return AssistantResponse("Requests must contain 1 to 4000 characters.", False, "invalid")
+        if autonomy_mode is not None and autonomy_mode not in AUTONOMY_MODES:
+            return AssistantResponse("Unsupported autonomy mode", False, "invalid")
         if not _compound_child:
             self._stop_requested.clear()
         effective_mode = autonomy_mode or self.autonomy_mode
         if not _compound_child:
-            parts = self.parser.parse_multitask(text)
+            try:
+                parts = self.parser.parse_multitask(text)
+            except ValidationError as exc:
+                return AssistantResponse(f"Invalid compound command: {exc}", False, "invalid")
             parallel_safe = {
                 "web_search", "fetch_webpage", "list_installed_apps", "open_application",
                 "system_info", "hardware_profile", "knowledge_list", "knowledge_search",
@@ -267,11 +280,11 @@ class Orchestrator:
             parsed = [self.parser.parse(part) for part in parts] if parts else []
             if len(parsed) >= 2 and all(action is not None and action.tool in parallel_safe for action in parsed):
                 with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=min(4, len(parts)), thread_name_prefix="hinata-multitask"
+                    max_workers=min(self.agent_registry.max_parallel_readonly, len(parts)), thread_name_prefix="hinata-multitask"
                 ) as pool:
                     futures = [
                         pool.submit(
-                            self.process,
+                            copy_context().run, self.process,
                             part,
                             source=source,
                             speaker_match=speaker_match,
@@ -296,7 +309,7 @@ class Orchestrator:
                     ]},
                 )
         token = self.cancellations.create_token()
-        budget = BudgetTracker(self.default_budget)
+        budget = CURRENT_BUDGET.get() or BudgetTracker(self.default_budget)
         try:
             cleaned = text.strip()
             if not cleaned:
@@ -323,7 +336,7 @@ class Orchestrator:
                 try:
                     self.tracer.update_run(run_id, state="PLANNING")
                     t0 = time.monotonic()
-                    draft_reply = self._model_reply(cleaned)
+                    draft_reply = self._model_reply(cleaned, cancel_token=token)
                     # The draft's shape decides which thinking domain applies: a
                     # chat reply is reviewed as prose, a tool/plan reply is
                     # reviewed as strict JSON and stays under planner control.
@@ -347,7 +360,6 @@ class Orchestrator:
                             )
                             raw_plan = thinking_result.text
                     model_ms = (time.monotonic() - t0) * 1000.0
-                    budget.record_model_call(tokens=max(1, len(raw_plan) // 4))
                     self.tracer.record_model_metric(latency_ms=model_ms, tokens=max(1, len(raw_plan) // 4), success=True)
                     self._record_thinking(run_id, thinking_result)
                     if self._cancelled(token):
@@ -557,6 +569,7 @@ class Orchestrator:
         finally:
             self.cancellations.release_token(token)
 
+    @bounded_operation
     def resume(
         self,
         action: ActionRequest,
@@ -587,6 +600,7 @@ class Orchestrator:
     def _action_history(action: ActionRequest, response: AssistantResponse) -> str:
         return f"[Tool {action.tool}: {response.status}. Output displayed but omitted from model history.]"
 
+    @bounded_operation
     def execute_plan(
         self,
         actions: list[ActionRequest],
@@ -603,7 +617,17 @@ class Orchestrator:
         token = self.cancellations.create_token()
         try:
             if plan_override is not None:
-                plan = plan_override
+                try:
+                    plan = self.planner.validate({
+                        "type": "plan", "objective": plan_override.objective,
+                        "steps": [{"step_id": n.step_id, "tool": n.action.tool,
+                                   "arguments": n.action.arguments, "depends_on": list(n.depends_on),
+                                   "agent_id": n.agent_id, "condition": n.condition, "explanation": n.explanation}
+                                  for n in plan_override.nodes] if plan_override.nodes else
+                                 [{"tool": a.tool, "arguments": a.arguments} for a in plan_override.steps],
+                    }, user_request=plan_override.contract.user_request if plan_override.contract else "")
+                except PlanningError as exc:
+                    return AssistantResponse(f"Plan rejected: {exc}", False, "invalid")
             else:
                 candidate = {
                     "type": "plan",
@@ -664,6 +688,7 @@ class Orchestrator:
             waves = plan.topological_batches()
 
             completed: list[dict[str, Any]] = []
+            verification_evidence: dict[int, dict[str, Any]] = {}
             step_outcomes: dict[str, str] = {}
             resumed_step_states: dict[str, str] = {}
             if resume_existing and self.tasks and task_id:
@@ -703,6 +728,9 @@ class Orchestrator:
                     self.memory.add_message("assistant", response.text, source)
                     return response
 
+                wave_budget = CURRENT_BUDGET.get()
+                if wave_budget is not None:
+                    wave_budget.record_iteration()
                 if self.tasks and task_id:
                     self.tasks.heartbeat(task_id)
 
@@ -716,14 +744,14 @@ class Orchestrator:
                     if node.condition:
                         dep_id, _, required_state = node.condition.partition(".")
                         dependency_outcome = step_outcomes.get(dep_id, "")
-                        if (required_state == "succeeded" and dependency_outcome != "succeeded") or (
-                            required_state == "verified" and dependency_outcome != "succeeded"
+                        if (required_state == "succeeded" and dependency_outcome not in {"succeeded", "verified"}) or (
+                            required_state == "verified" and dependency_outcome != "verified"
                         ):
                             idx = ordinal_by_step_id[node.step_id]
                             step_outcomes[node.step_id] = "skipped"
                             if self.tasks and task_id:
                                 self.tasks.skip_step(task_id, idx, "Skipped because its validated branch condition was not met")
-                            completed.append({"step": idx, "tool": node.action.tool, "success": True, "message": "[Skipped by branch condition; not reported as executed]"})
+                            completed.append({"step": idx, "tool": node.action.tool, "success": True, "executed": False, "message": "[Skipped by branch condition; not reported as executed]"})
                             continue
                     runnable_wave.append(node)
 
@@ -739,11 +767,11 @@ class Orchestrator:
                     for node in runnable_wave:
                         if self.tasks and task_id:
                             self.tasks.start_step(task_id, ordinal_by_step_id[node.step_id])
-                    max_workers = min(2, len(runnable_wave))
+                    max_workers = min(self.agent_registry.max_parallel_readonly, len(runnable_wave))
                     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
                         futs = {
                             node.step_id: pool.submit(
-                                self._execute_node,
+                                copy_context().run, self._execute_node,
                                 node,
                                 source=source,
                                 speaker_match=speaker_match,
@@ -780,6 +808,13 @@ class Orchestrator:
                         if not res.success:
                             break
 
+                if self.tasks and task_id:
+                    for sibling, observed in wave_results:
+                        self.tasks.record_step_observation(
+                            task_id, ordinal_by_step_id[sibling.step_id],
+                            observation={"status": observed.status, "message": observed.text},
+                            effect_state="SUCCEEDED" if observed.success else "UNKNOWN_OUTCOME" if observed.status == "unknown_outcome" else "FAILED",
+                        )
                 for node, result in wave_results:
                     index = ordinal_by_step_id[node.step_id]
                     action = node.action
@@ -802,13 +837,28 @@ class Orchestrator:
                             task_id,
                             index,
                             {"status": result.status, "success": result.success},
-                            effect_state="SUCCEEDED" if result.success else "FAILED",
+                            effect_state="SUCCEEDED" if result.success else "UNKNOWN_OUTCOME" if result.status == "unknown_outcome" else "FAILED",
                         )
                     step_outcomes[node.step_id] = "succeeded" if result.success else "failed"
+                    verification_evidence[index] = result.data
+                    verified_checks = self.reviewer.review((action,), evidence={1: result.data}) if result.success else []
+                    if verified_checks and all(c.status == "verified" for c in verified_checks):
+                        step_outcomes[node.step_id] = "verified"
                     completed.append(
                         {"step": index, "tool": action.tool, "success": result.success, "message": result.text}
                     )
                     if not result.success:
+                        # Every launched sibling gets a durable terminal checkpoint before
+                        # ending the parent, even if this wave member failed first.
+                        recorded = {int(item["step"]) for item in completed}
+                        for sibling, observation in wave_results:
+                            sibling_index = ordinal_by_step_id[sibling.step_id]
+                            if sibling_index not in recorded:
+                                if self.tasks and task_id:
+                                    self.tasks.finish_step(task_id, sibling_index, observation.success,
+                                                           "Parallel sibling: " + observation.status)
+                                completed.append({"step": sibling_index, "tool": sibling.action.tool,
+                                                  "success": observation.success, "message": observation.text})
                         terminal_state = (
                             "CANCELLED" if result.status == "cancelled" else
                             result.status.upper() if result.status.upper() in {"BLOCKED", "PARTIAL", "UNKNOWN_OUTCOME"} else
@@ -822,7 +872,7 @@ class Orchestrator:
                             summary=f"Stopped at step {index} ({action.tool})",
                         )
                         response = AssistantResponse(
-                            f"Plan stopped at step {index}; no later steps were started. "
+                            f"Plan stopped at step {index}; no subsequent waves were started. Parallel siblings may have run. "
                             f"Completed/attempted {len(completed)} of {len(plan.steps)} step(s).\n{result.text}",
                             False,
                             result.status,
@@ -836,13 +886,16 @@ class Orchestrator:
                             and not self._cancelled(token)
                         ):
                             task = self.tasks.get(task_id)
-                            max_rev = min(1, self.tasks.max_revisions)
+                            max_rev = self.tasks.max_revisions
                             if task and int(task["revision"]) < max_rev:
                                 try:
+                                    replan_budget = CURRENT_BUDGET.get()
+                                    if replan_budget is not None:
+                                        replan_budget.record_replan()
                                     revised = self.replanner.propose(
                                         task["user_request"] or task["objective"],
                                         action.tool,
-                                        list(plan.steps[:index]),
+                                        [plan.steps[int(item["step"]) - 1] for item in completed if item.get("executed", True)],
                                         observation={"status": result.status, "message": result.text},
                                     )
                                     if not self._cancelled(token):
@@ -862,7 +915,7 @@ class Orchestrator:
                                             data={"task_id": revised_id, "previous_task_id": task_id},
                                             plan_actions=list(revised.steps),
                                         )
-                                except (OllamaError, PlanError, PlanningError, TypeError, ValueError) as exc:
+                                except (OllamaError, PlanError, PlanningError, ClassifiedError, TypeError, ValueError) as exc:
                                     LOGGER.info("No safe revised plan available: %s", type(exc).__name__)
                         self.memory.add_message(
                             "assistant", "[Plan stopped; tool output omitted from model history.]", source
@@ -880,7 +933,7 @@ class Orchestrator:
                     data={"task_id": task_id, "steps": completed},
                 )
 
-            checks = [asdict(check) for check in self.reviewer.review(plan.steps)]
+            checks = [asdict(check) for check in self.reviewer.review(plan.steps, evidence=verification_evidence)]
             if self.tasks and task_id:
                 self.tasks.begin_verification(task_id, checks)
             contradicted = any(check["status"] == "contradicted" for check in checks)
@@ -931,6 +984,10 @@ class Orchestrator:
             )
             self.memory.add_message("assistant", response.text, source)
             return response
+        except ClassifiedError as exc:
+            if self.tasks and task_id:
+                self.tasks.finish(task_id, "BLOCKED")
+            return AssistantResponse(str(exc), False, "blocked", data={"task_id": task_id, "error_code": exc.code})
         finally:
             self.cancellations.release_token(token)
 
@@ -955,6 +1012,7 @@ class Orchestrator:
             return f"filesystem:{target}" if target else ""
         return ""
 
+    @node_limits
     def _execute_node(
         self,
         node: PlanNode,
@@ -1100,6 +1158,13 @@ class Orchestrator:
         if self._cancelled(cancel_token):
             return self._cancel_response()
 
+        budget = CURRENT_BUDGET.get() or BudgetTracker(self.default_budget)
+        with self._inflight_lock:
+            self._inflight_tools = {future for future in self._inflight_tools if not future.done()}
+            if self._inflight_tools:
+                return AssistantResponse("A timed-out tool may still be running; inspect its effects before further work.", False, "unknown_outcome")
+        budget.record_tool_call()
+
         # Idempotency deduplication for task steps marked deduplicated
         manifest = None
         try:
@@ -1120,9 +1185,8 @@ class Orchestrator:
                     "completed",
                     data={"deduplicated": True},
                 )
-            self.tool_registry.mark_effect(
-                idem_key, task_id=task_id, step_id=step_id, tool=action.tool, effect_state="IN_FLIGHT"
-            )
+            if not self.tool_registry.claim_effect(idem_key, task_id=task_id, step_id=step_id, tool=action.tool):
+                return AssistantResponse("Previous effect is unresolved; refusing to replay it.", False, "unknown_outcome")
 
         command_id = self.memory.start_command(
             action.original_text or f"[{action.tool}]",
@@ -1136,7 +1200,7 @@ class Orchestrator:
                 action,
                 # PermissionManager has just approved this action, so the
                 # authorised dispatcher may proceed for confirm/PIN tiers too.
-                self._run_authorized_tool,
+                lambda request: self._bounded_tool(request, budget, cancel_token),
                 run_id=run_id,
                 task_id=task_id,
                 step_id=step_id,
@@ -1173,7 +1237,7 @@ class Orchestrator:
                 task_id=task_id,
                 step_id=step_id,
                 tool=action.tool,
-                effect_state="SUCCEEDED" if result.success else "FAILED",
+                effect_state="SUCCEEDED" if result.success else "UNKNOWN_OUTCOME" if result.status == "unknown_outcome" else "FAILED",
                 summary={"status": result.status},
             )
 
@@ -1212,7 +1276,7 @@ class Orchestrator:
             data=result.data,
         )
 
-    def _model_reply(self, text: str) -> str:
+    def _model_reply(self, text: str, cancel_token: CancellationToken | None = None) -> str:
         """Ask the local model, connecting first and tolerating older adapters."""
         arguments = (
             text,
@@ -1222,7 +1286,7 @@ class Orchestrator:
             self.personality.effective_instruction,
         )
         try:
-            return self.llm.complete(*arguments, connect=True, pull_missing=self._pull_missing, role=classify_task_model_role(text))
+            return self.llm.complete(*arguments, connect=True, pull_missing=self._pull_missing, role=classify_task_model_role(text), cancel_token=cancel_token)
         except TypeError:
             return self.llm.complete(*arguments)
 
@@ -1443,34 +1507,49 @@ class Orchestrator:
         monkeypatched stand-ins all use that one shape, and the authorised path
         is a separate method rather than an extra keyword argument.
         """
-        if not self._is_safe_tool(action.tool) and not self._authorization_depth:
-            return ActionResult.failure(
-                action.tool,
-                f"Refusing '{action.tool}' without authorisation: it is a "
-                f"{self.permissions.level(action.tool).value}-tier tool and must be "
-                "dispatched through the confirmed/PIN-checked path.",
-            )
+        signature = json.dumps([action.tool, action.arguments], sort_keys=True)
+        if self._authorized_action.get() != signature:
+            decision = self.permissions.check(action, source="text", speaker_match=None,
+                                              speaker_required=False, confirmed=False, pin=None)
+            if not decision.allowed:
+                return ActionResult.failure(action.tool, "Authorisation required: " + decision.message, decision.status)
         return self._dispatch_tool(action)
 
-    @contextmanager
-    def _authorized_dispatch(self) -> Iterator[None]:
-        """Mark the current call stack as already approved by ``PermissionManager``.
+    @property
+    def _authorization_depth(self) -> int:
+        return int(bool(self._authorized_action.get()))
 
-        ``_run_authorized_tool`` still routes *through* ``_run_tool`` so that the
-        single dispatch seam stays observable (and monkeypatchable). The guard in
-        ``_run_tool`` reads this depth to tell "called by the approved executor"
-        apart from "called directly by something that skipped the gate".
-        """
-        self._authorization_depth += 1
+    @contextmanager
+    def _authorized_dispatch(self, action: ActionRequest | None = None) -> Iterator[None]:
+        signature = json.dumps([action.tool, action.arguments], sort_keys=True) if action else ""
+        token = self._authorized_action.set(signature)
         try:
             yield
         finally:
-            self._authorization_depth -= 1
+            self._authorized_action.reset(token)
 
     def _run_authorized_tool(self, action: ActionRequest) -> ActionResult:
-        """Dispatch after :meth:`_execute` has already approved this exact action."""
-        with self._authorized_dispatch():
+        with self._authorized_dispatch(action):
             return self._run_tool(action)
+
+    def _bounded_tool(self, action: ActionRequest, budget: BudgetTracker,
+                      token: CancellationToken | None) -> ActionResult:
+        timeout = min(budget.remaining_seconds(), budget.budget.per_tool_timeout_seconds,
+                      NODE_TIMEOUT.get() or budget.budget.per_tool_timeout_seconds)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="hinata-bounded")
+        future = pool.submit(copy_context().run, self._run_authorized_tool, action)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            if token is not None:
+                token.cancel("Tool deadline exceeded; effect may still be in flight")
+            with self._inflight_lock:
+                self._inflight_tools.add(future)
+            return ActionResult.failure(action.tool,
+                "Tool deadline exceeded. The worker cannot be forcibly stopped; its outcome is unknown. No automatic retry.",
+                "unknown_outcome")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def _dispatch_tool(self, action: ActionRequest) -> ActionResult:
         args = action.arguments

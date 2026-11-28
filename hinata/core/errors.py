@@ -203,6 +203,7 @@ class BudgetTracker:
     tool_calls: int = 0
     tokens_used: int = 0
     replans: int = 0
+    _lock: Any = field(default_factory=threading.RLock, repr=False)
 
     def elapsed_seconds(self) -> float:
         return round(time.monotonic() - self.started_monotonic, 3)
@@ -239,27 +240,31 @@ class BudgetTracker:
                 f"Task exceeded max_tokens ({self.budget.max_tokens})",
             )
 
-    def record_iteration(self) -> None:
-        self.iterations += 1
+    def reserve(self, counter: str, maximum: int, amount: int = 1) -> None:
+        with self._lock:
+            self.check_limits()
+            if getattr(self, counter) + amount > maximum:
+                raise ClassifiedError(ErrorCategory.RESOURCE, "ERR_BUDGET_EXCEEDED",
+                                      f"Task {counter} budget exhausted ({maximum})")
+            setattr(self, counter, getattr(self, counter) + amount)
+
+    def remaining_seconds(self) -> float:
         self.check_limits()
+        return max(0.001, self.budget.max_duration_seconds - self.elapsed_seconds())
+
+    def record_iteration(self) -> None:
+        self.reserve("iterations", self.budget.max_iterations)
 
     def record_model_call(self, tokens: int = 0) -> None:
-        self.model_calls += 1
-        self.tokens_used += max(0, tokens)
-        self.check_limits()
+        with self._lock:
+            self.reserve("model_calls", self.budget.max_model_calls)
+            self.reserve("tokens_used", self.budget.max_tokens, max(0, tokens))
 
     def record_tool_call(self) -> None:
-        self.tool_calls += 1
-        self.check_limits()
+        self.reserve("tool_calls", self.budget.max_tool_calls)
 
     def record_replan(self) -> None:
-        self.replans += 1
-        if self.replans > self.budget.max_replans:
-            raise ClassifiedError(
-                ErrorCategory.RESOURCE,
-                "ERR_REPLAN_BUDGET_EXCEEDED",
-                f"Task exceeded max_replans ({self.budget.max_replans})",
-            )
+        self.reserve("replans", self.budget.max_replans)
 
     def snapshot(self) -> dict[str, Any]:
         return {

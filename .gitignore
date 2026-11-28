@@ -49,3 +49,9 @@ htmlcov/
 
 # Generated headless-Qt stub libraries (scripts/build_qt_shim.py)
 qt-shim/
+
+# Local real-model evaluation output (may contain model responses and host metadata)
+eval-results/
+
+# Downloaded validation browsers, native libraries, and other local tooling
+.cache/

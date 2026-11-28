@@ -72,7 +72,7 @@ TASK_STATES = frozenset(
 class TaskStore:
     def __init__(self, database: Database, *, max_revisions: int = 2) -> None:
         self.database = database
-        self.max_revisions = max(1, min(max_revisions, 5))
+        self.max_revisions = max(0, min(max_revisions, 5))
         with database.connect() as connection:
             connection.executescript("""
                 CREATE TABLE IF NOT EXISTS agent_tasks (

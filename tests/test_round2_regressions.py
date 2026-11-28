@@ -245,7 +245,8 @@ class PublicUrlPolicyTests(unittest.TestCase):
             url = f"http://127.0.0.1:{server.server_address[1]}/"
             with self.assertRaises(AutomationError) as caught:
                 WebAutomation().fetch_page(url)
-            self.assertIn("non-public", str(caught.exception).lower())
+            # Explicit loopback fetches now refuse every redirect before following it.
+            self.assertIn("302", str(caught.exception))
         finally:
             server.shutdown()
             server.server_close()
@@ -509,14 +510,17 @@ class SandboxRunnerHardeningTests(unittest.TestCase):
                 return
 
         class FakeProc:
+            import io
+            stdout = io.BytesIO(b"")
+            stderr = io.BytesIO(b"")
             pid = 424242
             returncode = 0
 
             def poll(self) -> int:
                 return 0
 
-            def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-                return "", ""
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
 
         fake_resource = FakeResource()
         fake_proc = FakeProc()

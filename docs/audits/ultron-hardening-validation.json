@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-27",
+  "phase": "additional-ultron-hardening",
+  "environment": {
+    "os": "Linux",
+    "python": "3.11.2",
+    "cryptography": "48.0.1",
+    "ollama_executable": false,
+    "playwright_installed": false,
+    "pyside6_installed": false
+  },
+  "tests": [
+    {
+      "command": "python scripts/run_tests.py",
+      "discovered": 743,
+      "passed": 679,
+      "skipped": 64,
+      "seconds": 55.236,
+      "result": "OK"
+    },
+    {
+      "command": ".venv/bin/python scripts/run_tests.py",
+      "discovered": 743,
+      "passed": 687,
+      "skipped": 56,
+      "seconds": 62.693,
+      "result": "OK"
+    }
+  ],
+  "quality": {
+    "ruff": "passed",
+    "mypy": "passed (92 source files)",
+    "compile": "passed",
+    "git_diff_check": "passed"
+  },
+  "new_coverage": {
+    "portable_regression_tests": 29,
+    "opt_in_actual_chromium_tests": 1,
+    "real_model_eval_cases": 8,
+    "coverage_percentage": "not measured"
+  },
+  "pending": [
+    "Windows/Job Object execution",
+    "Qt GUI and physical hardware",
+    "actual Chromium acceptance",
+    "preloaded Ollama off/ultra evaluation",
+    "remote CI jobs",
+    "external cryptographic review"
+  ],
+  "note": "No actual-model/browser accuracy or performance gain is asserted. Existing audit probe JSON remains historical."
+}

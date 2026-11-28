@@ -40,6 +40,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -47,6 +48,7 @@ from typing import Any
 
 from hinata.core.errors import BudgetTracker, ClassifiedError, ErrorCategory
 from hinata.core.jarvis_models import strip_reasoning_traces
+from hinata.core.runtime_limits import CURRENT_BUDGET, MODEL_DEADLINE, MODEL_RESERVED
 from hinata.security.redaction import redact_value
 
 LOGGER = logging.getLogger("hinata.reasoning")
@@ -294,7 +296,7 @@ _REFUSAL_LEAK = re.compile(
     r"(ignore (?:all )?(?:previous|prior|above) instructions|system prompt|you are now|</?think>)",
     re.IGNORECASE,
 )
-_WORD = re.compile(r"[A-Za-z0-9_]{4,}")
+_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _SELF_CRITIQUE = re.compile(
     r"(?i)\s*(the\s+)?(answer|draft|response|plan)\s+(is\s+)?"
     r"(wrong|bad|needs? work|incorrect|unclear|poor)\.?\s*"
@@ -313,13 +315,15 @@ _STOP_WORDS = frozenset(
 def keywords(text: str, *, limit: int = 24) -> list[str]:
     """Extract stable, low-noise keywords for coverage checks.
 
-    Words shorter than four letters, pure numbers, and common filler are
-    dropped.  Ordering is preserved so the result is deterministic.
+    Keep numeric constraints and Unicode words (including combining marks).
+    Short ASCII filler is dropped; ordering is deterministic.
     """
     seen: list[str] = []
-    for word in _WORD.findall(text or ""):
+    normalized = "".join(char if unicodedata.category(char)[0] in {"L", "M", "N"} else " "
+                         for char in unicodedata.normalize("NFC", text or ""))
+    for word in normalized.split():
         lowered = word.casefold()
-        if lowered in _STOP_WORDS or lowered.isdigit():
+        if lowered in _STOP_WORDS or (lowered.isascii() and len(lowered) < 4 and not lowered.isdigit()):
             continue
         if lowered not in seen:
             seen.append(lowered)
@@ -337,7 +341,7 @@ def requirement_coverage(request: str, answer: str) -> tuple[int, int, list[str]
     wanted = keywords(request, limit=16)
     if not wanted:
         return 0, 0, []
-    body = (answer or "").casefold()
+    body = set(keywords(answer or "", limit=max(24, len(answer or ""))))
     covered = [word for word in wanted if word in body]
     missing = [word for word in wanted if word not in covered]
     return len(covered), len(wanted), missing
@@ -354,6 +358,11 @@ def self_consistency(draft: str, revised: str) -> tuple[str, bool]:
     revised_words = set(_WORD.findall((revised or "").casefold()))
     if not draft_words or not revised_words:
         return "unknown", False
+    negations = {"not", "never", "no", "cannot", "না", "নয়", "नहीं"}
+    if (draft_words & negations) != (revised_words & negations):
+        return "disagree", True
+    if set(re.findall(r"\d+(?:\.\d+)?", draft)) != set(re.findall(r"\d+(?:\.\d+)?", revised)):
+        return "disagree", True
     union = draft_words | revised_words
     jaccard = len(draft_words & revised_words) / len(union) if union else 0.0
     if jaccard >= 0.7:
@@ -398,7 +407,7 @@ def critique_acceptance(point: dict[str, Any], *, max_severity: str = "correctio
         return False, "unknown severity"
     if order[severity] > order[max_severity]:
         return False, "severity above ceiling"
-    if not _WORD.search(detail):
+    if not any(len(word) >= 4 for word in _WORD.findall(detail)):
         return False, "no concrete correction"
     if _SELF_CRITIQUE.fullmatch(title):
         return False, "self-referential critique"
@@ -559,6 +568,7 @@ class ReflectionStore:
                         row["source"],
                     ),
                 )
+                self._database.execute("DELETE FROM reasoning_reflections WHERE rowid NOT IN (SELECT rowid FROM reasoning_reflections ORDER BY rowid DESC LIMIT 200)")
             except Exception as exc:  # best-effort persistence
                 LOGGER.debug("Reflection persistence failed: %s", _trust(str(exc), 200))
         return reflection_id
@@ -574,8 +584,7 @@ class ReflectionStore:
                        ORDER BY created_at DESC, rowid DESC LIMIT ?""",
                     (limit,),
                 )
-                if rows:
-                    return [dict(row) for row in rows]
+                return [dict(row) for row in rows]
             except Exception:
                 pass
         return list(reversed(self._rows[-limit:]))
@@ -680,7 +689,9 @@ class _RunBudget:
                 return True
         return False
 
-    def spend(self) -> None:
+    def spend(self, tokens: int = 0) -> None:
+        if self.budget is not None:
+            self.budget.record_model_call(tokens=tokens)
         self.calls += 1
 
 
@@ -703,8 +714,10 @@ class ThinkingEngine:
         reflections: ReflectionStore | None = None,
         max_seconds: float | None = None,
         max_model_calls: int | None = None,
+        require_min_confidence: bool = False,
     ) -> None:
         self.llm = llm
+        self.require_min_confidence = require_min_confidence
         self.mode = thinking_mode(mode).key
         self.reflections = reflections or ReflectionStore()
         # Owner-configured ceilings; a profile can only lower them, never raise.
@@ -762,9 +775,10 @@ class ThinkingEngine:
         trace = ReasoningTrace(mode=mode_def.key, mode_label=mode_def.label)
         draft_started = time.monotonic()
         draft = draft_fn()
+
         trace.stages["draft"] = round((time.monotonic() - draft_started) * 1000.0, 2)
         if mode_def.key == "off" or not self._should_think(request, domain, mode_def):
-            return ThinkingResult(text=draft, trace=trace)
+            return ThinkingResult(text=self._safe_draft(draft, domain, trace.confidence), trace=trace)
         trace.engaged = True
         try:
             return self._run(
@@ -780,16 +794,23 @@ class ThinkingEngine:
             )
         except _HaltBudget as halt:
             trace.limits.append(halt.message)
-            return ThinkingResult(text=draft, trace=trace)
+            return ThinkingResult(text=self._safe_draft(draft, domain, trace.confidence), trace=trace)
         except ClassifiedError:
             raise  # cancellation reaches the orchestrator unchanged
         except Exception as exc:  # engine failures must never break a request
             trace.record_error("engine", exc)
             trace.engine_error = f"{exc.__class__.__name__}: {str(exc)[:150]}"
             trace.confidence = "unknown"
-            return ThinkingResult(text=draft, trace=trace)
+            return ThinkingResult(text=self._safe_draft(draft, domain, trace.confidence), trace=trace)
 
     # ---------------------------------------------------------- orchestration
+    def _safe_draft(self, draft: str, domain: str, confidence: str = "unknown") -> str:
+        if self.require_min_confidence and confidence in {"low", "unknown"}:
+            return "I do not have enough verified evidence to answer confidently. Please clarify the requirements or provide a trusted source."
+        if domain == "chat" and draft_risk_flags(draft):
+            return "I cannot verify that any action was performed. Please review the actual tool results."
+        return draft
+
     def _run(
         self,
         *,
@@ -834,6 +855,8 @@ class ThinkingEngine:
             )
             if candidate:
                 ok, reason = self._accept_revision(draft, candidate, domain)
+                if domain == "chat" and not risk_flags and requirement_coverage(request, candidate)[0] < requirement_coverage(request, draft)[0]:
+                    ok, reason = False, "lost requirement coverage"
                 if ok and candidate != draft:
                     revised = candidate
                     trace.revised = True
@@ -856,6 +879,8 @@ class ThinkingEngine:
             trace.second_opinion = True
             if opinion:
                 ok, reason = self._accept_revision(revised, opinion, domain)
+                if domain == "chat" and requirement_coverage(request, opinion)[0] < requirement_coverage(request, revised)[0]:
+                    ok, reason = False, "lost requirement coverage"
                 if ok:
                     trace.second_opinion_used = True
                     revised = opinion
@@ -893,7 +918,7 @@ class ThinkingEngine:
                 trace.stages["reflect"] = round((time.monotonic() - started) * 1000.0, 2)
 
         trace.passes = 2 if (recon or points or trace.revised or trace.second_opinion_used) else 1
-        return ThinkingResult(text=revised, trace=trace, recon=recon)
+        return ThinkingResult(text=self._safe_draft(revised, domain, trace.confidence), trace=trace, recon=recon)
 
     # -------------------------------------------------------------- plumbing
     def _stage(
@@ -935,18 +960,31 @@ class ThinkingEngine:
         json_format: bool = False,
     ) -> str:
         state.check()
-        state.spend()
-        return self.llm.chat(
-            [{"role": "user", "content": user}],
-            system,
-            connect=True,
-            pull_missing=False,
-            format="json" if json_format else None,
-            num_predict=num_predict,
-            role=role,
-            keep_alive="2m",
-            cancel_token=state.cancel_token,
-        )
+        state.spend(tokens=(len((system + user).encode("utf-8")) + 3) // 4 + num_predict)
+        reserved = MODEL_RESERVED.set(self.budget_reserved(state))
+        shared = CURRENT_BUDGET.set(state.budget or CURRENT_BUDGET.get())
+        deadline = MODEL_DEADLINE.set(state.started + state.max_seconds if state.max_seconds else None)
+        try:
+            return self.llm.chat(
+                [{"role": "user", "content": user}],
+                system,
+                connect=True,
+                pull_missing=False,
+                format="json" if json_format else None,
+                num_predict=num_predict,
+                role=role,
+                keep_alive="2m",
+                cancel_token=state.cancel_token,
+            )
+        finally:
+            MODEL_RESERVED.reset(reserved)
+            CURRENT_BUDGET.reset(shared)
+            MODEL_DEADLINE.reset(deadline)
+
+    @staticmethod
+    def budget_reserved(state: _RunBudget) -> bool:
+        return state.budget is not None
+
 
     def _system_prompt(self, mode: ThinkingMode) -> str:
         base = (
@@ -1127,9 +1165,8 @@ class ThinkingEngine:
             budget = _PLAN_DRAFT_TOKENS
         else:
             instruction = (
-                "Answer the REQUEST independently and completely, then make sure the answer "
-                "agrees with the CANDIDATE on every factual claim; choose the better-supported "
-                "claim where they differ. Output only the final answer text."
+                "Answer the REQUEST independently using the supplied evidence. "
+                "Do not invent facts. Output only the final answer text."
             )
             budget = _ANSWER_DRAFT_TOKENS
         user = (
@@ -1137,7 +1174,7 @@ class ThinkingEngine:
             f"REQUEST:\n{_trust(request, 1800)}\n\n"
             f"RECON:\n{_trust(recon, 1000) or '(none)'}\n\n"
             f"{self._evidence_block(context)}"
-            f"CANDIDATE:\n{_trust(answer, 4000)}\n"
+
         )
         raw = self._call(
             self._system_prompt(thinking_mode("deep")), user, num_predict=budget,
@@ -1171,8 +1208,8 @@ class ThinkingEngine:
     ) -> tuple[float, str, str, int, int, list[str]]:
         if domain == "plan":
             ok = _parse_json_object(final) is not None
-            return (0.85, "high", "unknown", 0, 0, []) if ok else (0.2, "low", "unknown", 0, 0, [])
-        total, covered, missing = requirement_coverage(request, final)
+            return (0.5, "unknown", "unknown", 0, 0, []) if ok else (0.2, "low", "unknown", 0, 0, [])
+        covered, total, missing = requirement_coverage(request, final)
         agreement, _material = self_consistency(draft, final)
         score = 0.55
         if total:

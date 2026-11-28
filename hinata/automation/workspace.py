@@ -34,6 +34,7 @@ from typing import Any
 from hinata.automation.app_control import AutomationError
 from hinata.core.errors import CancellationToken
 from hinata.database.database import Database
+from hinata.security.process_output import OutputLimitError, capture_bounded
 from hinata.security.redaction import redact_text
 
 try:
@@ -123,7 +124,20 @@ class _WindowsJobSandbox:
         windll = getattr(ctypes, "windll", None)
         if windll is None:
             raise OSError("ctypes.windll is only available on Windows")
-        return windll.kernel32
+        from ctypes import wintypes
+        kernel = windll.kernel32
+        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel.SetInformationJobObject.restype = wintypes.BOOL
+        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.TerminateJobObject.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        self._kernel32 = kernel
+        return kernel
 
     def create_and_configure(self) -> int:
         class IO_COUNTERS(ctypes.Structure):
@@ -276,9 +290,12 @@ class IsolatedSandboxRunner:
         timeout_seconds: float = 30.0,
         max_memory_mb: int = 1024,
         cancel_token: CancellationToken | None = None,
+        max_output_bytes: int = 1_000_000,
     ) -> dict[str, Any]:
         if not argv or any(not part or "\x00" in part for part in argv):
             raise AutomationError("Invalid sandbox command vector")
+        if type(max_output_bytes) is not int or not 1024 <= max_output_bytes <= 4_000_000:
+            raise AutomationError("Output quota must be an integer from 1024 to 4000000 bytes")
         timeout_seconds = _clamp_float(
             timeout_seconds, low=1.0, high=180.0, default=30.0
         )
@@ -321,6 +338,11 @@ class IsolatedSandboxRunner:
                 "HTTP_PROXY": "http://127.0.0.1:1",
                 "HTTPS_PROXY": "http://127.0.0.1:1",
             }
+            mem_bytes = max(256, max_memory_mb) * 1024 * 1024
+            cpu_secs = max(5, int(timeout_seconds) + 2)
+            gate = Path(guard_dir.name) / "resources-ready"
+            bootstrap = Path(__file__).resolve().parents[1] / "security" / "process_bootstrap.py"
+            exec_argv = [sys.executable, "-I", "-S", str(bootstrap), str(mem_bytes), str(cpu_secs), str(gate), *exec_argv]
             isolation_used = self.isolation_backend
             if self._linux_netns:
                 unshare = shutil.which("unshare")
@@ -329,26 +351,14 @@ class IsolatedSandboxRunner:
 
             mem_bytes = max(256, max_memory_mb) * 1024 * 1024
             cpu_secs = max(5, int(timeout_seconds) + 2)
-            # preexec_fn is unsafe in a threaded process (HINATA's GUI and model
-            # workers use threads). On Linux, set the same limits from the parent
-            # with prlimit() immediately after spawn and use start_new_session for
-            # the process group. Keep the old hook only on POSIX platforms that
-            # lack prlimit().
+            # No preexec_fn in this threaded application. The trusted bootstrap
+            # enforces POSIX limits before exec. Linux prlimit additionally caps
+            # startup; bootstrap errors prevent executing the requested command.
             post_spawn_limits = (
                 os.name != "nt"
                 and _RESOURCE is not None
                 and hasattr(_RESOURCE, "prlimit")
             )
-
-            def _preexec() -> None:
-                if os.name == "nt" or post_spawn_limits or _RESOURCE is None:
-                    return
-                try:
-                    _RESOURCE.setrlimit(_RESOURCE.RLIMIT_CPU, (cpu_secs, cpu_secs))
-                    _RESOURCE.setrlimit(_RESOURCE.RLIMIT_AS, (mem_bytes, mem_bytes))
-                    _RESOURCE.setrlimit(_RESOURCE.RLIMIT_NOFILE, (256, 256))
-                except (OSError, ValueError, AttributeError):
-                    pass
 
             def _apply_post_spawn_limits(pid: int) -> None:
                 if not post_spawn_limits or _RESOURCE is None:
@@ -376,9 +386,8 @@ class IsolatedSandboxRunner:
                 try:
                     win_job = _WindowsJobSandbox(max_memory_mb=max_memory_mb)
                     win_job.create_and_configure()
-                except OSError:
-                    win_job = None
-                    isolation_used = "windows_restricted_process_group+socket_guard"
+                except OSError as exc:
+                    raise AutomationError("Windows resource Job Object unavailable; refusing unbounded execution") from exc
 
             try:
                 try:
@@ -395,7 +404,7 @@ class IsolatedSandboxRunner:
                         shell=False,
                         close_fds=True,
                         start_new_session=os.name != "nt",
-                        preexec_fn=_preexec if os.name != "nt" and not post_spawn_limits else None,
+                        preexec_fn=None,
                         creationflags=creationflags,
                     )
                     _apply_post_spawn_limits(proc.pid)
@@ -417,27 +426,29 @@ class IsolatedSandboxRunner:
                         shell=False,
                         close_fds=True,
                         start_new_session=os.name != "nt",
-                        preexec_fn=_preexec if os.name != "nt" and not post_spawn_limits else None,
+                        preexec_fn=None,
                         creationflags=creationflags,
                     )
                     _apply_post_spawn_limits(proc.pid)
 
                 if win_job is not None:
-                    proc_handle = int(getattr(proc, "_handle", 0) or 0)
-                    if proc_handle:
-                        try:
-                            win_job.assign_process(proc_handle)
-                        except OSError:
-                            isolation_used = "windows_restricted_process_group+socket_guard"
+                    try:
+                        proc_handle = int(getattr(proc, "_handle", 0) or 0)
+                        if not proc_handle:
+                            raise OSError("Missing process handle")
+                        win_job.assign_process(proc_handle)
+                        gate.write_text("ready", encoding="ascii")
+                    except OSError as exc:
+                        proc.kill()
+                        proc.wait(timeout=2)
+                        raise AutomationError("Windows resource job assignment failed; command was not released") from exc
 
                 def _kill_tree() -> None:
-                    if proc.poll() is not None:
-                        return
                     try:
                         if win_job is not None:
                             win_job.terminate()
                         if os.name != "nt":
-                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                            os.killpg(proc.pid, signal.SIGKILL)
                         else:
                             proc.kill()
                     except OSError:
@@ -451,11 +462,13 @@ class IsolatedSandboxRunner:
 
                 timed_out = False
                 try:
-                    stdout, stderr = proc.communicate(timeout=max(1.0, min(timeout_seconds, 180.0)))
+                    stdout, stderr = capture_bounded(proc, timeout=timeout_seconds, kill=_kill_tree,
+                                                     max_bytes=max(1024, min(max_output_bytes, 4_000_000)))
                 except subprocess.TimeoutExpired:
                     timed_out = True
-                    _kill_tree()
-                    stdout, stderr = proc.communicate()
+                    stdout, stderr = "", ""
+                except OutputLimitError as exc:
+                    raise AutomationError(str(exc)) from exc
             finally:
                 if win_job is not None:
                     win_job.close()
@@ -476,6 +489,10 @@ class IsolatedSandboxRunner:
                 "duration_ms": duration_ms,
                 "isolation_backend": isolation_used,
                 "network_disabled": True,
+                "network_scope": "OS namespace" if self._linux_netns else "Python guard; native egress not guaranteed",
+                "memory_limit_mb": max_memory_mb,
+                "memory_limit_scope": "job aggregate" if os.name == "nt" else "per-process address space",
+                "output_quota_bytes": max(1024, min(max_output_bytes, 4_000_000)),
             }
         finally:
             guard_dir.cleanup()

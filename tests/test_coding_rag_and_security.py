@@ -126,6 +126,11 @@ class CodingSandboxMemoryRagAndSecurityTests(unittest.TestCase):
         self.assertIn("why_retrieved", hits[0])
 
         # LocalVault envelope encryption round-trip & tamper rejection
+        import importlib.util
+        if importlib.util.find_spec("cryptography") is None:
+            with self.assertRaises(ProtectionError):
+                LocalVault(Path(self.tmp.name), enabled=True).protect_text("private local note")
+            return
         vault = LocalVault(Path(self.tmp.name), enabled=True)
         sealed = vault.protect_text("private local note")
         self.assertNotIn("private local note", sealed)

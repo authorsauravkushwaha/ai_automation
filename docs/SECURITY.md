@@ -35,7 +35,7 @@ Allow-list only applications and roots you intend HINATA to control. Adding a wh
 
 ## Data at rest
 
-- SQLite stores conversations, commands, task results, preferences, and settings locally. By default SQLite rows are plaintext; when `security.encrypt_at_rest = true` is enabled in `config.toml`, structured memory values and encrypted JSON backups are sealed with `LocalVault` authenticated envelopes (`HMAC-SHA256` encrypt-then-MAC over PBKDF2-derived keys wrapped by Windows DPAPI or POSIX `0600` keyfiles). Setting `security.database_encryption_backend = "sqlcipher"` (with optional `pip install -e ".[encrypted-db]"`) additionally enables full-database SQLCipher page encryption (`PRAGMA key` + `PRAGMA cipher_memory_security = ON`), or `"auto"` to use SQLCipher when installed and `LocalVault` envelopes otherwise.
+- SQLite rows are plaintext by default. `security.encrypt_at_rest = true` enables the local vault, but the envelope backend does **not** transparently encrypt every SQL column: only explicitly integrated fields (currently scheduled request text) and explicit encrypted JSON exports use it. Install `pip install -e ".[secure-storage]"` for new AES-256-GCM (`enc:v2:`) writes. Legacy `enc:v1:` remains readable; new writes never silently fall back to the legacy custom construction. Existing conversations/identities/structured-memory SQL rows are not automatically field-encrypted. `security.database_encryption_backend = "sqlcipher"` with `.[encrypted-db]` additionally enables database page encryption; `"auto"` may fall back to the limited envelope backend. Existing database/key migrations require explicit backup and testing; see [hardening and migration instructions](ULTRON_HARDENING.md).
 - Audit trace events (`agent_trace_events`) form an append-only SHA-256 cryptographic hash chain (`prev_hash` -> `event_hash`); run `hinata audit --verify-chain` to detect any modified, deleted, or reordered trace rows.
 - Secret patterns (API keys, private keys, bearer tokens, GitHub/AWS/OpenAI/Slack tokens) are detected by `hinata.security.redaction`: plaintext secrets are blocked from unencrypted persistent memory storage and scrubbed automatically from `TraceRecorder` logs and audit exports.
 - PINs are stored as PBKDF2-HMAC-SHA256 hashes with random salts and constant-time digest comparison. Plain PINs are not written to the database or logs.
@@ -150,3 +150,21 @@ call patterns, not a comprehensive security assessment; aliases, dynamic calls a
 many other vulnerabilities can be missed. It does not grant permission to execute
 or modify code. Output identifiers may contain sensitive project metadata and are
 stored in local command results. Filesystem checks are still subject to path races.
+
+
+### Additional enforced boundaries and residual limits
+
+Public urllib connections resolve and validate all addresses at connect time and
+connect only to the validated numeric address; HTTPS keeps hostname/SNI verification.
+Ambient proxies are disabled. Explicit local-development fetches use a separate
+no-redirect loopback client; a public redirect cannot acquire that exception.
+Playwright automation mediates same-origin HTTP through that client, blocks service
+workers/WebSockets/downloads, and refuses cross-origin form/subresource traffic.
+Selenium automation is disabled until an equivalent guarded backend exists. OS
+browser launches and manually pasted snippets are **not** guarded sessions.
+
+Developer subprocess output has a combined byte quota with bounded pipe draining.
+The workspace supervisor applies POSIX address-space/CPU/FD limits before exec,
+or gates execution on Windows Job Object assignment. POSIX memory limits are per
+process, not cgroup-wide, and ordinary Python tool threads remain cooperative.
+Neither browser routing nor Python socket monkeypatching is an OS firewall.

@@ -90,7 +90,23 @@ class DesktopTests(unittest.TestCase):
         self.window.thinking_combo.setCurrentIndex(off_index)
         self.assertFalse(self.assistant.orchestrator.thinking_active)
         self.window.thinking_combo.setCurrentIndex(self.window.thinking_combo.findData("balanced"))
+        # Selecting a profile must not override this fixture's --no-llm policy.
+        self.assertFalse(self.assistant.orchestrator.thinking_active)
+        self.assistant.orchestrator.llm_enabled = True
+        self.window.thinking_combo.setCurrentIndex(index)
         self.assertTrue(self.assistant.orchestrator.thinking_active)
+
+    def test_ultron_button_toggles_without_enabling_disabled_inference(self) -> None:
+        from PySide6.QtWidgets import QPushButton
+        button = next(button for button in self.window.findChildren(QPushButton) if button.text() == "Ultron: off")
+        with patch("hinata.interface.main_window.QMessageBox.information"):
+            button.click()
+            self.assertTrue(self.assistant.ultron_status()["enabled"])
+            self.assertEqual(button.text(), "Ultron: on")
+            self.assertFalse(self.assistant.orchestrator.thinking_active)
+            button.click()
+        self.assertFalse(self.assistant.ultron_status()["enabled"])
+        self.assertEqual(button.text(), "Ultron: off")
 
     def test_deliberated_reply_shows_only_a_compact_badge(self) -> None:
         from hinata.core.types import AssistantResponse

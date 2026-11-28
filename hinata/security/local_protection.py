@@ -2,10 +2,8 @@
 
 Provides:
 - Windows DPAPI protection for owner voice profiles (backward compatible).
-- Portable authenticated encryption (PBKDF2-HMAC-SHA256 + CTR-XOR + HMAC-SHA256
-  encrypt-then-MAC using Python's standard ``hashlib``/``hmac``/``secrets``) for
-  application-layer encrypted fields and encrypted backup archives without extra
-  third-party cryptography dependencies.
+- Versioned AES-256-GCM envelopes using the optional cryptography package.
+- Read-only compatibility with legacy v1 envelopes; new writes never use v1.
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ import hmac
 import json
 import os
 import secrets
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +25,9 @@ class ProtectionError(RuntimeError):
     pass
 
 
-ENVELOPE_PREFIX = "enc:v1:"
+ENVELOPE_PREFIX = "enc:v2:"
+LEGACY_ENVELOPE_PREFIX = "enc:v1:"
+AEAD_ITERATIONS = 600_000
 KEY_ITERATIONS = 210_000
 
 
@@ -46,29 +47,46 @@ def _keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
     return b"".join(blocks)[:length]
 
 
+def _aesgcm() -> Any:
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError as exc:
+        raise ProtectionError("AES-GCM storage requires: pip install 'hinata-local-assistant[secure-storage]'") from exc
+    return AESGCM
+
+
 def encrypt_envelope(plaintext: bytes, secret: bytes, *, aad: bytes = b"") -> str:
-    """Encrypt ``plaintext`` with authenticated encrypt-then-MAC envelope."""
+    """Write only v2 AES-256-GCM; no silent fallback to custom cryptography."""
     if not secret:
         raise ProtectionError("Encryption key material must not be empty")
-    salt = secrets.token_bytes(16)
-    nonce = secrets.token_bytes(16)
-    enc_key, mac_key = _derive_keys(secret, salt)
-    stream = _keystream(enc_key, nonce, len(plaintext))
-    ciphertext = bytes(a ^ b for a, b in zip(plaintext, stream, strict=True))
-    mac_input = b"HINATA-ENC-V1|" + salt + nonce + len(aad).to_bytes(4, "big") + aad + ciphertext
-    tag = hmac.new(mac_key, mac_input, hashlib.sha256).digest()
-    packed = salt + nonce + tag + ciphertext
-    return ENVELOPE_PREFIX + base64.urlsafe_b64encode(packed).decode("ascii")
+    aes = _aesgcm()
+    salt, nonce = secrets.token_bytes(16), secrets.token_bytes(12)
+    key = hashlib.pbkdf2_hmac("sha256", secret, salt, AEAD_ITERATIONS, dklen=32)
+    ciphertext = aes(key).encrypt(nonce, plaintext, b"HINATA-ENC-V2|" + aad)
+    return ENVELOPE_PREFIX + base64.urlsafe_b64encode(salt + nonce + ciphertext).decode("ascii")
 
 
 def decrypt_envelope(token: str, secret: bytes, *, aad: bytes = b"") -> bytes:
     """Verify MAC and decrypt an envelope produced by ``encrypt_envelope``."""
-    if not token.startswith(ENVELOPE_PREFIX):
+    if token.startswith(ENVELOPE_PREFIX):
+        if not secret:
+            raise ProtectionError("Decryption key material must not be empty")
+        aes = _aesgcm()
+        try:
+            packed = base64.b64decode(token[len(ENVELOPE_PREFIX):].encode("ascii"), altchars=b"-_", validate=True)
+            if len(packed) < 44:
+                raise ValueError("Truncated envelope")
+            salt, nonce, ciphertext = packed[:16], packed[16:28], packed[28:]
+            key = hashlib.pbkdf2_hmac("sha256", secret, salt, AEAD_ITERATIONS, dklen=32)
+            return aes(key).decrypt(nonce, ciphertext, b"HINATA-ENC-V2|" + aad)
+        except Exception as exc:
+            raise ProtectionError("Encrypted data authentication failed (wrong key, context or tampered payload)") from exc
+    if not token.startswith(LEGACY_ENVELOPE_PREFIX):
         raise ProtectionError("Invalid encrypted envelope header")
     if not secret:
         raise ProtectionError("Decryption key material must not be empty")
     try:
-        packed = base64.urlsafe_b64decode(token[len(ENVELOPE_PREFIX) :].encode("ascii"))
+        packed = base64.urlsafe_b64decode(token[len(LEGACY_ENVELOPE_PREFIX) :].encode("ascii"))
     except Exception as exc:
         raise ProtectionError("Malformed base64 encrypted envelope") from exc
     if len(packed) < 64:
@@ -134,14 +152,21 @@ class LocalVault:
         return False
 
     def protect_text(self, value: str, *, context: str = "") -> str:
-        if not self.enabled or not value or value.startswith(ENVELOPE_PREFIX):
+        if not self.enabled or not value:
             return value
+        if value.startswith("enc:"):
+            plaintext = self.unprotect_text(value, context=context)  # authenticate before treating as sealed
+            if value.startswith(ENVELOPE_PREFIX):
+                return value
+            value = plaintext  # explicitly touched legacy fields upgrade on write
         key = self.ensure_key()
         return encrypt_envelope(value.encode("utf-8"), key, aad=context.encode("utf-8"))
 
     def unprotect_text(self, value: str, *, context: str = "") -> str:
-        if not value or not value.startswith(ENVELOPE_PREFIX):
+        if not value or not value.startswith("enc:"):
             return value
+        if self._cached_key is None and not self.key_path.is_file():
+            raise ProtectionError("Existing vault key is missing; restore it before decrypting")
         key = self.ensure_key()
         return decrypt_envelope(value, key, aad=context.encode("utf-8")).decode("utf-8")
 
@@ -157,12 +182,16 @@ class LocalVault:
         }
         destination = destination.expanduser().resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temp = destination.with_suffix(destination.suffix + ".tmp")
-        temp.write_text(json.dumps(wrapper, indent=2), encoding="utf-8")
-        if os.name != "nt":
-            temp.chmod(0o600)
-        temp.replace(destination)
-        restrict_private_path(destination)
+        fd, name = tempfile.mkstemp(prefix=".hinata-backup-", dir=destination.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(wrapper, stream, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
         return destination
 
     @staticmethod

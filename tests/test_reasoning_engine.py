@@ -86,11 +86,11 @@ class ReasoningCoreTests(unittest.TestCase):
     def test_requirement_coverage_is_empty_for_filler_only_requests(self):
         self.assertEqual(requirement_coverage("what is it", "It is fine."), (0, 0, []))
 
-    def test_keywords_drop_filler_and_numbers(self):
+    def test_keywords_drop_filler_but_preserve_numeric_constraints(self):
         words = keywords("Please tell me about the 2026 offline agent risks")
         self.assertIn("offline", words)
         self.assertIn("agent", words)
-        self.assertNotIn("2026", words)
+        self.assertIn("2026", words)
         self.assertNotIn("please", words)
 
     def test_self_consistency_grades_agreement(self):
@@ -438,7 +438,7 @@ class ThinkingIntegrationTests(unittest.TestCase):
         self.assistant.orchestrator.thinking_enabled = True
         # Route the plan-draft through the fake too.
         self.assistant.validator_descriptions = None
-        self.assistant.orchestrator._model_reply = lambda text: llm.chat(
+        self.assistant.orchestrator._model_reply = lambda text, cancel_token=None: llm.chat(
             [{"role": "user", "content": text}], "sys", role="chat"
         )
         response = self.assistant.process_text("Hello, how are you doing today my friend?")
@@ -452,7 +452,7 @@ class ThinkingIntegrationTests(unittest.TestCase):
         self.assistant.orchestrator.llm_enabled = True
         self.assistant.thinking.set_mode("off")
         self.assistant.orchestrator.thinking_enabled = False
-        self.assistant.orchestrator._model_reply = lambda text: llm.chat(
+        self.assistant.orchestrator._model_reply = lambda text, cancel_token=None: llm.chat(
             [{"role": "user", "content": text}], "sys", role="chat"
         )
         response = self.assistant.process_text("Hello, how are you doing today my friend?")
@@ -472,7 +472,7 @@ class ThinkingIntegrationTests(unittest.TestCase):
         self.assistant.orchestrator.llm_enabled = True
         self.assistant.thinking.set_mode("deep")
         self.assistant.orchestrator.thinking_enabled = True
-        self.assistant.orchestrator._model_reply = lambda text: llm.chat(
+        self.assistant.orchestrator._model_reply = lambda text, cancel_token=None: llm.chat(
             [{"role": "user", "content": text}], "sys", role="chat"
         )
         response = self.assistant.process_text("Please save my preferred theme for later")
@@ -498,7 +498,7 @@ class ThinkingCliTests(unittest.TestCase):
         result = self.run_cli("think", "status")
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["mode"], "balanced")
+        self.assertEqual(payload["mode"], "ultra")  # Default Ultron startup preset.
         self.assertEqual({m["key"] for m in payload["available_modes"]},
                          {"off", "quick", "balanced", "deep", "ultra"})
 
@@ -507,7 +507,7 @@ class ThinkingCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["mode"], "deep")
-        self.assertTrue(payload["active"])
+        self.assertFalse(payload["active"])  # This CLI fixture explicitly disables inference.
 
     def test_think_off_reports_inactive(self):
         result = self.run_cli("think", "off")

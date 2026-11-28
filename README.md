@@ -11,6 +11,7 @@ automation.
 [Get started](#one-click-start-from-the-downloaded-zip) ·
 [Try without a model](#try-the-core-without-a-model) ·
 [Examples](#what-can-i-try) ·
+[Ultron mode & automatic jobs](docs/ULTRON_MODE.md) ·
 [Security & offline isolation](#security-and-project-status) ·
 [Contribute](CONTRIBUTING.md)
 
@@ -53,6 +54,32 @@ separately installed models or hardware. See the [feature details](#local-docume
 [capability matrix and gap register](docs/JARVIS_GAP_REGISTER.md),
 [roadmap](docs/STAGE_STATUS.md), and the [100-finding weakness audit](docs/WEAKNESS_AUDIT.md)
 that records every defect reproduced against this tree, its evidence, and its status.
+
+## Ultron mode: deeper reasoning + bounded automation
+
+Ultron is **enabled by default**. Start with `python -m hinata`, or use
+`python -m hinata ask "your goal"`. With no explicit saved override, this selects
+ultra reasoning and low-risk autonomy **without raising budgets or removing
+approval/PIN checks**. Explicit saved thinking/autonomy choices take precedence.
+Use `/ultron off` to restore the configured base settings for this session, or
+start with `--no-ultron`. For a persistent opt-out, set `ultron_enabled = false`
+in the `[agentic]` section of `config.toml`.
+
+For recurring automation, explicitly choose a saved job policy and run the watcher:
+
+```sh
+python -m hinata schedule --add "System check" --request "system info" --interval 300 --max-runs 10 --autonomy LOW_RISK_AUTONOMY
+python -m hinata schedule --watch
+```
+
+The watcher runs until Ctrl+C. Jobs default to suggest-only; failures, approval
+requests and uncertain outcomes pause recurrence. Durable attempt claims prevent
+duplicate dispatch by competing workers and blind replay after interruption.
+See [Ultron mode](docs/ULTRON_MODE.md) for controls, recovery and limitations, and
+[the remediation tracker](docs/ULTRON_REMEDIATION.md) for resolved and remaining audit findings.
+The [additional hardening guide](docs/ULTRON_HARDENING.md) covers guarded browsers,
+AES-GCM migration, process limits, and real-model/browser validation commands.
+This is an orchestration upgrade around your installed model, not a new model.
 
 ## Try the core without a model
 

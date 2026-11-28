@@ -509,6 +509,15 @@ def _m007_resumable_plan_conditions(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE agent_task_steps ADD COLUMN condition TEXT NOT NULL DEFAULT ''")
 
 
+def _m008_schedule_attempts(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS schedule_attempts (
+        schedule_id TEXT NOT NULL REFERENCES scheduled_tasks(schedule_id),
+        attempt INTEGER NOT NULL, started_epoch REAL NOT NULL, finished_epoch REAL,
+        status TEXT NOT NULL DEFAULT 'running', task_id TEXT NOT NULL DEFAULT '',
+        review_json TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(schedule_id, attempt)
+    )""")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "001_baseline_core", _m001_baseline_core),
     Migration(2, "002_tasks_and_knowledge", _m002_tasks_and_knowledge),
@@ -517,6 +526,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(5, "005_tamper_evident_traces_and_playbooks", _m005_tamper_evident_traces_and_playbooks),
     Migration(6, "006_agent_reports_and_project_records", _m006_agent_reports_and_project_records),
     Migration(7, "007_resumable_plan_conditions", _m007_resumable_plan_conditions),
+    Migration(8, "008_schedule_attempts", _m008_schedule_attempts),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

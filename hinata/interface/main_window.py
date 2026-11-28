@@ -145,14 +145,6 @@ class WindowChromeMixin(_MainWindowSlices):
 
 
 
-
-
-
-
-
-
-
-
     def __init__(self, assistant: HinataAssistant) -> None:
         super().__init__()
         self.assistant = assistant
@@ -284,6 +276,16 @@ class WindowChromeMixin(_MainWindowSlices):
         )
         self.thinking_combo.currentIndexChanged.connect(self.change_thinking_mode)
         header_layout.addWidget(self.thinking_combo)
+        ultron_button = QPushButton("Ultron: on" if self.assistant.ultron_status()["enabled"] else "Ultron: off")
+        ultron_button.setToolTip("Toggle the session preset. Explicit saved thinking/autonomy choices and approval/PIN checks are preserved.")
+        def toggle_ultron() -> None:
+            active = self.assistant.ultron_status()["enabled"]
+            report = self.assistant.set_ultron_mode(not active)
+            ultron_button.setText("Ultron: on" if report["enabled"] else "Ultron: off")
+            self.thinking_combo.setCurrentIndex(self.thinking_combo.findData(report["thinking_mode"]))
+            QMessageBox.information(self, "Ultron", f"Enabled: {report['enabled']}\nAutonomy: {report['autonomy_mode']}\nApproval/PIN checks remain active.")
+        ultron_button.clicked.connect(toggle_ultron)
+        header_layout.addWidget(ultron_button)
         self.reconnect_button = QPushButton("Reconnect")
         self.reconnect_button.setToolTip("Start the local Ollama service and check the local model")
         self.reconnect_button.clicked.connect(self.reconnect_ollama)
@@ -496,6 +498,7 @@ class WindowChromeMixin(_MainWindowSlices):
 
     def open_enrollment(self) -> None:
         if self.pending_tasks:
+            self.assistant.emergency_stop()
             QMessageBox.information(self, "Busy", "Finish the current task before enrollment.")
             return
         self._end_voice_session()
@@ -513,8 +516,9 @@ class WindowChromeMixin(_MainWindowSlices):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.pending_tasks:
+            self.assistant.emergency_stop()
             QMessageBox.information(
-                self, "Task in progress", "Please wait for the active local task to finish before closing HINATA."
+                self, "Task in progress", "Cancellation requested. Wait for the local worker to stop before closing; external effects may still be pending."
             )
             event.ignore()
             return
@@ -535,14 +539,6 @@ class ResponseHandlingMixin(_MainWindowSlices):
 
     The window composes these slices; they never instantiate alone.
     """
-
-
-
-
-
-
-
-
 
 
 
@@ -748,14 +744,6 @@ class SpeechAndTaskMixin(_MainWindowSlices):
     take the window as their parent) type-check on their own; ``MainWindow``
     therefore receives ``QMainWindow`` through this slice as well.
     """
-
-
-
-
-
-
-
-
 
 
 

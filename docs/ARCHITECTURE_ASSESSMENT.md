@@ -168,5 +168,6 @@ explicit in the register.
    Sandbox `.wsb` boot, SAPI/Piper audio playback, microphone capture, and speaker
    thresholds under a real 4 GB–8 GB RAM budget.
 2. Perform external cryptographic and OS-level security review (note: `LocalVault`
-   uses standard-library HMAC-CTR authenticated envelopes + Windows DPAPI / POSIX
-   `0600` keys rather than full SQLCipher page encryption).
+   now writes AES-GCM v2 via the secure-storage extra and reads legacy v1; Windows
+   DPAPI / POSIX `0600` key protection remains. Envelopes are not full database
+   encryption; see `ULTRON_HARDENING.md` for migration and pending validation).

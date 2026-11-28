@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import os
 import shutil
 import stat
+import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -23,6 +26,7 @@ BLOCKED_OPEN_SUFFIXES = {
 class FileManager:
     def __init__(self, config: SecurityConfig) -> None:
         self.config = config
+        self._write_lock = threading.RLock()
         # Canonicalize here as well as in Config: direct embedding/tests must get the
         # same short-path, symlink, and traversal protection as the normal loader.
         self.roots = [path.expanduser().resolve() for path in config.allowed_roots]
@@ -236,6 +240,10 @@ class FileManager:
         return {"matches": matches, "truncated": timed_out, "directories_searched": visited}
 
     def write_text_file(self, value: str, content: str, *, overwrite: bool = False) -> dict[str, Any]:
+        with self._write_lock:
+            return self._write_text_file(value, content, overwrite=overwrite)
+
+    def _write_text_file(self, value: str, content: str, *, overwrite: bool = False) -> dict[str, Any]:
         path = self.resolve(value, must_exist=False)
         if path.suffix.lower() not in self.config.text_extensions:
             raise AutomationError(f"Extension '{path.suffix}' is not approved for text writing")
@@ -252,10 +260,21 @@ class FileManager:
         parent_resolved = path.parent.resolve(strict=True)
         if not any(self._inside_root(parent_resolved, root) for root in self.roots):
             raise AutomationError("Access denied: parent directory escaped permitted roots")
-        temp = path.with_name(f".{path.name}.hinata-tmp-{os.getpid()}")
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.hinata-", dir=parent_resolved)
+        temp = Path(temporary)
         try:
-            temp.write_bytes(encoded)
-            temp.replace(path)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if path.parent.resolve(strict=True) != parent_resolved:
+                raise OSError("Parent directory changed while writing")
+            if overwrite:
+                temp.replace(path)
+            else:
+                # Atomic no-clobber publication, including competing processes.
+                os.link(temp, path)
+                temp.unlink()
         except OSError as exc:
             try:
                 temp.unlink(missing_ok=True)
@@ -263,6 +282,13 @@ class FileManager:
                 pass
             raise AutomationError(f"Could not write {path}: {exc}") from exc
         return {"path": str(path), "bytes_written": len(encoded)}
+
+    def file_digest(self, value: str, *, limit: int | None = None) -> dict[str, Any]:
+        cap = self.config.max_read_bytes if limit is None else limit
+        raw = self._safe_read_bytes(self.resolve(value), cap)
+        if len(raw) > cap:
+            raise AutomationError("File exceeds independent verification byte budget")
+        return {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
 
     def copy_file(self, source: str, destination: str) -> dict[str, Any]:
         src = self.resolve(source)
@@ -278,7 +304,7 @@ class FileManager:
         if len(data) > self.config.max_read_bytes:
             raise AutomationError("Source file exceeds configured size limit for safe copy")
         dst.write_bytes(data)
-        return {"source": str(src), "destination": str(dst), "bytes": len(data)}
+        return {"source": str(src), "destination": str(dst), "bytes": len(data), "expected_sha256": hashlib.sha256(data).hexdigest()}
 
     def move_or_rename(self, source: str, destination: str) -> dict[str, Any]:
         src = self.resolve(source)
@@ -288,8 +314,10 @@ class FileManager:
         if dst.suffix.lower() in BLOCKED_OPEN_SUFFIXES:
             raise AutomationError("Refusing to rename into an executable extension")
         dst.parent.mkdir(parents=True, exist_ok=True)
+        before = self.file_digest(str(src)) if src.is_file() else None
         shutil.move(str(src), str(dst))
-        return {"source": str(src), "destination": str(dst)}
+        return {"source": str(src), "destination": str(dst),
+                "expected_sha256": before["sha256"] if before else ""}
 
     def compare_files(self, first: str, second: str) -> dict[str, Any]:
         import difflib
@@ -316,39 +344,45 @@ class FileManager:
     def create_archive(self, source: str, archive_path: str) -> dict[str, Any]:
         src = self.resolve(source)
         dst = self.resolve(archive_path, must_exist=False)
-        if dst.suffix.lower() != ".zip":
-            raise AutomationError("Archives must use the .zip extension")
-        if dst.exists():
-            raise AutomationError(f"Archive already exists: {dst}")
+        if dst.suffix.lower() != ".zip" or dst.exists():
+            raise AutomationError("Archive must be a new .zip file")
+        if src.is_dir() and dst.is_relative_to(src):
+            raise AutomationError("Archive destination must be outside its source directory")
         dst.parent.mkdir(parents=True, exist_ok=True)
-        count = 0
+        fd, name = tempfile.mkstemp(prefix=".hinata-archive-", dir=dst.parent)
+        manifest: dict[str, dict[str, Any]] = {}
         total_bytes = 0
-        with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            if src.is_file():
-                raw = self._safe_read_bytes(src, self.config.max_read_bytes)
-                zf.writestr(src.name, raw)
-                count = 1
-                total_bytes = len(raw)
-            elif src.is_dir():
-                for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
-                    dirnames[:] = [d for d in sorted(dirnames) if not d.startswith(".")]
-                    for fname in sorted(filenames):
-                        item = Path(dirpath) / fname
-                        if item.is_symlink():
-                            continue
-                        resolved = item.resolve(strict=False)
-                        if not self._inside_root(resolved, src):
-                            continue
-                        size = resolved.stat().st_size
-                        if total_bytes + size > self.config.max_read_bytes * 5 or count >= 200:
-                            raise AutomationError("Archive exceeds safe file count or byte budget")
-                        rel = resolved.relative_to(src).as_posix()
-                        zf.write(resolved, arcname=rel)
-                        count += 1
-                        total_bytes += size
-            else:
-                raise AutomationError(f"Unsupported archive source: {src}")
-        return {"archive": str(dst), "files_archived": count, "total_bytes": total_bytes}
+        try:
+            with os.fdopen(fd, "w+b") as stream, zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                candidates: list[Path] = []
+                if src.is_file():
+                    candidates = [src]
+                elif src.is_dir():
+                    for visited, (dirpath, dirnames, filenames) in enumerate(os.walk(src, followlinks=False), 1):
+                        if visited > 500:
+                            raise AutomationError("Archive exceeds directory budget")
+                        dirnames[:] = [d for d in sorted(dirnames) if not d.startswith(".") and not (Path(dirpath) / d).is_symlink()]
+                        candidates.extend(Path(dirpath) / name for name in sorted(filenames) if not (Path(dirpath) / name).is_symlink())
+                        if len(candidates) > 200:
+                            raise AutomationError("Archive exceeds file budget")
+                else:
+                    raise AutomationError("Archive source must be a regular file or directory")
+                for item in candidates:
+                    resolved = self.resolve(str(item))
+                    if src.is_dir() and not resolved.is_relative_to(src):
+                        raise AutomationError("Archive source escaped its directory")
+                    raw = self._safe_read_bytes(resolved, self.config.max_read_bytes)
+                    if len(raw) > self.config.max_read_bytes or total_bytes + len(raw) > self.config.max_read_bytes * 5:
+                        raise AutomationError("Archive exceeds byte budget")
+                    relative = resolved.relative_to(src).as_posix() if src.is_dir() else src.name
+                    zf.writestr(relative, raw)
+                    manifest[relative] = {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+                    total_bytes += len(raw)
+            os.link(name, dst)  # Atomic no-clobber publication; no partial archive on failure.
+        finally:
+            Path(name).unlink(missing_ok=True)
+        return {"archive": str(dst), "files_archived": len(manifest), "total_bytes": total_bytes,
+                "expected_manifest": manifest}
 
     def quarantine_delete(self, value: str, quarantine_dir: Path) -> dict[str, Any]:
         """Reversible high-risk delete: moves file into private local quarantine rather than permanent unlink."""

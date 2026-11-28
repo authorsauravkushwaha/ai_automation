@@ -325,6 +325,7 @@ class ThinkingConfig:
 
 @dataclass(slots=True)
 class AgenticConfig:
+    ultron_enabled: bool = True
     autonomy_mode: str = "APPROVED_PLAN"
     max_plan_steps: int = 12
     max_iterations: int = 8
@@ -337,6 +338,7 @@ class AgenticConfig:
     max_parallel_readonly: int = 2
 
     def validate(self) -> None:
+        _require_bool(self.ultron_enabled, "agentic.ultron_enabled")
         valid_modes = {
             "SUGGEST_ONLY",
             "APPROVAL_EACH_STEP",
@@ -442,6 +444,9 @@ class HinataConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     thinking: ThinkingConfig = field(default_factory=ThinkingConfig)
     applications: dict[str, Application] = field(default_factory=dict)
+    source_path: Path | None = field(default=None, repr=False)
+    explicit_thinking_mode: bool = field(default=False, repr=False)
+    explicit_autonomy_mode: bool = field(default=False, repr=False)
 
     def validate(self) -> None:
         self.data_dir = self.data_dir.expanduser().resolve()
@@ -599,6 +604,9 @@ def load_config(path: str | Path | None = None) -> HinataConfig:
         memory=_section(MemoryConfig, raw.get("memory", {}), "memory"),
         thinking=_section(ThinkingConfig, raw.get("thinking", {}), "thinking"),
         applications=apps,
+        source_path=config_path.resolve(),
+        explicit_thinking_mode="mode" in raw.get("thinking", {}),
+        explicit_autonomy_mode="autonomy_mode" in raw.get("agentic", {}),
     )
     try:
         config.validate()

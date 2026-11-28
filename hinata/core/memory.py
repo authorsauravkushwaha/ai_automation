@@ -546,6 +546,8 @@ class Memory:
         # Knowledge imports are separate from conversations, but clearing all
         # memory also removes their locally stored document copies and vectors.
         target_tables = list(tables[scope])
+        if scope == "all" and self.database.fetch_one("SELECT name FROM sqlite_master WHERE name='reasoning_reflections'"):
+            target_tables.insert(0, "reasoning_reflections")
         if scope == "all" and self.database.fetch_one(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_documents'"
         ):

@@ -1,0 +1,8 @@
+# Portable quality-tool environment validated locally on Python 3.11.
+# Not a lock for optional runtime/GUI/speech/model dependencies.
+ruff==0.17.6
+mypy==1.20.2
+mypy_extensions==1.2.0
+pathspec==1.1.1
+typing_extensions==4.16.0
+librt==0.17.0

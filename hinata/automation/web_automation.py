@@ -23,7 +23,6 @@ import json
 import logging
 import os
 import re
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,7 +32,12 @@ from html.parser import HTMLParser
 from typing import Any
 
 from hinata.automation.app_control import AutomationError
-from hinata.security.net_guards import build_public_web_opener
+from hinata.security.browser_egress import guarded_page
+from hinata.security.net_guards import (
+    build_loopback_opener,
+    build_public_web_opener,
+    is_explicit_loopback_url,
+)
 
 try:
     from hinata.automation.browser_search import open_browser_search  # type: ignore
@@ -658,19 +662,19 @@ class WebAutomation:
                 try:
                     br = webbrowser.get(browser)
                     br.open(target, new=2)
-                    return {"url": target, "browser": browser, "opened": True, "via": "webbrowser.get(browser)"}
+                    return {"url": target, "browser": browser, "opened": True, "via": "webbrowser.get(browser)", "network_policy": "external_owner_browser_not_guarded"}
                 except webbrowser.Error:
                     pass
             # Default path: use OS default browser
             if os.name == "nt":
                 try:
                     os.startfile(target)  # type: ignore
-                    return {"url": target, "browser": "default", "opened": True, "via": "os.startfile"}
+                    return {"url": target, "browser": "default", "opened": True, "via": "os.startfile", "network_policy": "external_owner_browser_not_guarded"}
                 except OSError:
                     pass
             ok = webbrowser.open(target, new=2)
             if ok:
-                return {"url": target, "browser": browser, "opened": True, "via": "webbrowser.open"}
+                return {"url": target, "browser": browser, "opened": True, "via": "webbrowser.open", "network_policy": "external_owner_browser_not_guarded"}
             raise AutomationError(f"Browser refused to open {target}")
         except AutomationError:
             raise
@@ -701,6 +705,10 @@ class WebAutomation:
             if not allow_private
             else urllib.request.build_opener()
         )
+        if not allow_private and is_explicit_loopback_url(target):
+            # Explicit local development is separate from public web policy.
+            # Never let a public redirect acquire this exception.
+            opener = build_loopback_opener()
         req = urllib.request.Request(
             target,
             headers={"User-Agent": "Mozilla/5.0 HINATA Autofill/1.0"},
@@ -718,6 +726,7 @@ class WebAutomation:
         except AutomationError:
             raise
         except urllib.error.HTTPError as exc:
+            exc.close()
             raise AutomationError(f"Page fetch failed ({exc.code} {exc.reason}) for {target}") from exc
         except urllib.error.URLError as exc:
             raise AutomationError(f"Page fetch failed ({exc.reason}) for {target}") from exc
@@ -801,6 +810,7 @@ class WebAutomation:
                     execution_report["browser_error"] = str(exc)
             # Try Windows text-typing assist for simple cases? We can't know form focus.
             execution_report["assist_snippet_available"] = True
+            execution_report["network_policy"] = "manual_snippet_or_external_browser_not_guarded"
 
         # Build user-facing summary
         return {
@@ -835,9 +845,7 @@ class WebAutomation:
         except ImportError as exc:
             return {"backend": "playwright", "executed": False, "error": f"Playwright not installed: {exc}"}
         try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=False)
-                page = browser.new_page()
+            with sync_playwright() as p, guarded_page(p, url) as (page, policy):
                 page.goto(url, wait_until="domcontentloaded", timeout=15000)
                 page.wait_for_timeout(int(wait_seconds * 1000))
                 filled = 0
@@ -865,86 +873,26 @@ class WebAutomation:
                             errors.append(f"Not found: {sel} ({act['canonical']})")
                     except Exception as exc:
                         errors.append(f"{sel}: {exc}")
+                submitted = False
                 if plan.submit_selector:
                     try:
                         page.locator(plan.submit_selector).first.click(timeout=5000)
                         # wait a bit for navigation/submission
                         page.wait_for_timeout(1500)
+                        submitted = True
                     except Exception as exc:
                         errors.append(f"Submit failed ({plan.submit_selector}): {exc}")
                 # Take screenshot proof if possible (optional)
-                browser.close()
-                return {"backend": "playwright", "executed": True, "filled": filled, "total": len(plan.actions), "errors": errors, "submitted": bool(plan.submit_selector)}
+                return {"backend": "playwright", "executed": True, "filled": filled, "total": len(plan.actions), "errors": errors, "submitted": submitted, "submission_verified": False, "network_policy": "same_origin_pinned_http", "blocked_requests": policy.blocked}
         except Exception as exc:
             LOGGER.exception("Playwright execution failed")
             return {"backend": "playwright", "executed": False, "error": str(exc)}
 
     # --- Selenium driver ---
     def _execute_via_selenium(self, url: str, plan: FillPlan, wait_seconds: float) -> dict[str, Any]:
-        try:
-            from selenium import webdriver  # type: ignore
-            from selenium.webdriver.chrome.options import Options  # type: ignore
-            from selenium.webdriver.common.by import By  # type: ignore
-        except ImportError as exc:
-            return {"backend": "selenium", "executed": False, "error": f"Selenium not installed: {exc}"}
-        driver = None
-        try:
-            opts = Options()
-            opts.add_argument("--start-maximized")
-            driver = webdriver.Chrome(options=opts)
-            driver.get(url)
-            time.sleep(wait_seconds)
-            filled = 0
-            errors: list[str] = []
-            for act in plan.actions:
-                sel = act["selector"]
-                val = act["value"]
-                try:
-                    el = None
-                    # Translate our simple selectors to Selenium By
-                    if sel.startswith("#"):
-                        el = driver.find_element(By.ID, sel[1:])
-                    elif sel.startswith("[name="):
-                        # extract name value
-                        m = re.search(r'\[name="([^"]+)"\]', sel)
-                        if m:
-                            el = driver.find_element(By.NAME, m.group(1))
-                        else:
-                            el = driver.find_element(By.CSS_SELECTOR, sel)
-                    else:
-                        el = driver.find_element(By.CSS_SELECTOR, sel)
-                    tag = (act.get("field_meta", {}).get("type") or "text").lower()
-                    if tag in {"checkbox", "radio"}:
-                        if str(val).lower() in {"true", "1", "yes", "on"}:
-                            if not el.is_selected():
-                                el.click()
-                    elif el.tag_name.lower() == "select":
-                        from selenium.webdriver.support.ui import Select  # type: ignore
+        return {"backend": "selenium", "executed": False, "submitted": False,
+                "error": "Selenium automation is disabled: no guarded egress backend. Install Playwright >= 1.49."}
 
-                        Select(el).select_by_visible_text(val) if any(o.text == val for o in Select(el).options) else Select(el).select_by_value(val)
-                    else:
-                        el.clear()
-                        el.send_keys(val)
-                    filled += 1
-                except Exception as exc:
-                    errors.append(f"{sel}: {exc}")
-            if plan.submit_selector:
-                try:
-                    driver.find_element(By.CSS_SELECTOR, plan.submit_selector).click()
-                    time.sleep(1.5)
-                except Exception as exc:
-                    errors.append(f"Submit failed: {exc}")
-            return {"backend": "selenium", "executed": True, "filled": filled, "total": len(plan.actions), "errors": errors, "submitted": bool(plan.submit_selector)}
-        except Exception as exc:
-            return {"backend": "selenium", "executed": False, "error": str(exc)}
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-
-    # -------- single-field helpers (for granular control)
     def fill_field(self, url: str, selector: str, value: str, *, wait_seconds: float = 1.0, allow_private: bool = False) -> dict[str, Any]:
         target = normalize_url(url, allow_private=allow_private)
         # For now, synthesize a plan with one action and run via best backend
@@ -979,7 +927,7 @@ class WebAutomation:
                 f"document.querySelector({json.dumps(selector)}).value="
                 f"{json.dumps(value)}"
             )
-            res = {"backend": "native", "executed": False, "browser_opened": opened, "js": js_code, "note": prefix + f"Paste into console: {js_code}"}
+            res = {"backend": "native", "executed": False, "network_policy": "external_owner_browser_not_guarded", "browser_opened": opened, "js": js_code, "note": prefix + f"Paste into console: {js_code}"}
         return {
             "url": target,
             "selector": selector,
@@ -999,31 +947,15 @@ class WebAutomation:
             try:
                 from playwright.sync_api import sync_playwright  # type: ignore
 
-                with sync_playwright() as p:
-                    browser = p.chromium.launch(headless=False)
-                    page = browser.new_page()
+                with sync_playwright() as p, guarded_page(p, target) as (page, policy):
                     page.goto(target, wait_until="domcontentloaded", timeout=15000)
                     page.wait_for_timeout(int(wait_seconds * 1000))
                     page.locator(selector).first.click(timeout=5000)
-                    browser.close()
-                    return {"url": target, "selector": selector, "clicked": True, "backend": backend}
+                    return {"url": target, "selector": selector, "clicked": True, "backend": backend, "network_policy": "same_origin_pinned_http", "blocked_requests": policy.blocked}
             except Exception as exc:
                 return {"url": target, "selector": selector, "clicked": False, "error": str(exc), "backend": backend}
         elif backend == "selenium":
-            try:
-                from selenium import webdriver  # type: ignore
-                from selenium.webdriver.chrome.options import Options
-                from selenium.webdriver.common.by import By
-
-                opts = Options()
-                driver = webdriver.Chrome(options=opts)
-                driver.get(target)
-                time.sleep(wait_seconds)
-                driver.find_element(By.CSS_SELECTOR, selector).click()
-                time.sleep(0.5)
-                driver.quit()
-                return {"url": target, "selector": selector, "clicked": True, "backend": backend}
-            except Exception as exc:
-                return {"url": target, "selector": selector, "clicked": False, "error": str(exc), "backend": backend}
+            return {"url": target, "selector": selector, "clicked": False, "backend": backend,
+                    "error": "Selenium automation requires a guarded egress backend; use Playwright >= 1.49."}
         else:
             return {"url": target, "selector": selector, "clicked": False, "backend": "native", "note": "No driver installed; install 'playwright' (pip install playwright && playwright install chromium) for one-click."}

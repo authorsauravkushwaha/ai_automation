@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from hinata.config import OllamaConfig
@@ -33,6 +34,7 @@ from hinata.core.providers import (
     ModelRouter,
     StructuredObservation,
 )
+from hinata.core.runtime_limits import CURRENT_BUDGET, MODEL_DEADLINE, MODEL_RESERVED
 from hinata.security.net_guards import build_loopback_opener
 
 LOGGER = logging.getLogger(__name__)
@@ -210,6 +212,19 @@ class LLMManager:
 
     def _request(self, endpoint: str, payload: dict[str, Any] | None = None, timeout: int = 5) -> dict[str, Any]:
         bounded_timeout = _bounded_timeout(timeout, low=1.0, high=300.0, default=5.0)
+        deadline = MODEL_DEADLINE.get()
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OllamaError("Thinking deadline exceeded")
+            bounded_timeout = min(bounded_timeout, remaining)
+        budget = CURRENT_BUDGET.get()
+        if budget is not None:
+            bounded_timeout = min(bounded_timeout, budget.remaining_seconds())
+            if endpoint == "/api/chat" and not MODEL_RESERVED.get():
+                budget.record_model_call(tokens=max(1, len(json.dumps(payload or {}).encode("utf-8")) // 4) + max(0, int((payload or {}).get("options", {}).get("num_predict", self.config.max_tokens))))
+        if endpoint == "/api/chat" and MODEL_RESERVED.get():
+            MODEL_RESERVED.set(False)  # Only the first HTTP attempt was prepaid; retries cost another call.
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             self.base_url + endpoint,
@@ -393,6 +408,26 @@ class LLMManager:
             return OllamaError(f"{exc} ({guidance})")
         return exc
 
+    @contextmanager
+    def _inference_slot(self, token: CancellationToken | None) -> Iterator[None]:
+        while not self._concurrency_semaphore.acquire(timeout=0.1):
+            if MODEL_DEADLINE.get() is not None and time.monotonic() >= (MODEL_DEADLINE.get() or 0):
+                raise OllamaError("Thinking deadline exceeded while waiting for inference")
+            if token is not None:
+                token.check()
+            budget = CURRENT_BUDGET.get()
+            if budget is not None:
+                budget.check_limits()
+        try:
+            if token is not None:
+                token.check()
+            budget = CURRENT_BUDGET.get()
+            if budget is not None:
+                budget.check_limits()
+            yield
+        finally:
+            self._concurrency_semaphore.release()
+
     def chat(
         self,
         messages: list[dict[str, str]],
@@ -406,7 +441,7 @@ class LLMManager:
         role: str = "chat",
         cancel_token: CancellationToken | None = None,
     ) -> str:
-        with self._concurrency_semaphore:
+        with self._inference_slot(cancel_token):
             if cancel_token is not None:
                 cancel_token.check()
             model, report = self._prepare_model(connect=connect, pull_missing=pull_missing, role=role)
@@ -460,7 +495,7 @@ class LLMManager:
     ) -> Iterator[str]:
         """End-to-end streaming completion with generation ID and token-level cancellation."""
         gen_id = generation_id or f"gen-{int(time.monotonic() * 1000)}"
-        with self._concurrency_semaphore:
+        with self._inference_slot(cancel_token):
             if cancel_token is not None:
                 cancel_token.check()
                 cancel_token.on_cancel(lambda: self.cancel_active_request(gen_id))
@@ -479,6 +514,9 @@ class LLMManager:
             }
             if format:
                 payload["format"] = format
+            budget = CURRENT_BUDGET.get()
+            if budget is not None:
+                budget.record_model_call(tokens=max(1, len(json.dumps(payload).encode("utf-8")) // 4) + max(0, int(payload["options"]["num_predict"])))
             data = json.dumps(payload).encode("utf-8")
             request = urllib.request.Request(
                 self.base_url + "/api/chat",
@@ -489,9 +527,9 @@ class LLMManager:
             try:
                 response = self._opener.open(
                     request,
-                    timeout=_bounded_timeout(
+                    timeout=min(budget.remaining_seconds() if budget else 600.0, _bounded_timeout(
                         self.config.timeout_seconds, low=1.0, high=600.0, default=90.0
-                    ),
+                    )),
                 )
             except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
                 self.circuit_breaker.record_failure("ollama_chat", str(exc))
@@ -505,6 +543,8 @@ class LLMManager:
             try:
                 with response:
                     for raw_line in response:
+                        if budget is not None:
+                            budget.check_limits()
                         if cancel_token is not None and cancel_token.is_cancelled:
                             break
                         if not raw_line or not raw_line.strip():
@@ -611,13 +651,15 @@ Rules:
 - Approved user preferences: {preference_text or 'none'}
 - Voice and speaker scores are not authentication. Sensitive tools require separate approval.
 """
-        system, messages, _audit = self.context_manager.assemble(
+        system, messages, context_audit = self.context_manager.assemble(
             system_prompt=base_system,
             user_text=user_text,
             history=history,
             retrieved_memories=retrieved_memories,
             observations=observations,
         )
+        if context_audit["overflow"]:
+            raise OllamaError("Request and tool instructions exceed the configured context budget; shorten the request or increase context_tokens.")
         # Reasoning models (e.g. deepseek-r1, qwq) often fail HTTP 400 or break <think>
         # chains when forced into strict Ollama `format="json"` grammar; parse_llm_plan
         # extracts the JSON payload after stripping <think>...</think> blocks.

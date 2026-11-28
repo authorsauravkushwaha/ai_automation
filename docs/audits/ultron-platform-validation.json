@@ -1,0 +1,46 @@
+{
+  "date": "2026-11-27",
+  "phase": "actual-platform-validation",
+  "local": {
+    "platform": "Linux x86_64",
+    "python": "3.11.2",
+    "qt": "PySide6 Essentials 6.11.3 (offscreen, test-only GL/DBus load shims)",
+    "playwright": "1.65.2",
+    "chromium": "158.0.8127.0 headless shell (@sparticuz/chromium 158.0.0)",
+    "browser_security": "Production guarded_page arguments; no disable-web-security/site-isolation bypass flags",
+    "gui": {
+      "tests": 33,
+      "passed": 33
+    },
+    "actual_chromium": {
+      "tests": 1,
+      "passed": 1
+    },
+    "combined": {
+      "tests": 745,
+      "passed": 740,
+      "skipped": 5,
+      "seconds": 68.894,
+      "result": "OK"
+    },
+    "remaining_skips": [
+      "optional PDF dependency",
+      "namespace-isolated two-model acceptance",
+      "3 Windows command/script execution tests"
+    ]
+  },
+  "quality": {
+    "ruff": "passed",
+    "mypy": "passed (92 modules)",
+    "git_diff_check": "passed"
+  },
+  "remote": {
+    "windows": "not yet run for this snapshot",
+    "real_model": "not yet run for this snapshot"
+  },
+  "fixes": [
+    "Validate cross-origin Location before fulfilling redirects; actual Chromium revealed redirect hops need not re-enter request routing.",
+    "GUI selector regression now tests that choosing a thinking profile never silently enables disabled inference.",
+    "Added actual Qt Ultron toggle regression and a focused redirect rejection regression."
+  ]
+}

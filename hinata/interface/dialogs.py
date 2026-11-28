@@ -107,7 +107,7 @@ class SettingsDialog(QDialog):
         self.thinking_seconds_spin.setRange(10.0, 900.0)
         self.thinking_seconds_spin.setSingleStep(15.0)
         self.thinking_seconds_spin.setValue(float(assistant.config.thinking.max_seconds))
-        thinking_form.addRow("Hard time limit (seconds)", self.thinking_seconds_spin)
+        thinking_form.addRow("Cooperative time limit (seconds)", self.thinking_seconds_spin)
         self.thinking_calls_spin = QSpinBox()
         self.thinking_calls_spin.setRange(1, 20)
         self.thinking_calls_spin.setValue(int(assistant.config.thinking.max_model_calls))

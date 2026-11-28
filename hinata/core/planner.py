@@ -442,7 +442,7 @@ class Planner:
                     risk_tier=manifest.risk_tier if manifest else "medium",
                     idempotency=manifest.idempotency if manifest else "non_idempotent",
                     timeout_seconds=manifest.timeout_seconds if manifest else 30.0,
-                    max_retries=1 if (manifest and manifest.retryable and manifest.idempotency == "idempotent") else 0,
+                    max_retries=0,  # No automatic replay until effects are independently reconciled.
                     compensation_tool=manifest.compensation_tool if manifest else "",
                     approval_required=autonomy_mode not in {"LOW_RISK_AUTONOMY", "OFFLINE_AUTONOMY"},
                     explanation=explanation,

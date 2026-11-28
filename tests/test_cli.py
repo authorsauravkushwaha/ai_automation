@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -29,6 +30,15 @@ class CliTests(unittest.TestCase):
             env=environment,
             check=False,
         )
+
+    def test_ultron_is_default_with_cli_opt_out(self) -> None:
+        for flags, expected in [((), True), (("--no-ultron",), False), (("--ultron",), True)]:
+            with self.subTest(flags=flags):
+                result = self.run_cli(*flags, "status", "--no-model-check")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                status = json.loads(result.stdout)["ultron"]
+                self.assertEqual(status["enabled"], expected)
+                self.assertEqual(status["thinking_mode"], "ultra" if expected else "balanced")
 
     def test_one_shot_system_info(self) -> None:
         result = self.run_cli("ask", "system", "info")

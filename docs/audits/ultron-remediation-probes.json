@@ -1,0 +1,290 @@
+{
+  "purpose": "weakness reproduction, not safety-test success",
+  "probes": [
+    {
+      "probe": "confidence_counts",
+      "observed": false,
+      "evidence": {
+        "coverage": [
+          2,
+          4,
+          [
+            "security",
+            "testing"
+          ]
+        ],
+        "verification": [
+          0.65,
+          "medium",
+          "agree",
+          4,
+          2,
+          [
+            "security",
+            "testing"
+          ]
+        ]
+      }
+    },
+    {
+      "probe": "negation_consistency",
+      "observed": false,
+      "evidence": [
+        "disagree",
+        true
+      ]
+    },
+    {
+      "probe": "json_plan_confidence",
+      "observed": false,
+      "evidence": [
+        0.5,
+        "unknown",
+        "unknown",
+        0,
+        0,
+        []
+      ]
+    },
+    {
+      "probe": "non_latin_requirements",
+      "observed": false,
+      "evidence": [
+        "\u0986\u09ae\u09be\u09b0",
+        "\u09ab\u09be\u0987\u09b2",
+        "\u09a8\u09bf\u09b0\u09be\u09aa\u09a6\u09c7",
+        "\u09b0\u09be\u0996\u09c1\u09a8"
+      ]
+    },
+    {
+      "probe": "numeric_requirements",
+      "observed": false,
+      "evidence": [
+        "keep",
+        "2026",
+        "records",
+        "1000",
+        "bytes"
+      ]
+    },
+    {
+      "probe": "reasoning_budget",
+      "observed": null,
+      "error": "ClassifiedError: Task model_calls budget exhausted (1)"
+    },
+    {
+      "probe": "preset_drift",
+      "observed": false,
+      "evidence": {
+        "enabled": true,
+        "scope": "session only",
+        "model_readiness": "not_checked; use status/doctor for a live model check",
+        "modified": false,
+        "thinking_mode": "ultra",
+        "deliberation_available": false,
+        "autonomy_mode": "LOW_RISK_AUTONOMY",
+        "limits": {
+          "max_iterations": 8,
+          "max_steps": 12,
+          "max_duration_seconds": 180.0,
+          "max_model_calls": 10,
+          "max_tool_calls": 16,
+          "max_tokens": 16384,
+          "max_replans": 2,
+          "per_tool_timeout_seconds": 30.0,
+          "max_memory_mb": 2048
+        },
+        "limit_scope": "Request counters and cooperative deadlines; token estimates, not OS memory/thread isolation",
+        "approval_policy": "Unchanged: confirmation/PIN gates remain active; revised plans need approval.",
+        "scheduler_policy": "Each saved job keeps its own autonomy; Ultron does not upgrade existing jobs."
+      }
+    },
+    {
+      "probe": "preset_discards_edits",
+      "observed": false,
+      "evidence": "deep"
+    },
+    {
+      "probe": "suggest_only_overridden",
+      "observed": false,
+      "evidence": "SUGGEST_ONLY"
+    },
+    {
+      "probe": "saved_thinking_overridden",
+      "observed": false,
+      "evidence": "off"
+    },
+    {
+      "probe": "no_llm_thinking_status",
+      "observed": false,
+      "evidence": {
+        "thinking_enabled": false,
+        "available": false
+      }
+    },
+    {
+      "probe": "persist_single_quotes",
+      "observed": false,
+      "evidence": "deep"
+    },
+    {
+      "probe": "persist_indentation",
+      "observed": false,
+      "evidence": "still valid"
+    },
+    {
+      "probe": "schedule_truncation",
+      "observed": null,
+      "error": "ValueError: Schedule title/request exceeds 160/2000 characters; no truncation is allowed"
+    },
+    {
+      "probe": "schedule_budget",
+      "observed": true,
+      "evidence": "call('system info', autonomy_mode='SUGGEST_ONLY', budget_tracker=BudgetTracker(budget=TaskBudget(max_iterations=8, max_steps=12, max_duration_seconds=180.0, max_model_calls=10, max_tool_calls=0, max_tokens=16384, max_replans=2, per_tool_timeout_seconds=30.0, max_memory_mb=2048), started_monotonic=1283.826859547, iterations=0, model_calls=0, tool_calls=0, tokens_used=0, replans=0))"
+    },
+    {
+      "probe": "schedule_expiry_snapshot",
+      "observed": false,
+      "evidence": [
+        {
+          "title": "first",
+          "clock": 2.0
+        }
+      ]
+    },
+    {
+      "probe": "schedule_online_type",
+      "observed": null,
+      "error": "ValueError: requires_online must be a boolean"
+    },
+    {
+      "probe": "schedule_integer_overflow",
+      "observed": null,
+      "error": "ValueError: interval_seconds must be an integer from 0 to 31536000"
+    },
+    {
+      "probe": "schedule_cancel_report",
+      "observed": false,
+      "evidence": {
+        "returned": "cancelled",
+        "stored": "cancelled"
+      }
+    },
+    {
+      "probe": "schedule_false_success",
+      "observed": false,
+      "evidence": {
+        "enabled_after_success_false": 0
+      }
+    },
+    {
+      "probe": "authorization_cross_thread",
+      "observed": false,
+      "evidence": "Another thread inherited the authorization depth; dispatch was mocked."
+    },
+    {
+      "probe": "direct_dynamic_permission",
+      "observed": false,
+      "evidence": "Direct helper admitted a write_code output_path; no file was written."
+    },
+    {
+      "probe": "invalid_autonomy",
+      "observed": false,
+      "evidence": "invalid"
+    },
+    {
+      "probe": "reviewer_wrong_content",
+      "observed": false,
+      "evidence": "Written content differs"
+    },
+    {
+      "probe": "code_review_escape",
+      "observed": null,
+      "error": "AutomationError: Review target must stay inside approved folders"
+    },
+    {
+      "probe": "dependency_symlink",
+      "observed": null,
+      "error": "AutomationError: Read target is outside approved folders"
+    },
+    {
+      "probe": "predictable_write_temp",
+      "observed": false,
+      "evidence": "Synthetic file outside approved roots was overwritten through the predictable temporary symlink."
+    },
+    {
+      "probe": "audit_two_writers",
+      "observed": false,
+      "evidence": {
+        "intact": true,
+        "checked_events": 2,
+        "head_hash": "v2:67a20bcbea764d02fac844b78e31d0fa7b65641b9a959e3ad4e938b847262feb"
+      }
+    },
+    {
+      "probe": "audit_metadata_unhashed",
+      "observed": false,
+      "evidence": {
+        "intact": false,
+        "checked_events": 0,
+        "broken_at_id": 1,
+        "reason": "event_hash digest mismatch (modified audit payload)"
+      }
+    },
+    {
+      "probe": "audit_json_truncation",
+      "observed": false,
+      "evidence": "valid JSON"
+    },
+    {
+      "probe": "metrics_double_count",
+      "observed": false,
+      "evidence": {
+        "model_calls": 0,
+        "model_failures": 0,
+        "model_tokens": 0,
+        "model_total_latency_ms": 0.0,
+        "tool_calls": 0,
+        "tool_failures": 0,
+        "tool_total_duration_ms": 0.0,
+        "tasks_started": 1,
+        "tasks_succeeded": 1,
+        "tasks_failed": 0,
+        "avg_model_latency_ms": 0.0,
+        "avg_tool_duration_ms": 0.0,
+        "estimated_tokens_per_second": 0.0,
+        "timestamp_epoch": 1795884781.859
+      }
+    },
+    {
+      "probe": "clear_retains_reflections",
+      "observed": false,
+      "evidence": null
+    },
+    {
+      "probe": "schedule_unredacted",
+      "observed": null,
+      "error": "ValueError: Schedule contains secret-like text; enable encrypted storage or remove the secret"
+    },
+    {
+      "probe": "tool_budget_not_enforced",
+      "observed": false,
+      "evidence": {
+        "max_tool_calls": 0,
+        "actual_tool_calls": 0
+      }
+    },
+    {
+      "probe": "pytest_target_flag",
+      "observed": null,
+      "error": "AutomationError: Test target must be a path, not a command-line option"
+    },
+    {
+      "probe": "shutdown_omits_scheduler",
+      "observed": false,
+      "evidence": {
+        "scheduler_stop_calls": 1
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -28,7 +28,7 @@ from hinata.core.ollama_service import OllamaService
 from hinata.core.orchestrator import Orchestrator
 from hinata.core.permissions import PermissionManager
 from hinata.core.personality import PersonalityManager
-from hinata.core.planner import Planner
+from hinata.core.planner import AUTONOMY_MODES, Planner
 from hinata.core.providers import HardwareCapabilityService
 from hinata.core.reasoning import ReflectionStore, ThinkingEngine
 from hinata.core.tool_registry import ToolRegistry
@@ -52,8 +52,13 @@ from hinata.tasks.store import TaskStateError, TaskStore
 
 
 class HinataAssistant:
-    def __init__(self, config: HinataConfig | None = None, *, llm_enabled: bool | None = None) -> None:
+    def __init__(
+        self, config: HinataConfig | None = None, *,
+        llm_enabled: bool | None = None, ultron_enabled: bool | None = None,
+    ) -> None:
         self.config = config or load_config()
+        self._ultron_previous: tuple[str, bool, str] | None = None
+        self._ultron_applied: tuple[str, bool, str] | None = None
         self._log_handler: RotatingFileHandler | None = None
         self.config.ensure_private_directories()
         self._configure_logging()
@@ -130,7 +135,7 @@ class HinataAssistant:
         self.dev_assistant = DevAssistant(files=self.files, workspace_manager=None)
         self.knowledge = KnowledgeIndex(self.database, self.files, self.embeddings)
         self.knowledge_watcher = ThrottledKnowledgeWatcher(self.knowledge)
-        self.tasks = TaskStore(self.database, max_revisions=max(1, self.config.agentic.max_replans))
+        self.tasks = TaskStore(self.database, max_revisions=self.config.agentic.max_replans)
         self.playbooks = PlaybookManager(self.database, self.planner, self.tasks)
         self.scheduler = TaskScheduler(self.database)
         self.workspaces = WorkspaceManager(self.database, self.config.security.allowed_roots)
@@ -160,6 +165,7 @@ class HinataAssistant:
             reflections=ReflectionStore(self.memory),
             max_seconds=self.config.thinking.max_seconds,
             max_model_calls=self.config.thinking.max_model_calls,
+            require_min_confidence=self.config.thinking.require_min_confidence,
         )
         self.orchestrator = Orchestrator(
             validator=self.validator,
@@ -221,6 +227,10 @@ class HinataAssistant:
             self.config.speech, self.microphone, self.stt, self.tts, self.speaker
         )
         self.vision = LocalVisionAdapter(self.files, self.llm)
+        # Apply at the shared composition root, including desktop/voice entry points.
+        self.set_ultron_mode(
+            self.config.agentic.ultron_enabled if ultron_enabled is None else ultron_enabled
+        )
 
     def _configure_logging(self) -> None:
         root = logging.getLogger("hinata")
@@ -237,13 +247,79 @@ class HinataAssistant:
         root.propagate = False
         self._log_handler = handler
 
-    def process_text(self, text: str, *, autonomy_mode: str | None = None) -> AssistantResponse:
-        return self.orchestrator.process(text, source="text", autonomy_mode=autonomy_mode)
+    def process_text(self, text: str, *, autonomy_mode: str | None = None,
+                     budget_tracker: Any = None) -> AssistantResponse:
+        return self.orchestrator.process(text, source="text", autonomy_mode=autonomy_mode,
+                                         budget_tracker=budget_tracker)
+
+    def set_ultron_mode(self, enabled: bool) -> dict[str, Any]:
+        """Owner-only session preset; never grants approvals or raises budgets."""
+        if enabled:
+            if self._ultron_previous is None:
+                self._ultron_previous = (
+                    self.thinking.mode, self.orchestrator.thinking_enabled,
+                    self.orchestrator.autonomy_mode,
+                )
+            # Default-on is a preset, not authority to erase an explicit owner policy.
+            mode = self.config.thinking.mode if self.config.explicit_thinking_mode or self.config.thinking.mode == "off" else "ultra"
+            self.set_thinking_mode(mode)
+            autonomy = self.config.agentic.autonomy_mode
+            if not self.config.explicit_autonomy_mode and autonomy not in {"SUGGEST_ONLY", "APPROVAL_EACH_STEP"}:
+                autonomy = "OFFLINE_AUTONOMY" if self.config.security.strict_offline else "LOW_RISK_AUTONOMY"
+            self.orchestrator.set_autonomy_mode(autonomy)
+            self._ultron_applied = (self.thinking.mode, self.orchestrator.thinking_enabled, autonomy)
+        elif self._ultron_previous is not None:
+            mode, thinking_enabled, autonomy = self._ultron_previous
+            applied = self._ultron_applied
+            if applied and (self.thinking.mode, self.orchestrator.thinking_enabled) == applied[:2]:
+                self.thinking.set_mode(mode)
+                self.orchestrator.thinking_enabled = thinking_enabled
+            if applied and self.orchestrator.autonomy_mode == applied[2]:
+                self.orchestrator.set_autonomy_mode(autonomy)
+            self._ultron_previous = None
+            self._ultron_applied = None
+        return self.ultron_status()
+
+    def ultron_status(self) -> dict[str, Any]:
+        return {
+            "enabled": self._ultron_previous is not None,
+            "scope": "session only",
+            "model_readiness": "not_checked; use status/doctor for a live model check",
+            "modified": self._ultron_applied is not None and self._ultron_applied != (self.thinking.mode, self.orchestrator.thinking_enabled, self.orchestrator.autonomy_mode),
+            "thinking_mode": self.thinking.mode,
+            "deliberation_available": bool(
+                self.orchestrator.llm_enabled and self.orchestrator.thinking_active
+            ),
+            "autonomy_mode": self.orchestrator.autonomy_mode,
+            "limits": asdict(self.orchestrator.default_budget),
+            "limit_scope": "Request counters and cooperative deadlines; token estimates, not OS memory/thread isolation",
+            "approval_policy": "Unchanged: confirmation/PIN gates remain active; revised plans need approval.",
+            "scheduler_policy": "Each saved job keeps its own autonomy; Ultron does not upgrade existing jobs.",
+        }
+
+    def run_scheduled_task(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Run without interactive approval; the scheduler parks requests for review."""
+        mode = str(row.get("autonomy_mode") or "SUGGEST_ONLY")
+        if mode not in AUTONOMY_MODES:
+            return {"status": "invalid", "task_id": ""}
+        from hinata.core.errors import BudgetTracker
+        from hinata.tasks.scheduler import validated_budget
+
+        overrides = validated_budget(json.loads(str(row.get("budget_json") or "{}")))
+        base = self.orchestrator.default_budget
+        limits = replace(base, **{key: min(value, getattr(base, key)) for key, value in overrides.items()})
+        response = self.process_text(str(row["request_text"]), autonomy_mode=mode,
+                                             budget_tracker=BudgetTracker(limits))
+        status = response.status if response.success or response.status != "completed" else "failed"
+        return {"status": status, "success": response.success, "task_id": str(response.data.get("task_id", "")),
+                "review": {"message": response.text[:1000], "tool": response.action.tool if response.action else "",
+                           "arguments": response.action.arguments if response.action else {},
+                           "requires_fresh_owner_approval": response.needs_confirmation or response.needs_pin}}
 
     def set_thinking_mode(self, mode: str) -> str:
         """Change how hard HINATA thinks before answering; persists for this session."""
         resolved = self.thinking.set_mode(mode)
-        self.orchestrator.thinking_enabled = bool(self.config.thinking.enabled) and resolved != "off"
+        self.orchestrator.thinking_enabled = bool(self.config.thinking.enabled and self.orchestrator.llm_enabled) and resolved != "off"
         return resolved
 
     def thinking_status(self) -> dict[str, Any]:
@@ -431,6 +507,7 @@ class HinataAssistant:
             "allowed_roots": [str(path) for path in self.config.security.allowed_roots],
             "autonomy_mode": self.orchestrator.autonomy_mode,
             "thinking": self.thinking_status(),
+            "ultron": self.ultron_status(),
             "tactical_override": self.override_controller.status(),
             "offline_policy": self.offline_guard.status(),
             "web_search": {
@@ -508,7 +585,14 @@ class HinataAssistant:
         return fired
 
     def close(self) -> None:
+        self.scheduler.stop_background()
         self.knowledge_watcher.stop()
+        with self.orchestrator._inflight_lock:
+            active_tools = any(not future.done() for future in self.orchestrator._inflight_tools)
+        if active_tools or (self.scheduler._worker is not None and self.scheduler._worker.is_alive()):
+            self.emergency_stop()
+            logging.getLogger("hinata").warning("Unresolved worker at shutdown; retaining policy guards/resources until worker exits")
+            return
         self.offline_guard.uninstall_socket_guard()
         if self.microphone.recording:
             self.microphone.cancel()

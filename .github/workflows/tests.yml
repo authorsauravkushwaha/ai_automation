@@ -13,12 +13,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python }}
           cache: pip
       - name: Install zero-dependency core
         run: python -m pip install -e .
@@ -81,8 +82,8 @@ jobs:
   security-regression:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.11'
           cache: pip
@@ -94,13 +95,13 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.11'
           cache: pip
       - name: Install quality tools
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -c constraints-dev.txt -e ".[dev]"
       - name: Ruff
         run: ruff check hinata tests scripts
       - name: Mypy
@@ -114,8 +115,8 @@ jobs:
     # that a minimal image lacks.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.11'
           cache: pip
@@ -132,8 +133,8 @@ jobs:
   desktop:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.11'
           cache: pip
@@ -150,3 +151,35 @@ jobs:
             python scripts/github_test_report.py test-output.txt
             exit "$status"
           fi
+
+  hardening-boundaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.11'
+      - name: Install vetted encryption implementation
+        run: python -m pip install -e ".[secure-storage]"
+      - name: Exercise networking, crypto migration, processes and verification
+        run: python -m unittest tests.test_ultron_hardening tests.test_ultron_remediation -v
+
+  guarded-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.11'
+      - name: Install browser testing dependencies
+        run: python -m pip install -e ".[web-automation]"
+      - name: Prepare Chromium (test never downloads at runtime)
+        run: python -m playwright install --with-deps chromium
+      - name: Real Chromium egress and form acceptance against local fixtures
+        env:
+          HINATA_REAL_BROWSER_ACCEPTANCE: '1'
+        run: python -m unittest tests.test_real_guarded_browser -v

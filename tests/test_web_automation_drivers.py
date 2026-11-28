@@ -321,6 +321,16 @@ def _fake_playwright_module(locator_behaviour: str = "fill"):
             return _Locator(selector)
 
     class _Browser:
+        def new_context(self, **kwargs):
+            calls["context_options"] = kwargs
+            return self
+
+        def route(self, pattern, handler):
+            calls["route_installed"] = True
+
+        def route_web_socket(self, pattern, handler):
+            calls["websocket_guard"] = True
+
         def new_page(self) -> _Page:
             return _Page()
 
@@ -328,7 +338,8 @@ def _fake_playwright_module(locator_behaviour: str = "fill"):
             calls["closed"] = True
 
     class _Chromium:
-        def launch(self, headless: bool = False) -> _Browser:
+        def launch(self, headless: bool = False, **kwargs) -> _Browser:
+            calls["launch_options"] = kwargs
             return _Browser()
 
     class _Context:

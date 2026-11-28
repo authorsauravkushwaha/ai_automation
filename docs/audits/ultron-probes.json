@@ -1,0 +1,327 @@
+{
+  "purpose": "weakness reproduction, not safety-test success",
+  "probes": [
+    {
+      "probe": "confidence_counts",
+      "observed": true,
+      "evidence": {
+        "coverage": [
+          2,
+          4,
+          [
+            "security",
+            "testing"
+          ]
+        ],
+        "verification": [
+          1.0,
+          "high",
+          "agree",
+          2,
+          4,
+          [
+            "security",
+            "testing"
+          ]
+        ]
+      }
+    },
+    {
+      "probe": "negation_consistency",
+      "observed": true,
+      "evidence": [
+        "agree",
+        false
+      ]
+    },
+    {
+      "probe": "json_plan_confidence",
+      "observed": true,
+      "evidence": [
+        0.85,
+        "high",
+        "unknown",
+        0,
+        0,
+        []
+      ]
+    },
+    {
+      "probe": "non_latin_requirements",
+      "observed": true,
+      "evidence": []
+    },
+    {
+      "probe": "numeric_requirements",
+      "observed": true,
+      "evidence": [
+        "keep",
+        "records",
+        "bytes"
+      ]
+    },
+    {
+      "probe": "reasoning_budget",
+      "observed": true,
+      "evidence": {
+        "thinking_calls": 3,
+        "shared_budget_calls": 0
+      }
+    },
+    {
+      "probe": "preset_drift",
+      "observed": true,
+      "evidence": {
+        "enabled": true,
+        "scope": "session only",
+        "thinking_mode": "off",
+        "deliberation_available": false,
+        "autonomy_mode": "LOW_RISK_AUTONOMY",
+        "limits": {
+          "max_iterations": 8,
+          "max_steps": 12,
+          "max_duration_seconds": 180.0,
+          "max_model_calls": 10,
+          "max_tool_calls": 16,
+          "max_tokens": 16384,
+          "max_replans": 2,
+          "per_tool_timeout_seconds": 30.0,
+          "max_memory_mb": 2048
+        },
+        "approval_policy": "Unchanged: confirmation/PIN gates remain active; revised plans need approval.",
+        "scheduler_policy": "Each saved job keeps its own autonomy; Ultron does not upgrade existing jobs."
+      }
+    },
+    {
+      "probe": "preset_discards_edits",
+      "observed": true,
+      "evidence": "balanced"
+    },
+    {
+      "probe": "suggest_only_overridden",
+      "observed": true,
+      "evidence": "LOW_RISK_AUTONOMY"
+    },
+    {
+      "probe": "saved_thinking_overridden",
+      "observed": true,
+      "evidence": "ultra"
+    },
+    {
+      "probe": "no_llm_thinking_status",
+      "observed": true,
+      "evidence": {
+        "thinking_enabled": true,
+        "available": false
+      }
+    },
+    {
+      "probe": "persist_single_quotes",
+      "observed": true,
+      "evidence": "balanced"
+    },
+    {
+      "probe": "persist_indentation",
+      "observed": true,
+      "evidence": "Cannot overwrite a value (at line 3, column 14)"
+    },
+    {
+      "probe": "schedule_truncation",
+      "observed": true,
+      "evidence": {
+        "stored_length": 2000
+      }
+    },
+    {
+      "probe": "schedule_budget",
+      "observed": true,
+      "evidence": "call('system info', autonomy_mode='SUGGEST_ONLY')"
+    },
+    {
+      "probe": "schedule_expiry_snapshot",
+      "observed": true,
+      "evidence": [
+        {
+          "title": "first",
+          "clock": 2.0
+        },
+        {
+          "title": "second",
+          "clock": 10.0
+        }
+      ]
+    },
+    {
+      "probe": "schedule_online_type",
+      "observed": true,
+      "evidence": 2
+    },
+    {
+      "probe": "schedule_integer_overflow",
+      "observed": true,
+      "evidence": "Python int too large to convert to SQLite INTEGER"
+    },
+    {
+      "probe": "schedule_cancel_report",
+      "observed": true,
+      "evidence": {
+        "returned": "completed",
+        "stored": "cancelled"
+      }
+    },
+    {
+      "probe": "schedule_false_success",
+      "observed": true,
+      "evidence": {
+        "enabled_after_success_false": 1
+      }
+    },
+    {
+      "probe": "authorization_cross_thread",
+      "observed": true,
+      "evidence": "Another thread inherited the authorization depth; dispatch was mocked."
+    },
+    {
+      "probe": "direct_dynamic_permission",
+      "observed": true,
+      "evidence": "Direct helper admitted a write_code output_path; no file was written."
+    },
+    {
+      "probe": "invalid_autonomy",
+      "observed": true,
+      "evidence": "completed"
+    },
+    {
+      "probe": "reviewer_wrong_content",
+      "observed": true,
+      "evidence": "Target file exists in permitted root"
+    },
+    {
+      "probe": "code_review_escape",
+      "observed": true,
+      "evidence": {
+        "root": "/tmp/hinata-audit-gxz4p1if/Documents",
+        "files_scanned": 1,
+        "findings": [
+          {
+            "file": "outside.py",
+            "line": 1,
+            "kind": "missing_docstring",
+            "msg": "Function outside may lack docstring"
+          }
+        ],
+        "total_findings": 1
+      }
+    },
+    {
+      "probe": "dependency_symlink",
+      "observed": true,
+      "evidence": {
+        "root": "/tmp/hinata-audit-kqok73of/Documents",
+        "manifests": [
+          "/tmp/hinata-audit-kqok73of/Documents/requirements.txt"
+        ],
+        "details": [
+          {
+            "file": "requirements.txt",
+            "deps": [
+              "synthetic-private-dependency-marker"
+            ],
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "probe": "predictable_write_temp",
+      "observed": true,
+      "evidence": "Synthetic file outside approved roots was overwritten through the predictable temporary symlink."
+    },
+    {
+      "probe": "audit_two_writers",
+      "observed": true,
+      "evidence": {
+        "intact": false,
+        "checked_events": 1,
+        "broken_at_id": 2,
+        "reason": "prev_hash link mismatch (deleted or reordered audit row)"
+      }
+    },
+    {
+      "probe": "audit_metadata_unhashed",
+      "observed": true,
+      "evidence": {
+        "intact": true,
+        "checked_events": 1,
+        "head_hash": "67b1af65031707cfaef0d505c216e3a5356b1b9da44187d2e630873fa00b0fa6"
+      }
+    },
+    {
+      "probe": "audit_json_truncation",
+      "observed": true,
+      "evidence": {
+        "stored_characters": 4000,
+        "valid_json": false
+      }
+    },
+    {
+      "probe": "metrics_double_count",
+      "observed": true,
+      "evidence": {
+        "model_calls": 0,
+        "model_failures": 0,
+        "model_tokens": 0,
+        "model_total_latency_ms": 0.0,
+        "tool_calls": 0,
+        "tool_failures": 0,
+        "tool_total_duration_ms": 0.0,
+        "tasks_started": 1,
+        "tasks_succeeded": 2,
+        "tasks_failed": 0,
+        "avg_model_latency_ms": 0.0,
+        "avg_tool_duration_ms": 0.0,
+        "estimated_tokens_per_second": 0.0,
+        "timestamp_epoch": 1795883538.602
+      }
+    },
+    {
+      "probe": "clear_retains_reflections",
+      "observed": true,
+      "evidence": {
+        "objective": "synthetic-private-objective"
+      }
+    },
+    {
+      "probe": "schedule_unredacted",
+      "observed": true,
+      "evidence": "The synthetic password-like marker was retained verbatim."
+    },
+    {
+      "probe": "tool_budget_not_enforced",
+      "observed": true,
+      "evidence": {
+        "max_tool_calls": 0,
+        "actual_tool_calls": 1
+      }
+    },
+    {
+      "probe": "pytest_target_flag",
+      "observed": true,
+      "evidence": [
+        "/usr/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "--no-header",
+        "--collect-only"
+      ]
+    },
+    {
+      "probe": "shutdown_omits_scheduler",
+      "observed": true,
+      "evidence": {
+        "scheduler_stop_calls": 0
+      }
+    }
+  ]
+}

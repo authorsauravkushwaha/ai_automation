@@ -22,6 +22,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+secure-storage = ["cryptography==48.0.1"]
 # 6.12.0 aborts with a shiboken refcount error (none_dealloc) while QPainter
 # paints the animated desktop backdrop; 6.11.x and earlier are stable.
 gui = ["PySide6-Essentials>=6.7,<6.12"]
@@ -41,7 +42,7 @@ documents = ["pypdf==7.1.0"]
 windows-audio = ["pycaw>=20240210"]
 speaker = ["numpy>=1.26,<2", "resemblyzer>=0.1.3,<0.2"]
 wake = ["openwakeword>=0.6,<0.7", "onnxruntime>=1.17,<2"]
-encrypted-db = ["sqlcipher3-binary>=0.5.2,<1"]
+encrypted-db = ["sqlcipher3-binary>=0.5.2,<1", "cryptography==48.0.1"]
 vector-ann = ["numpy>=1.26,<3", "hnswlib>=0.8.0,<1"]
 # Optional, explicitly consented local diffusion backend; core stays stdlib-only.
 image = [
