@@ -275,7 +275,9 @@ def _create_private_key_if_absent(path: Path, key: bytes) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     restrict_private_path(path.parent)
     payload = protect_bytes(key)
-    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    # CRT text mode expands LF bytes in the opaque DPAPI payload on Windows.
+    # Explicit binary mode is required even though os.write accepts bytes.
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
     try:
         descriptor = os.open(path, flags, 0o600)
     except FileExistsError:

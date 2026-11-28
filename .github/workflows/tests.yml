@@ -169,7 +169,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python -m unittest tests.test_ultron_hardening tests.test_ultron_remediation -v > test-output.txt 2>&1
+          python -m unittest tests.test_ultron_hardening tests.test_ultron_remediation tests.test_round2_regressions.VaultKeyCreationTests -v > test-output.txt 2>&1
           status=$?
           cat test-output.txt
           if [ "$status" -ne 0 ]; then

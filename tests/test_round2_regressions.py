@@ -484,6 +484,14 @@ class VaultKeyCreationTests(unittest.TestCase):
         if os.name != "nt":
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
+    def test_key_creation_preserves_every_protected_payload_byte(self) -> None:
+        path = self.root / "binary.key"
+        # Include LF, CR and Ctrl-Z regardless of the random DPAPI output.
+        payload = bytes(range(256))
+        with patch("hinata.security.local_protection.protect_bytes", return_value=payload):
+            self.assertTrue(_create_private_key_if_absent(path, b"A" * 32))
+        self.assertEqual(path.read_bytes(), payload)
+
     def test_two_vault_instances_converge_on_one_key(self) -> None:
         first = LocalVault(self.root, enabled=True)
         second = LocalVault(self.root, enabled=True)
