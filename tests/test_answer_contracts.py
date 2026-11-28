@@ -98,6 +98,26 @@ class AnswerContractTests(unittest.TestCase):
         ):
             self.assertIsNone(self.solve(task + " Return only the name."))
 
+    def test_inventory_grammar_generated_quantities_not_fixed_answers(self):
+        rng = random.Random(910)
+        for _ in range(100):
+            initial = rng.randint(1, 1000)
+            removed, added = rng.randint(0, initial), rng.randint(0, 1000)
+            for item in ("oranges", "bolts", "tickets"):
+                request = f"There are {initial} {item}. {removed} are removed and {added} more are added. How many {item} remain? Return only the integer."
+                self.assertEqual(self.solve(request)[0], str(initial - removed + added))
+        self.assertEqual(self.solve("There are twenty-five tickets. Eleven are taken and thirty two more are added. How many tickets remain? Return only the integer.")[0], "46")
+
+    def test_inventory_parser_rejects_inconsistent_units_and_hidden_qualifiers(self):
+        for task in (
+            "There are 2 apples. Four are eaten and two more are added. How many apples remain?",
+            "There are 12 apples. Four are eaten and two more are added. How many oranges remain?",
+            "There are 12 apples. Four rotten apples are eaten and two more are added. How many apples remain?",
+            "There are 12 apples. Half are eaten and two more are added. How many apples remain?",
+            "There are 12 apples. Four are eaten and two more are added. How many apples remain? Subtract one more.",
+        ):
+            self.assertIsNone(self.solve(task + " Return only the integer."))
+
     def test_oversize_request_is_not_parsed(self):
         self.assertIsNone(answer_contract("a"*4097 + " Return only the integer."))
 

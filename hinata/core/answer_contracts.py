@@ -84,6 +84,9 @@ def computed_answer(request: str, contract: AnswerContract) -> tuple[str, str] |
         value = integer_expression(arithmetic[1])
         if value is not None:
             return str(value), "bounded integer arithmetic"
+    inventory = inventory_count(task)
+    if inventory is not None:
+        return inventory
     listing = re.fullmatch(
         r"List:\s*([^.!?\n]{1,3000})\.\s*How many (?:unique|distinct) "
         r"(?P<noun>items|entries|values|colors|colours|tokens|words|names|letters|numbers|symbols) "
@@ -208,3 +211,40 @@ def ordered_entity(task: str) -> tuple[str, str] | None:
     if len(winners) == 1:
         return winners[0], "bounded comparison graph from explicit premises"
     return None
+
+
+_SMALL_NUMBERS = dict(zip(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(),
+    range(20), strict=True,
+))
+_TENS = dict(zip("twenty thirty forty fifty sixty seventy eighty ninety".split(), range(20, 100, 10), strict=True))
+
+
+def _count_literal(text: str) -> int | None:
+    """Bounded nonnegative integers or English number words through ninety-nine."""
+    if re.fullmatch(r"[0-9]{1,12}", text):
+        return int(text)
+    words = text.lower().replace("-", " ").split()
+    if len(words) == 1:
+        return _SMALL_NUMBERS.get(words[0], _TENS.get(words[0]))
+    if len(words) == 2 and words[0] in _TENS and words[1] in _SMALL_NUMBERS:
+        units = _SMALL_NUMBERS[words[1]]
+        if 1 <= units <= 9:
+            return _TENS[words[0]] + units
+    return None
+
+
+def inventory_count(task: str) -> tuple[str, str] | None:
+    """A literal initial/remove/add inventory grammar, not a general word solver."""
+    count = r"([0-9]{1,12}|[A-Za-z-]{1,20}(?: [A-Za-z]{1,9})?)"
+    match = re.fullmatch(
+        r"There are " + count + r" (?P<item>[A-Za-z]{1,32})\. " + count +
+        r" are (?:eaten|removed|taken) and " + count +
+        r" more are added\. How many (?P=item) remain\?", task, re.I,
+    )
+    if not match:
+        return None
+    initial, removed, added = (_count_literal(match[i]) for i in (1, 3, 4))
+    if initial is None or removed is None or added is None or removed > initial:
+        return None
+    return str(initial - removed + added), "bounded inventory arithmetic from explicit premises"
