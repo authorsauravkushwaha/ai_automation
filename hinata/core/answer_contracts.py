@@ -86,12 +86,16 @@ def computed_answer(request: str, contract: AnswerContract) -> tuple[str, str] |
             return str(value), "bounded integer arithmetic"
     listing = re.fullmatch(
         r"List:\s*([^.!?\n]{1,3000})\.\s*How many (?:unique|distinct) "
-        r"(?:items|entries|values|colors|colours|tokens|words|names|letters|numbers|symbols) "
+        r"(?P<noun>items|entries|values|colors|colours|tokens|words|names|letters|numbers|symbols) "
         r"(?:are )?in (?:this|the) list\?", task, re.I,
     )
     if listing:
         items = [unicodedata.normalize("NFC", item.strip()) for item in listing[1].split(",")]
         if len(items) <= 256 and all(re.fullmatch(r"[\w-]{1,64}", item) for item in items):
+            if listing['noun'].lower() == "numbers":
+                if not all(re.fullmatch(r"-?[0-9]{1,12}", item) for item in items):
+                    return None
+                return str(len({int(item) for item in items})), "distinct integer values"
             return str(len(set(items))), "literal-list distinct count (case-sensitive NFC tokens)"
     return None
 

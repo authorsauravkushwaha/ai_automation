@@ -35,6 +35,10 @@ class AnswerContractTests(unittest.TestCase):
             request = "List: " + ", ".join(items) + ". How many distinct items are in this list? Return only the integer."
             self.assertEqual(self.solve(request)[0], str(len(set(items))))
 
+    def test_numeric_lists_compare_values_not_spellings(self):
+        self.assertEqual(self.solve("List: 01, 1, -0, 0. How many unique numbers are in this list? Return only the integer.")[0], "2")
+        self.assertIsNone(self.solve("List: one, 1. How many unique numbers are in this list? Return only the integer."))
+
     def test_list_tokens_are_case_sensitive(self):
         self.assertEqual(self.solve("List: A, a, A. How many unique items are in the list? Return only the integer.")[0], "2")
 
