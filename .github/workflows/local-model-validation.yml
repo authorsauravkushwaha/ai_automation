@@ -23,7 +23,6 @@ jobs:
     timeout-minutes: 35
     env:
       OLLAMA_HOST: 127.0.0.1:11434
-      OLLAMA_MODELS: ${{ runner.temp }}/hinata-validation-models
       OLLAMA_NUM_PARALLEL: '1'
       OLLAMA_MAX_LOADED_MODELS: '1'
     steps:
@@ -31,6 +30,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.11'
+      - name: Set isolated model storage
+        run: echo "OLLAMA_MODELS=$RUNNER_TEMP/hinata-validation-models" >> "$GITHUB_ENV"
       - name: Install core
         run: python -m pip install -e .
       - name: Prepare versioned, checksum-verified Ollama runtime
