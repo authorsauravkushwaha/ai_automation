@@ -21,7 +21,17 @@ jobs:
   preloaded-model-evaluation:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ['0.5b', '1.5b']
+        corpus:
+          - {file: ultron-local-v1, minimum: '1.0'}
+          - {file: ultron-transfer-v1, minimum: '0.9'}
     env:
+      EVALUATION_MODEL: qwen2.5:${{ matrix.model }}-instruct-q4_K_M
+      EVALUATION_CORPUS: ${{ matrix.corpus.file }}
+      MINIMUM_ACCURACY: ${{ matrix.corpus.minimum }}
       OLLAMA_HOST: 127.0.0.1:11434
       OLLAMA_NUM_PARALLEL: '1'
       OLLAMA_MAX_LOADED_MODELS: '1'
@@ -63,9 +73,9 @@ jobs:
           else:
               raise SystemExit('Ollama did not become ready')
           PY
-          ollama pull qwen2.5:0.5b-instruct-q4_K_M
+          ollama pull "$EVALUATION_MODEL"
           ollama list > eval-results/installed-models.txt
-          python scripts/evaluate_ultron_local.py --model qwen2.5:0.5b-instruct-q4_K_M --repeat 1 --output eval-results/ultron-local.json
+          python scripts/evaluate_ultron_local.py --model "$EVALUATION_MODEL" --corpus "evals/$EVALUATION_CORPUS.json" --repeat 2 --max-regressions 0 --min-ultra-accuracy "$MINIMUM_ACCURACY" --output eval-results/ultron-local.json
       - name: Publish bounded evaluation evidence to check annotations
         if: always()
         shell: bash
@@ -91,7 +101,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: real-model-evaluation
+          name: real-model-evaluation-${{ matrix.model }}-${{ matrix.corpus.file }}
           path: eval-results/
           if-no-files-found: error
           retention-days: 14
