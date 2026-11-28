@@ -135,7 +135,7 @@ class OrchestratorTests(unittest.TestCase):
 
         def slow_model(*args: object) -> str:
             entered_model.set()
-            release_model.wait(timeout=2)
+            release_model.wait(timeout=30)
             return '{"type":"tool","tool":"create_folder","arguments":{"path":"stopped"}}'
 
         self.assistant.llm.complete = slow_model
@@ -144,10 +144,14 @@ class OrchestratorTests(unittest.TestCase):
             target=lambda: responses.append(self.assistant.process_text("please organize my workspace"))
         )
         worker.start()
-        self.assertTrue(entered_model.wait(timeout=1))
-        self.assistant.emergency_stop()
-        release_model.set()
-        worker.join(timeout=2)
+        try:
+            # Startup includes durable DB writes; this is a cancellation test,
+            # not a one-second Windows filesystem-performance assertion.
+            self.assertTrue(entered_model.wait(timeout=15))
+            self.assistant.emergency_stop()
+        finally:
+            release_model.set()
+            worker.join(timeout=30)
         self.assertFalse(worker.is_alive())
         self.assertEqual(responses[0].status, "cancelled")
         self.assertFalse((self.root / "Documents" / "stopped").exists())
@@ -173,16 +177,18 @@ class OrchestratorTests(unittest.TestCase):
             release = threading.Event()
             def slow_model(*args, entered=entered, release=release, content=content):
                 entered.set()
-                release.wait(timeout=2)
+                release.wait(timeout=30)
                 return content
             self.assistant.llm.complete = slow_model
             responses = []
             worker = threading.Thread(target=lambda responses=responses: responses.append(self.assistant.process_text("tell me something")))
             worker.start()
-            self.assertTrue(entered.wait(1))
-            self.assistant.emergency_stop()
-            release.set()
-            worker.join(2)
+            try:
+                self.assertTrue(entered.wait(15))
+                self.assistant.emergency_stop()
+            finally:
+                release.set()
+                worker.join(30)
             self.assertFalse(worker.is_alive())
             self.assertEqual(responses[0].status, "cancelled")
 

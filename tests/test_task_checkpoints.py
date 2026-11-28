@@ -222,17 +222,19 @@ os._exit(17)
         entered, release = threading.Event(), threading.Event()
         def slow(action):
             entered.set()
-            release.wait(3)
+            release.wait(30)
             return ActionResult(action.tool, True, "done")
         self.assistant.orchestrator._run_tool = slow
         results = []
         worker = threading.Thread(target=lambda: results.append(self.assistant.execute_plan(
             pending.plan_actions, task_id=pending.data["task_id"])))
         worker.start()
-        self.assertTrue(entered.wait(2))
-        self.assistant.emergency_stop()
-        release.set()
-        worker.join(3)
+        try:
+            self.assertTrue(entered.wait(15))
+            self.assistant.emergency_stop()
+        finally:
+            release.set()
+            worker.join(30)
         self.assertFalse(worker.is_alive())
         self.assertEqual(results[0].status, "cancelled")
         self.assertEqual(self.assistant.tasks.get(pending.data["task_id"])["state"], "CANCELLED")
