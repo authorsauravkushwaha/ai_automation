@@ -71,18 +71,17 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
-          import json
+          import base64
+          import zlib
           from pathlib import Path
-          import sys
-          sys.path.insert(0, 'scripts')
-          from github_test_report import escape_annotation
           path = Path('eval-results/ultron-local.json')
           if path.exists():
-              report = json.loads(path.read_text())
-              metadata = {key: value for key, value in report.items() if key != 'results'}
-              print('::notice title=Evaluation metadata::' + escape_annotation(json.dumps(metadata)))
-              for row in report['results']:
-                  print('::notice title=Evaluation result::' + escape_annotation(json.dumps(row)))
+              # A step is limited to ten notices. One lossless, ASCII-only notice
+              # preserves all sixteen rows and avoids Unicode log transformations.
+              payload = base64.b64encode(zlib.compress(path.read_bytes())).decode('ascii')
+              if len(payload) > 48000:
+                  raise SystemExit('Evidence exceeds annotation bound; use retained artifact')
+              print('::notice title=Evaluation report (zlib-base64)::' + payload)
           else:
               print('::error::Evaluation did not produce a report; inspect preparation logs.')
           PY
