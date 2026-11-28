@@ -201,7 +201,7 @@ of better accuracy, performance, GPU memory, or total RSS without real measureme
 
 The initially missing GUI/browser dependencies were installed for validation.
 **All 33 actual Qt offscreen tests and the actual Chromium acceptance test pass.**
-The combined suite ran **745 tests: 740 passed, 5 skipped (68.894s)**. The five skips
+The combined suite ran **747 tests: 742 passed, 5 skipped (71.528s)**. The five skips
 are optional PDF extraction, the separately opted-in namespace/two-model acceptance,
 and three Windows shell-execution tests. This is real Qt widget construction and
 real Chromium HTTP/form behavior—not mocked GUI/browser objects. The test-only
@@ -218,6 +218,11 @@ must be checked before fulfilling a redirect because browser redirect hops need
 not re-enter the routing callback. Tests retain the unusable native proxy as a
 second boundary. GUI expectations were also corrected to preserve disabled inference.
 
-Windows and the real-model evaluation are queued for same-branch CI validation;
-they are not yet marked passed. Physical laptop/GPU/audio acceptance remains separate.
-See `docs/audits/ultron-platform-validation.json` and the remediation tracker.
+The actual Qwen 0.5B evaluation has completed: **off 6/8, ultra 5/8**. Ultra was
+slower and less accurate on this small run; no quality-gain claim is justified.
+Windows execution exposed and prompted fixes to subprocess lifetime, backup flushes
+and DPAPI binary writes. **All 15 final CI jobs passed**, including Python
+3.11–3.14 on Windows/Linux and Windows Qt; the separate Windows launcher job also
+passed. See
+[the actual-platform report](ULTRON_PLATFORM_VALIDATION.md) for evidence and limits.
+Physical laptop/GPU/audio acceptance remains separate.

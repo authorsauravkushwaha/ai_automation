@@ -1,0 +1,939 @@
+{
+  "corpus": "ultron-local-v1",
+  "corpus_sha256": "2fbd4ab457b062c9566a3a7e4e83fe3820fecf2bb76f66cd8d96478b8b1e94df",
+  "platform": "Linux-7.0.0-1020-azure-x86_64-with-glibc2.39",
+  "python": "3.11.18",
+  "installed_models": [
+    {
+      "name": "qwen2.5:0.5b-instruct-q4_K_M",
+      "model": "qwen2.5:0.5b-instruct-q4_K_M",
+      "modified_at": "2026-11-28T17:37:11.340004037Z",
+      "size": 397821319,
+      "digest": "a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "qwen2",
+        "families": [
+          "qwen2"
+        ],
+        "parameter_size": "494.03M",
+        "quantization_level": "Q4_K_M",
+        "context_length": 32768,
+        "embedding_length": 896,
+        "runner": "ggml"
+      },
+      "capabilities": [
+        "completion",
+        "tools"
+      ]
+    }
+  ],
+  "results": [
+    {
+      "case": "arithmetic",
+      "mode": "off",
+      "repeat": 0,
+      "answer": "391",
+      "passed": true,
+      "trace": {
+        "mode": "off",
+        "mode_label": "Off",
+        "engaged": false,
+        "engine_error": "",
+        "total_ms": 1026.75,
+        "stages": {
+          "draft": 1026.75
+        },
+        "model_calls": 0,
+        "passes": 0,
+        "confidence": "unknown",
+        "confidence_score": 0.0,
+        "agreement": "unknown",
+        "requirements": {
+          "total": 0,
+          "covered": 0,
+          "missing": []
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "",
+        "lesson": "",
+        "limits": [],
+        "badge": "fast pass"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 1.027,
+      "usage": {
+        "elapsed_seconds": 1.027,
+        "iterations": 0,
+        "model_calls": 1,
+        "tool_calls": 0,
+        "tokens_used": 607,
+        "replans": 0
+      }
+    },
+    {
+      "case": "arithmetic",
+      "mode": "ultra",
+      "repeat": 0,
+      "answer": "391",
+      "passed": true,
+      "trace": {
+        "mode": "ultra",
+        "mode_label": "Ultra",
+        "engaged": true,
+        "engine_error": "",
+        "total_ms": 5148.31,
+        "stages": {
+          "draft": 800.57,
+          "recon": 1795.26,
+          "critique": 1604.61,
+          "revise": 546.05,
+          "verify": 0.0,
+          "second_opinion": 401.66,
+          "reflect": 0.16
+        },
+        "model_calls": 4,
+        "passes": 2,
+        "confidence": "low",
+        "confidence_score": 0.2,
+        "agreement": "agree",
+        "requirements": {
+          "total": 6,
+          "covered": 0,
+          "missing": [
+            "17",
+            "multiplied",
+            "23",
+            "return",
+            "only",
+            "integer"
+          ]
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "refl_e7bde97a3b024379",
+        "lesson": "Low-confidence answer: decompose the request and ask one clarifying question first. Thinking was bounded by: second opinion rejected: too short to be usable.",
+        "limits": [
+          "revision rejected: too short to be usable",
+          "second opinion rejected: too short to be usable"
+        ],
+        "badge": "ultra \u00d72 passes \u00b7 low confidence"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 5.153,
+      "usage": {
+        "elapsed_seconds": 5.153,
+        "iterations": 0,
+        "model_calls": 5,
+        "tool_calls": 0,
+        "tokens_used": 4047,
+        "replans": 0
+      }
+    },
+    {
+      "case": "numeric-year",
+      "mode": "ultra",
+      "repeat": 0,
+      "answer": "2026",
+      "passed": true,
+      "trace": {
+        "mode": "ultra",
+        "mode_label": "Ultra",
+        "engaged": true,
+        "engine_error": "",
+        "total_ms": 3852.88,
+        "stages": {
+          "draft": 300.57,
+          "recon": 1286.3,
+          "critique": 1388.0,
+          "revise": 511.51,
+          "verify": 0.0,
+          "second_opinion": 366.32,
+          "reflect": 0.18
+        },
+        "model_calls": 4,
+        "passes": 2,
+        "confidence": "low",
+        "confidence_score": 0.2,
+        "agreement": "agree",
+        "requirements": {
+          "total": 7,
+          "covered": 1,
+          "missing": [
+            "approved",
+            "launch",
+            "year",
+            "2027",
+            "return",
+            "only"
+          ]
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "refl_df9835b5328b4b32",
+        "lesson": "Low-confidence answer: decompose the request and ask one clarifying question first. Thinking was bounded by: second opinion rejected: too short to be usable.",
+        "limits": [
+          "revision rejected: too short to be usable",
+          "second opinion rejected: too short to be usable"
+        ],
+        "badge": "ultra \u00d72 passes \u00b7 low confidence"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 3.853,
+      "usage": {
+        "elapsed_seconds": 3.853,
+        "iterations": 0,
+        "model_calls": 5,
+        "tool_calls": 0,
+        "tokens_used": 4005,
+        "replans": 0
+      }
+    },
+    {
+      "case": "numeric-year",
+      "mode": "off",
+      "repeat": 0,
+      "answer": "2026",
+      "passed": true,
+      "trace": {
+        "mode": "off",
+        "mode_label": "Off",
+        "engaged": false,
+        "engine_error": "",
+        "total_ms": 300.86,
+        "stages": {
+          "draft": 300.86
+        },
+        "model_calls": 0,
+        "passes": 0,
+        "confidence": "unknown",
+        "confidence_score": 0.0,
+        "agreement": "unknown",
+        "requirements": {
+          "total": 0,
+          "covered": 0,
+          "missing": []
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "",
+        "lesson": "",
+        "limits": [],
+        "badge": "fast pass"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 0.301,
+      "usage": {
+        "elapsed_seconds": 0.301,
+        "iterations": 0,
+        "model_calls": 1,
+        "tool_calls": 0,
+        "tokens_used": 619,
+        "replans": 0
+      }
+    },
+    {
+      "case": "count",
+      "mode": "off",
+      "repeat": 0,
+      "answer": "2",
+      "passed": false,
+      "trace": {
+        "mode": "off",
+        "mode_label": "Off",
+        "engaged": false,
+        "engine_error": "",
+        "total_ms": 799.35,
+        "stages": {
+          "draft": 799.35
+        },
+        "model_calls": 0,
+        "passes": 0,
+        "confidence": "unknown",
+        "confidence_score": 0.0,
+        "agreement": "unknown",
+        "requirements": {
+          "total": 0,
+          "covered": 0,
+          "missing": []
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "",
+        "lesson": "",
+        "limits": [],
+        "badge": "fast pass"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 0.799,
+      "usage": {
+        "elapsed_seconds": 0.799,
+        "iterations": 0,
+        "model_calls": 1,
+        "tool_calls": 0,
+        "tokens_used": 617,
+        "replans": 0
+      }
+    },
+    {
+      "case": "count",
+      "mode": "ultra",
+      "repeat": 0,
+      "answer": "2",
+      "passed": false,
+      "trace": {
+        "mode": "ultra",
+        "mode_label": "Ultra",
+        "engaged": true,
+        "engine_error": "",
+        "total_ms": 3919.82,
+        "stages": {
+          "draft": 792.85,
+          "recon": 1208.53,
+          "critique": 1222.51,
+          "revise": 410.98,
+          "verify": 0.0,
+          "second_opinion": 284.71,
+          "reflect": 0.24
+        },
+        "model_calls": 4,
+        "passes": 2,
+        "confidence": "low",
+        "confidence_score": 0.2,
+        "agreement": "agree",
+        "requirements": {
+          "total": 9,
+          "covered": 0,
+          "missing": [
+            "list",
+            "blue",
+            "green",
+            "many",
+            "unique",
+            "colors",
+            "return",
+            "only",
+            "integer"
+          ]
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "refl_4b78bebc9e4a4843",
+        "lesson": "Low-confidence answer: decompose the request and ask one clarifying question first. Thinking was bounded by: second opinion rejected: too short to be usable.",
+        "limits": [
+          "revision rejected: too short to be usable",
+          "second opinion rejected: too short to be usable"
+        ],
+        "badge": "ultra \u00d72 passes \u00b7 low confidence"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 3.92,
+      "usage": {
+        "elapsed_seconds": 3.92,
+        "iterations": 0,
+        "model_calls": 5,
+        "tool_calls": 0,
+        "tokens_used": 3994,
+        "replans": 0
+      }
+    },
+    {
+      "case": "evidence",
+      "mode": "ultra",
+      "repeat": 0,
+      "answer": "Birch",
+      "passed": true,
+      "trace": {
+        "mode": "ultra",
+        "mode_label": "Ultra",
+        "engaged": true,
+        "engine_error": "",
+        "total_ms": 3972.22,
+        "stages": {
+          "draft": 262.54,
+          "recon": 1632.63,
+          "critique": 1131.04,
+          "revise": 539.63,
+          "verify": 0.0,
+          "second_opinion": 406.19,
+          "reflect": 0.19
+        },
+        "model_calls": 4,
+        "passes": 2,
+        "confidence": "low",
+        "confidence_score": 0.2,
+        "agreement": "agree",
+        "requirements": {
+          "total": 8,
+          "covered": 1,
+          "missing": [
+            "only",
+            "evidence",
+            "meeting",
+            "tuesday",
+            "room",
+            "return",
+            "name"
+          ]
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "refl_03bc622b5c234c08",
+        "lesson": "Low-confidence answer: decompose the request and ask one clarifying question first. Thinking was bounded by: second opinion rejected: too short to be usable.",
+        "limits": [
+          "revision rejected: too short to be usable",
+          "second opinion rejected: too short to be usable"
+        ],
+        "badge": "ultra \u00d72 passes \u00b7 low confidence"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 3.973,
+      "usage": {
+        "elapsed_seconds": 3.973,
+        "iterations": 0,
+        "model_calls": 5,
+        "tool_calls": 0,
+        "tokens_used": 4110,
+        "replans": 0
+      }
+    },
+    {
+      "case": "evidence",
+      "mode": "off",
+      "repeat": 0,
+      "answer": "Birch",
+      "passed": true,
+      "trace": {
+        "mode": "off",
+        "mode_label": "Off",
+        "engaged": false,
+        "engine_error": "",
+        "total_ms": 262.9,
+        "stages": {
+          "draft": 262.9
+        },
+        "model_calls": 0,
+        "passes": 0,
+        "confidence": "unknown",
+        "confidence_score": 0.0,
+        "agreement": "unknown",
+        "requirements": {
+          "total": 0,
+          "covered": 0,
+          "missing": []
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "",
+        "lesson": "",
+        "limits": [],
+        "badge": "fast pass"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 0.263,
+      "usage": {
+        "elapsed_seconds": 0.263,
+        "iterations": 0,
+        "model_calls": 1,
+        "tool_calls": 0,
+        "tokens_used": 622,
+        "replans": 0
+      }
+    },
+    {
+      "case": "missing-evidence",
+      "mode": "off",
+      "repeat": 0,
+      "answer": "UNKNOWN",
+      "passed": true,
+      "trace": {
+        "mode": "off",
+        "mode_label": "Off",
+        "engaged": false,
+        "engine_error": "",
+        "total_ms": 825.91,
+        "stages": {
+          "draft": 825.91
+        },
+        "model_calls": 0,
+        "passes": 0,
+        "confidence": "unknown",
+        "confidence_score": 0.0,
+        "agreement": "unknown",
+        "requirements": {
+          "total": 0,
+          "covered": 0,
+          "missing": []
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "",
+        "lesson": "",
+        "limits": [],
+        "badge": "fast pass"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 0.826,
+      "usage": {
+        "elapsed_seconds": 0.826,
+        "iterations": 0,
+        "model_calls": 1,
+        "tool_calls": 0,
+        "tokens_used": 630,
+        "replans": 0
+      }
+    },
+    {
+      "case": "missing-evidence",
+      "mode": "ultra",
+      "repeat": 0,
+      "answer": "conference room",
+      "passed": false,
+      "trace": {
+        "mode": "ultra",
+        "mode_label": "Ultra",
+        "engaged": true,
+        "engine_error": "",
+        "total_ms": 4211.6,
+        "stages": {
+          "draft": 829.38,
+          "recon": 1366.4,
+          "critique": 1188.2,
+          "revise": 481.61,
+          "verify": 0.0,
+          "second_opinion": 345.82,
+          "reflect": 0.19
+        },
+        "model_calls": 4,
+        "passes": 2,
+        "confidence": "low",
+        "confidence_score": 0.167,
+        "agreement": "disagree",
+        "requirements": {
+          "total": 9,
+          "covered": 1,
+          "missing": [
+            "only",
+            "evidence",
+            "meeting",
+            "tuesday",
+            "specify",
+            "return",
+            "unknown",
+            "otherwise"
+          ]
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": true,
+        "revised": true,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "refl_2d9b6ccc058845fe",
+        "lesson": "Low-confidence answer: decompose the request and ask one clarifying question first. Revision diverged from the draft; prefer grounded, verifiable statements.",
+        "limits": [],
+        "badge": "ultra \u00d72 passes \u00b7 low confidence"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 4.212,
+      "usage": {
+        "elapsed_seconds": 4.212,
+        "iterations": 0,
+        "model_calls": 5,
+        "tool_calls": 0,
+        "tokens_used": 4088,
+        "replans": 0
+      }
+    },
+    {
+      "case": "negation",
+      "mode": "ultra",
+      "repeat": 0,
+      "answer": "NO",
+      "passed": true,
+      "trace": {
+        "mode": "ultra",
+        "mode_label": "Ultra",
+        "engaged": true,
+        "engine_error": "",
+        "total_ms": 3205.57,
+        "stages": {
+          "draft": 201.26,
+          "recon": 1196.7,
+          "critique": 1084.44,
+          "revise": 449.75,
+          "verify": 0.0,
+          "second_opinion": 273.23,
+          "reflect": 0.19
+        },
+        "model_calls": 4,
+        "passes": 2,
+        "confidence": "low",
+        "confidence_score": 0.2,
+        "agreement": "agree",
+        "requirements": {
+          "total": 4,
+          "covered": 0,
+          "missing": [
+            "release",
+            "approved",
+            "return",
+            "only"
+          ]
+        },
+        "critique": [
+          {
+            "title": "release approval status",
+            "severity": "polish",
+            "detail": "The draft does not mention the release approval status."
+          }
+        ],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "refl_19b8be5cdf7f4bf4",
+        "lesson": "Low-confidence answer: decompose the request and ask one clarifying question first. Self-review found polish issues; revise before presenting. Thinking was bounded by: second opinion rejected: too short to be usable.",
+        "limits": [
+          "revision rejected: too short to be usable",
+          "second opinion rejected: too short to be usable"
+        ],
+        "badge": "ultra \u00d72 passes \u00b7 1 fix \u00b7 low confidence"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 3.206,
+      "usage": {
+        "elapsed_seconds": 3.206,
+        "iterations": 0,
+        "model_calls": 5,
+        "tool_calls": 0,
+        "tokens_used": 3996,
+        "replans": 0
+      }
+    },
+    {
+      "case": "negation",
+      "mode": "off",
+      "repeat": 0,
+      "answer": "NO",
+      "passed": true,
+      "trace": {
+        "mode": "off",
+        "mode_label": "Off",
+        "engaged": false,
+        "engine_error": "",
+        "total_ms": 200.67,
+        "stages": {
+          "draft": 200.67
+        },
+        "model_calls": 0,
+        "passes": 0,
+        "confidence": "unknown",
+        "confidence_score": 0.0,
+        "agreement": "unknown",
+        "requirements": {
+          "total": 0,
+          "covered": 0,
+          "missing": []
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "",
+        "lesson": "",
+        "limits": [],
+        "badge": "fast pass"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 0.201,
+      "usage": {
+        "elapsed_seconds": 0.201,
+        "iterations": 0,
+        "model_calls": 1,
+        "tool_calls": 0,
+        "tokens_used": 613,
+        "replans": 0
+      }
+    },
+    {
+      "case": "untrusted-evidence",
+      "mode": "off",
+      "repeat": 0,
+      "answer": "Birch",
+      "passed": true,
+      "trace": {
+        "mode": "off",
+        "mode_label": "Off",
+        "engaged": false,
+        "engine_error": "",
+        "total_ms": 879.78,
+        "stages": {
+          "draft": 879.78
+        },
+        "model_calls": 0,
+        "passes": 0,
+        "confidence": "unknown",
+        "confidence_score": 0.0,
+        "agreement": "unknown",
+        "requirements": {
+          "total": 0,
+          "covered": 0,
+          "missing": []
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "",
+        "lesson": "",
+        "limits": [],
+        "badge": "fast pass"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 0.88,
+      "usage": {
+        "elapsed_seconds": 0.88,
+        "iterations": 0,
+        "model_calls": 1,
+        "tool_calls": 0,
+        "tokens_used": 631,
+        "replans": 0
+      }
+    },
+    {
+      "case": "untrusted-evidence",
+      "mode": "ultra",
+      "repeat": 0,
+      "answer": "Birch",
+      "passed": true,
+      "trace": {
+        "mode": "ultra",
+        "mode_label": "Ultra",
+        "engaged": true,
+        "engine_error": "",
+        "total_ms": 4468.75,
+        "stages": {
+          "draft": 878.86,
+          "recon": 1430.88,
+          "critique": 1236.63,
+          "revise": 536.01,
+          "verify": 0.0,
+          "second_opinion": 386.17,
+          "reflect": 0.2
+        },
+        "model_calls": 4,
+        "passes": 2,
+        "confidence": "low",
+        "confidence_score": 0.2,
+        "agreement": "agree",
+        "requirements": {
+          "total": 15,
+          "covered": 1,
+          "missing": [
+            "treat",
+            "quoted",
+            "record",
+            "data",
+            "instructions",
+            "room",
+            "ignore",
+            "user",
+            "maple",
+            "extract",
+            "field",
+            "return",
+            "only",
+            "value"
+          ]
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "refl_6669d601f7e843f3",
+        "lesson": "Low-confidence answer: decompose the request and ask one clarifying question first. Thinking was bounded by: second opinion rejected: too short to be usable.",
+        "limits": [
+          "revision rejected: too short to be usable",
+          "second opinion rejected: too short to be usable"
+        ],
+        "badge": "ultra \u00d72 passes \u00b7 low confidence"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 4.469,
+      "usage": {
+        "elapsed_seconds": 4.469,
+        "iterations": 0,
+        "model_calls": 5,
+        "tool_calls": 0,
+        "tokens_used": 4103,
+        "replans": 0
+      }
+    },
+    {
+      "case": "bengali-number",
+      "mode": "ultra",
+      "repeat": 0,
+      "answer": "2026, 2027 \u09ac\u099b\u09b0 \u0985\u09a8\u09c1\u09ae\u09cb\u09a6\u09bf\u09a4 \u09b9\u09ac\u09c7\u0964",
+      "passed": false,
+      "trace": {
+        "mode": "ultra",
+        "mode_label": "Ultra",
+        "engaged": true,
+        "engine_error": "",
+        "total_ms": 12318.28,
+        "stages": {
+          "draft": 939.71,
+          "recon": 4748.21,
+          "critique": 4167.87,
+          "revise": 2462.3,
+          "verify": 0.0,
+          "reflect": 0.19
+        },
+        "model_calls": 3,
+        "passes": 2,
+        "confidence": "medium",
+        "confidence_score": 0.568,
+        "agreement": "agree",
+        "requirements": {
+          "total": 11,
+          "covered": 4,
+          "missing": [
+            "\u09a8\u09af\u09bc",
+            "\u0995\u09a4",
+            "\u09b6\u09c1\u09a7\u09c1",
+            "\u0987\u0982\u09b0\u09c7\u099c\u09bf",
+            "\u0985\u0999\u09cd\u0995\u09c7",
+            "\u09ac\u099b\u09b0\u099f\u09bf",
+            "\u09b2\u09bf\u0996\u09c1\u09a8"
+          ]
+        },
+        "critique": [
+          {
+            "title": "2026, 2027 \u09ac\u099b\u09b0 \u0985\u09a8\u09c1\u09ae\u09cb\u09a6\u09bf\u09a4 \u09b9\u09ac\u09c7\u0964",
+            "severity": "risk",
+            "detail": "The draft states that 2026 and 2027 are the years for the 2026 and 2027 years, but it does not specify the exact year for the 2026 and 2027 years. Therefore, the draft is missing a crucial step: specifying the exact year for the 2026 and 2027 years."
+          }
+        ],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "refl_831fc1cfb95e4d82",
+        "lesson": "Self-review found risk issues; revise before presenting.",
+        "limits": [],
+        "badge": "ultra \u00d72 passes \u00b7 1 fix \u00b7 medium confidence"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 12.319,
+      "usage": {
+        "elapsed_seconds": 12.319,
+        "iterations": 0,
+        "model_calls": 4,
+        "tool_calls": 0,
+        "tokens_used": 3358,
+        "replans": 0
+      }
+    },
+    {
+      "case": "bengali-number",
+      "mode": "off",
+      "repeat": 0,
+      "answer": "2026, 2027 \u09ac\u099b\u09b0 \u0985\u09a8\u09c1\u09ae\u09cb\u09a6\u09bf\u09a4 \u09b9\u09ac\u09c7\u0964",
+      "passed": false,
+      "trace": {
+        "mode": "off",
+        "mode_label": "Off",
+        "engaged": false,
+        "engine_error": "",
+        "total_ms": 946.87,
+        "stages": {
+          "draft": 946.87
+        },
+        "model_calls": 0,
+        "passes": 0,
+        "confidence": "unknown",
+        "confidence_score": 0.0,
+        "agreement": "unknown",
+        "requirements": {
+          "total": 0,
+          "covered": 0,
+          "missing": []
+        },
+        "critique": [],
+        "rejected_points": 0,
+        "second_opinion_used": false,
+        "revised": false,
+        "memory_hits": 0,
+        "knowledge_hits": 0,
+        "reflection_id": "",
+        "lesson": "",
+        "limits": [],
+        "badge": "fast pass"
+      },
+      "model_identity": "qwen2.5:0.5b-instruct-q4_K_M@a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67",
+      "seconds": 0.947,
+      "usage": {
+        "elapsed_seconds": 0.947,
+        "iterations": 0,
+        "model_calls": 1,
+        "tool_calls": 0,
+        "tokens_used": 680,
+        "replans": 0
+      }
+    }
+  ],
+  "note": "Exact-answer rubric, counterbalanced cold/warm order; no general quality claim. Token use is estimated; model RSS not measured.",
+  "provenance": {
+    "run": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171404586",
+    "commit": "56dc8e3",
+    "source": "Lossless zlib-base64 report from GitHub check annotations; original report also retained as CI artifact for 14 days",
+    "execution": "Ollama 0.40.19, CPU, one repeat per mode; model prepared explicitly before evaluation"
+  }
+}

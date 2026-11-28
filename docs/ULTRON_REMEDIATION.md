@@ -14,7 +14,9 @@ The second pass adds connect-time public-IP pinning, same-origin browser mediati
 subprocess quotas/resource bootstrap, versioned AES-GCM writes and explicit backup-first
 migration, and independent move/archive/patch verification. It also adds 29 portable
 regressions, an opt-in actual Chromium test, and a versioned real-model evaluation harness.
-No model/browser binaries or private user data were downloaded/migrated here.
+The initial checkpoint downloaded no model/browser binaries. Subsequent actual
+validation explicitly prepared Chromium and a synthetic-evaluation model; no private
+user data was downloaded or migrated.
 
 ## Validation
 
@@ -33,22 +35,28 @@ GUI and real-model acceptance are not represented as passed by these results.
 - `git diff --check`: passed.
 - Python compilation: passed as part of the test runner.
 - CI now requests Python 3.11–3.14 on Linux and Windows for the core job, and pins
-  checkout/setup-python to verified upstream tag SHAs. **Those remote jobs have
-  not run here.** Only Python 3.11 was exercised locally.
+  checkout/setup-python to verified upstream tag SHAs. Subsequent remote execution
+  is documented in [the platform report](ULTRON_PLATFORM_VALIDATION.md). Only
+  Python 3.11 was exercised locally.
 - `constraints-dev.txt` records the locally tested quality-tool versions. This is
   **not** a full runtime or optional-dependency lockfile.
 - The previous 61% coverage measurement is historical; no new coverage percentage
   is claimed.
 
-### Latest actual GUI/browser run
+### Latest actual-platform validation
 
-After installing the optional dependencies, **745 tests ran: 740 passed and 5
-skipped, 68.894s**. This includes **33 actual Qt offscreen tests** and **one actual
-Chromium acceptance test**. Ruff and Mypy still pass. Chromium testing found a
-redirect-validation gap, now fixed and covered. See
-[platform evidence](audits/ultron-platform-validation.json).
-The earlier two test rows above are historical checkpoints, not the latest totals.
-Windows and actual-model CI results are still pending for the published snapshot.
+The combined suite now runs **747 tests: 742 passed and 5 skipped, 71.528s**,
+including **33 actual Qt tests** and **actual Chromium acceptance**. The earlier
+rows above are historical checkpoints, not latest totals. Actual Windows CI found
+and prompted fixes to process lifetime, backup flushing and DPAPI binary writes.
+**All 15 final CI jobs passed**, including Windows/Linux Python 3.11–3.14,
+Windows Qt, hardening and actual Chromium. The separate Windows launcher job passed.
+
+A real Qwen 0.5B/Ollama run completed all 16 evaluations without runtime/engine
+errors: **off 6/8 versus ultra 5/8**, with ultra slower. This is execution evidence,
+**not an accuracy-improvement claim**. See the [full platform report](ULTRON_PLATFORM_VALIDATION.md),
+[platform JSON](audits/ultron-platform-validation.json), and
+[complete model results](audits/ultron-real-model-validation.json).
 
 ### Probe evidence is not a test-pass count
 
@@ -82,7 +90,7 @@ Evidence abbreviations: **R** = `tests/test_ultron_remediation.py`; **U** =
 `tests/test_ultron_hardening.py`. Paths are current paths; the
 baseline audit's line numbers intentionally remain historical.
 
-**Status totals:** 59 implemented, 4 validation pending, 26 partial, 11 open.
+**Status totals:** 62 implemented, 0 validation pending, 27 partial, 11 open.
 
 | Finding | Status | Change, evidence, or remaining work |
 |---|---|---|
@@ -90,7 +98,7 @@ baseline audit's line numbers intentionally remain historical.
 | U002 | Implemented | Explicit autonomy and stricter direct-config policies survive startup. R/U policy tests. |
 | U003 | Implemented | Repeated on reapplies the effective preset; status exposes modifications. `assistant.py`; U controls. |
 | U004 | Implemented | Off restores only fields still equal to the applied preset; intervening edits survive. R owner-edit test. |
-| U005 | Validation pending | Visible desktop on/off button and autonomy dialog added. `interface/main_window.py`; no live Qt validation here. |
+| U005 | Implemented | Visible desktop on/off button and autonomy dialog added. `interface/main_window.py`; 33 actual Qt tests pass on Linux; default toggle and disabled inference are covered. |
 | U006 | Partial | Status explicitly says model readiness is not checked; legacy availability flag is still configuration-based. Live readiness remains separate. |
 | U007 | Implemented | Effective thinking enablement now includes the inference-enable flag. R/T no-LLM status checks. |
 | U008 | Implemented | Loaded `source_path` reaches persistence. R custom-config-path test. |
@@ -115,7 +123,7 @@ baseline audit's line numbers intentionally remain historical.
 | U027 | Implemented | Assistant close stops watcher; unresolved known workers retain policy resources instead of silently removing guards. U shutdown probe/test; shutdown is still cooperative. |
 | U028 | Implemented | Assistant adapter converts contradictory completed/false to failed; scheduler refuses explicit false renewal. R false-success test. |
 | U029 | Partial | Shared atomic tool/model/iteration/replan reservations and elapsed deadlines. R budget tests. Hard memory cap and actual tokenizer accounting not implemented. |
-| U030 | Partial | General Python tools still have cooperative deadlines. Workspace subprocesses now install POSIX limits before exec or gate release on a Windows Job Object; H memory/timeout tests. Native Windows behavior awaits remote validation. |
+| U030 | Partial | General Python tools still have cooperative deadlines. Workspace subprocesses now install POSIX limits before exec or gate release on a Windows Job Object; H memory/timeout tests. Native Windows focused Job/output/timeout tests now pass in CI; see platform evidence. |
 | U031 | Implemented | Initial model inference receives request cancellation token. Updated T integration doubles; cancellable inference queue. |
 | U032 | Partial | Thinking calls reserve shared calls and input/output token allowance, including HTTP retries. R prepaid-retry test. Token counts remain estimates, not exact usage. |
 | U033 | Implemented | Zero revisions stays zero; configured multi-replan ceiling replaces hardcoded one. Updated replanning tests explicitly set their desired limit. |
@@ -154,7 +162,7 @@ baseline audit's line numbers intentionally remain historical.
 | U066 | Implemented | Combined stdout/stderr quotas and concurrent bounded drains replace unlimited capture for workspace commands and Git. Timeout/overflow kills and post-kill waits are bounded. H noisy-child and inherited-pipe tests. |
 | U067 | Implemented | Resolve/validate entire address answer at connection time; connect numeric addresses without re-resolution. HTTPS preserves original hostname/SNI and certificate verification. H rebinding/mixed-answer/TLS tests. |
 | U068 | Implemented | Protected public urllib opener disables ambient proxies. `security/net_guards.py`; network regression suite. |
-| U069 | Partial | Playwright context routes same-origin HTTP through pinned fetches; redirects, subresources and forms are mediated, SW/WebSockets/downloads blocked. Selenium refuses unguarded automation. H policy tests; actual Chromium/OS egress validation remains pending. |
+| U069 | Partial | Playwright context routes same-origin HTTP through pinned fetches; redirects, subresources and forms are mediated, SW/WebSockets/downloads blocked. Selenium refuses unguarded automation. H policy tests; actual Chromium acceptance passes locally and in CI; OS-level native egress containment remains separate. |
 | U070 | Open | Python socket guard is not an OS firewall. Native child isolation remains platform-dependent. |
 | U071 | Partial | Policy event histories are bounded deques (1000 entries). Lifetime totals/durable retention still need policy. |
 | U072 | Partial | New writes use versioned cryptography AES-256-GCM, with no legacy fallback. Legacy reads and backup-first transactional schedule migration tested. External cryptographic review and owner migration of existing data remain pending. |
@@ -163,7 +171,7 @@ baseline audit's line numbers intentionally remain historical.
 | U075 | Partial | Git discovery cannot walk beyond approved roots; linked/symlinked metadata rejected; risky Git integrations disabled. Hostile metadata races/internal alternates still need audit. |
 | U076 | Implemented | Review walk stops at file/directory caps; reads bounded by configured byte maximum. `dev_assistant.py`; developer regression suite. |
 | U077 | Implemented | Result explicitly identifies manifest_inventory and security_scan_performed=false. Not presented as vulnerability-advisory coverage. |
-| U078 | Implemented | Submitted flag only follows successful backend click/wait; separate submission_verified=false. `web_automation.py`; no live browser validation. |
+| U078 | Implemented | Submitted flag only follows successful backend click/wait; separate submission_verified=false. `web_automation.py`; actual same-origin form submission acceptance passes; no application receipt is claimed. |
 | U079 | Implemented | BEGIN IMMEDIATE serializes sequence/tip read + event insert across writers. R concurrent-recorder test. |
 | U080 | Implemented | Versioned canonical v2 hash covers audit-significant metadata; legacy v1 chains readable. R metadata-tamper test. |
 | U081 | Open | No externally trusted/signed checkpoint. Arbitrary full database rewrite remains outside the local-chain threat model. |
@@ -177,10 +185,10 @@ baseline audit's line numbers intentionally remain historical.
 | U089 | Partial | Exclusive random mkstemp, descriptor write/fsync and parent recheck fix demonstrated temp-symlink attack. Descriptor-relative parent-race hardening remains. |
 | U090 | Implemented | Unique temporary files, local write lock, and atomic no-clobber publication avoid same-process temp collisions. R concurrent-write test. |
 | U091 | Implemented | Bound callback default fixes B023; full Ruff gate now passes including new code/tests. |
-| U092 | Validation pending | 61 portable regressions across both passes plus opt-in real-browser acceptance added. Optional/platform checks still skipped locally; no new merged coverage or Windows hardware evidence. |
-| U093 | Validation pending | Core CI matrix expanded to Python 3.11–3.14 on Linux/Windows. Remote results not available in this turn. |
-| U094 | Partial | Close now requests cooperative emergency cancellation. No safely bounded forced GUI shutdown for stuck native workers; live Qt path untested. |
-| U095 | Validation pending | Versioned eight-case off/ultra harness records model identity, corpus hash, answers, rubric, latency and estimated usage with no downloads/tool execution. Corpus inspection passed; real model not installed here. |
+| U092 | Partial | 747 discovered tests; 742 pass locally with Qt/browser enabled, five explicit skips. All 15 platform CI jobs pass. New coverage percentage and physical-hardware evidence remain unmeasured. |
+| U093 | Implemented | Python 3.11–3.14 core jobs pass on Linux and Windows; Windows Qt and Linux offscreen jobs pass. Run 46171800935 at c97e305; see platform report. |
+| U094 | Partial | Close now requests cooperative emergency cancellation. No safely bounded forced GUI shutdown for stuck native workers; actual Qt construction and button behavior pass; forced native-worker shutdown remains unbounded. |
+| U095 | Implemented | Actual eight-case off/ultra evaluation completed against preloaded Qwen 0.5B: off 6/8, ultra 5/8, no engine/runtime errors. Answers, corpus/model hashes and timings retained. Ultra was worse/slower here; no general quality claim. |
 | U096 | Partial | Dev constraints and cryptography 48.0.1 pin supplied. Remaining GUI/speech/model optional-runtime dependencies are not fully locked/tested. |
 | U097 | Implemented | All checkout/setup-python uses pinned to exact verified upstream v7 commit SHAs. `.github/workflows/tests.yml`. |
 | U098 | Partial | Outer orchestrator requests serialized with a bounded wait, preventing interleaved active histories. No per-conversation IDs or atomic session-setting isolation yet. |
@@ -226,7 +234,7 @@ baseline audit's line numbers intentionally remain historical.
 
 ## Next implementation priorities
 
-- U069/U070: run actual Chromium acceptance; add OS-level native egress
+- U069/U070: add OS-level native egress
   enforcement beyond page routing and Python socket guards.
 - U029/U030/U064: extend resource supervision to remaining tool threads, add
   aggregate containment, and reconcile unknown effects durably across restarts.
@@ -238,5 +246,5 @@ baseline audit's line numbers intentionally remain historical.
   preserves integrity semantics; do not silently truncate the chain.
 - U018/U026/U088/U099: owner-installed services, explicit reviewed renewal, and
   corpus-wide scalable retrieval without sacrificing freshness checks.
-- U092/U093/U094/U095/U096: remote interpreter/Windows/GUI runs, bounded GUI exit,
-  real-model benchmarks, and fully tested optional-dependency locks.
+- U092/U094/U095/U096: remeasure coverage, bound GUI exit, broaden model/corpus
+  evaluation beyond the completed small-model run, and fully test dependency locks.

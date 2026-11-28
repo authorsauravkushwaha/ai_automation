@@ -17,10 +17,10 @@
       "passed": 1
     },
     "combined": {
-      "tests": 745,
-      "passed": 740,
+      "tests": 747,
+      "passed": 742,
       "skipped": 5,
-      "seconds": 68.894,
+      "seconds": 71.528,
       "result": "OK"
     },
     "remaining_skips": [
@@ -35,12 +35,161 @@
     "git_diff_check": "passed"
   },
   "remote": {
-    "windows": "not yet run for this snapshot",
-    "real_model": "not yet run for this snapshot"
+    "real_model": {
+      "status": "completed",
+      "report": "ultron-real-model-validation.json",
+      "run": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171404586",
+      "off_matches": 6,
+      "ultra_matches": 5,
+      "cases_per_mode": 8,
+      "runtime_errors": 0,
+      "engine_errors": 0
+    },
+    "windows_linux": {
+      "run": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935",
+      "head_sha": "c97e305b24697768ccd4d6b1f7b8874e2599a3ae",
+      "conclusion": "success",
+      "created_at": "2026-11-28T17:41:13Z",
+      "updated_at": "2026-11-28T17:49:06Z",
+      "jobs": [
+        {
+          "id": 141061652883,
+          "name": "guarded-browser",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:15Z",
+          "completed_at": "2026-11-28T17:41:59Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061652883"
+        },
+        {
+          "id": 141061652990,
+          "name": "desktop",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:36Z",
+          "completed_at": "2026-11-28T17:46:01Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061652990"
+        },
+        {
+          "id": 141061653015,
+          "name": "security-regression",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:50Z",
+          "completed_at": "2026-11-28T17:42:00Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653015"
+        },
+        {
+          "id": 141061653023,
+          "name": "quality",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:37Z",
+          "completed_at": "2026-11-28T17:41:55Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653023"
+        },
+        {
+          "id": 141061653024,
+          "name": "desktop-headless-linux",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:58Z",
+          "completed_at": "2026-11-28T17:43:01Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653024"
+        },
+        {
+          "id": 141061653039,
+          "name": "hardening-boundaries (ubuntu-latest)",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:54Z",
+          "completed_at": "2026-11-28T17:42:11Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653039"
+        },
+        {
+          "id": 141061653058,
+          "name": "hardening-boundaries (windows-latest)",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:56Z",
+          "completed_at": "2026-11-28T17:43:04Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653058"
+        },
+        {
+          "id": 141061653078,
+          "name": "core (windows-latest, 3.12)",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:54Z",
+          "completed_at": "2026-11-28T17:49:05Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653078"
+        },
+        {
+          "id": 141061653155,
+          "name": "core (windows-latest, 3.14)",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:56Z",
+          "completed_at": "2026-11-28T17:48:29Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653155"
+        },
+        {
+          "id": 141061653166,
+          "name": "core (ubuntu-latest, 3.13)",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:59Z",
+          "completed_at": "2026-11-28T17:43:06Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653166"
+        },
+        {
+          "id": 141061653195,
+          "name": "core (ubuntu-latest, 3.14)",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:42:02Z",
+          "completed_at": "2026-11-28T17:43:09Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653195"
+        },
+        {
+          "id": 141061653203,
+          "name": "core (ubuntu-latest, 3.11)",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:42:05Z",
+          "completed_at": "2026-11-28T17:42:59Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653203"
+        },
+        {
+          "id": 141061653225,
+          "name": "core (ubuntu-latest, 3.12)",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:42:01Z",
+          "completed_at": "2026-11-28T17:43:01Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653225"
+        },
+        {
+          "id": 141061653228,
+          "name": "core (windows-latest, 3.11)",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:41:57Z",
+          "completed_at": "2026-11-28T17:46:24Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653228"
+        },
+        {
+          "id": 141061653250,
+          "name": "core (windows-latest, 3.13)",
+          "conclusion": "success",
+          "started_at": "2026-11-28T17:42:12Z",
+          "completed_at": "2026-11-28T17:47:14Z",
+          "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800935/job/141061653250"
+        }
+      ]
+    },
+    "windows_launcher": {
+      "html_url": "https://github.com/authorsauravkushwaha/ai_automation/actions/runs/46171800980",
+      "head_sha": "c97e305b24697768ccd4d6b1f7b8874e2599a3ae",
+      "conclusion": "success",
+      "created_at": "2026-11-28T17:41:13Z",
+      "updated_at": "2026-11-28T17:41:35Z"
+    }
   },
   "fixes": [
     "Validate cross-origin Location before fulfilling redirects; actual Chromium revealed redirect hops need not re-enter request routing.",
     "GUI selector regression now tests that choosing a thinking profile never silently enables disabled inference.",
-    "Added actual Qt Ultron toggle regression and a focused redirect rejection regression."
-  ]
+    "Added actual Qt Ultron toggle regression and a focused redirect rejection regression.",
+    "Keep Windows Job-assigned bootstrap alive until the child finishes; preserve child exit status.",
+    "Flush SQLite backup through a writable descriptor on Windows; explicitly close fixture connections.",
+    "Create DPAPI key file with O_BINARY to prevent CRT newline corruption.",
+    "Cancellation fixtures use explicit entry synchronization and finally release/join workers even on assertion failure."
+  ],
+  "tested_commit": "c97e305b24697768ccd4d6b1f7b8874e2599a3ae"
 }
