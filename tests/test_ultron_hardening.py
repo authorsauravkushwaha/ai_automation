@@ -18,6 +18,7 @@ import time
 import unittest
 import urllib.request
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -186,6 +187,14 @@ class ProcessSupervisionTests(unittest.TestCase):
         with patch("hinata.automation.workspace._linux_netns_supported", return_value=False):
             self.runner = IsolatedSandboxRunner()
 
+    def test_supervisor_waits_for_delayed_command_and_preserves_exit_status(self):
+        result = self.runner.run_command(
+            [sys.executable, "-c", "import time,sys; time.sleep(0.2); print('completed'); sys.exit(7)"],
+            cwd=Path(self.temp.name), timeout_seconds=5,
+        )
+        self.assertEqual(result["exit_code"], 7, result)
+        self.assertEqual(result["stdout"].strip(), "completed", result)
+
     def test_noisy_child_hits_quota_before_unbounded_capture(self):
         started = time.monotonic()
         with self.assertRaises(AutomationError) as error:
@@ -277,7 +286,7 @@ class AEADMigrationTests(unittest.TestCase):
 
     def database(self, corrupt=False):
         database = self.root / "schedule.db"
-        with sqlite3.connect(database) as conn:
+        with closing(sqlite3.connect(database)) as conn, conn:
             conn.execute("CREATE TABLE scheduled_tasks(schedule_id TEXT PRIMARY KEY, request_text TEXT)")
             conn.execute("INSERT INTO scheduled_tasks VALUES(?,?)", ("one", legacy_fixture(b"system info", self.key, b"schedule:one")))
             conn.execute("INSERT INTO scheduled_tasks VALUES(?,?)", ("two", "enc:v1:broken" if corrupt else "system info"))
@@ -288,9 +297,9 @@ class AEADMigrationTests(unittest.TestCase):
         backup = self.root / "before.db"
         result = migrate_schedule_envelopes(database, self.vault, backup, encrypt_plaintext=True)
         self.assertEqual(result["migrated_fields"], 2)
-        with sqlite3.connect(backup) as conn:
+        with closing(sqlite3.connect(backup)) as conn, conn:
             self.assertTrue(conn.execute("SELECT request_text FROM scheduled_tasks WHERE schedule_id='one'").fetchone()[0].startswith("enc:v1:"))
-        with sqlite3.connect(database) as conn:
+        with closing(sqlite3.connect(database)) as conn, conn:
             for sid, text in conn.execute("SELECT * FROM scheduled_tasks"):
                 self.assertTrue(text.startswith("enc:v2:"))
                 self.assertEqual(self.vault.unprotect_text(text, context="schedule:" + sid), "system info")
@@ -301,11 +310,11 @@ class AEADMigrationTests(unittest.TestCase):
 
     def test_corrupt_legacy_row_rolls_back_every_update(self):
         database = self.database(corrupt=True)
-        with sqlite3.connect(database) as conn:
+        with closing(sqlite3.connect(database)) as conn, conn:
             before = conn.execute("SELECT * FROM scheduled_tasks ORDER BY schedule_id").fetchall()
         with self.assertRaises(ProtectionError):
             migrate_schedule_envelopes(database, self.vault, self.root / "failed-backup.db")
-        with sqlite3.connect(database) as conn:
+        with closing(sqlite3.connect(database)) as conn, conn:
             self.assertEqual(conn.execute("SELECT * FROM scheduled_tasks ORDER BY schedule_id").fetchall(), before)
         self.assertTrue((self.root / "failed-backup.db").is_file())
 

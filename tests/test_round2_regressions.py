@@ -514,6 +514,7 @@ class SandboxRunnerHardeningTests(unittest.TestCase):
             stdout = io.BytesIO(b"")
             stderr = io.BytesIO(b"")
             pid = 424242
+            _handle = 424242
             returncode = 0
 
             def poll(self) -> int:
@@ -530,6 +531,7 @@ class SandboxRunnerHardeningTests(unittest.TestCase):
         cwd.mkdir()
         with (
             patch("hinata.automation.workspace._RESOURCE", fake_resource),
+            patch("hinata.automation.workspace._WindowsJobSandbox"),
             patch("hinata.automation.workspace._linux_netns_supported", return_value=False),
             patch("hinata.automation.workspace.tempfile.gettempdir", return_value=custom_tmp),
             patch.dict(os.environ, {"TEMP": "", "TMP": ""}, clear=False),

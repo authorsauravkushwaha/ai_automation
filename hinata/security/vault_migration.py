@@ -35,7 +35,8 @@ def migrate_schedule_envelopes(database: Path, vault: LocalVault, backup: Path, 
         try:
             with closing(sqlite3.connect(uri, uri=True)) as snapshot, closing(sqlite3.connect(backup)) as destination:
                 snapshot.backup(destination)
-            with backup.open("rb") as stream:
+            # Windows _commit (os.fsync) requires a writable descriptor.
+            with backup.open("r+b") as stream:
                 os.fsync(stream.fileno())
         except BaseException:
             backup.unlink(missing_ok=True)

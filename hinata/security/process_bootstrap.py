@@ -23,6 +23,12 @@ def main() -> None:
             if time.monotonic() >= deadline:
                 raise SystemExit("Windows resource job was not assigned; refusing execution")
             time.sleep(0.01)
+        # Windows exec spawns a replacement and exits this process: the supervisor
+        # would observe a dead bootstrap and close its kill-on-close Job Object
+        # while the command is still running. Keep this assigned process alive
+        # until its child exits; children inherit the job and output handles.
+        import subprocess
+        raise SystemExit(subprocess.call(command))
     else:
         import resource
         resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
