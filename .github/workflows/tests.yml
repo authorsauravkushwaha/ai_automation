@@ -166,7 +166,16 @@ jobs:
       - name: Install vetted encryption implementation
         run: python -m pip install -e ".[secure-storage]"
       - name: Exercise networking, crypto migration, processes and verification
-        run: python -m unittest tests.test_ultron_hardening tests.test_ultron_remediation -v
+        shell: bash
+        run: |
+          set +e
+          python -m unittest tests.test_ultron_hardening tests.test_ultron_remediation -v > test-output.txt 2>&1
+          status=$?
+          cat test-output.txt
+          if [ "$status" -ne 0 ]; then
+            python scripts/github_test_report.py test-output.txt
+            exit "$status"
+          fi
 
   guarded-browser:
     runs-on: ubuntu-latest

@@ -66,6 +66,26 @@ jobs:
           ollama pull qwen2.5:0.5b-instruct-q4_K_M
           ollama list > eval-results/installed-models.txt
           python scripts/evaluate_ultron_local.py --model qwen2.5:0.5b-instruct-q4_K_M --repeat 1 --output eval-results/ultron-local.json
+      - name: Publish bounded evaluation evidence to check annotations
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'scripts')
+          from github_test_report import escape_annotation
+          path = Path('eval-results/ultron-local.json')
+          if path.exists():
+              report = json.loads(path.read_text())
+              metadata = {key: value for key, value in report.items() if key != 'results'}
+              print('::notice title=Evaluation metadata::' + escape_annotation(json.dumps(metadata)))
+              for row in report['results']:
+                  print('::notice title=Evaluation result::' + escape_annotation(json.dumps(row)))
+          else:
+              print('::error::Evaluation did not produce a report; inspect preparation logs.')
+          PY
       - name: Retain actual answers, digest identities and timings even on failure
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
